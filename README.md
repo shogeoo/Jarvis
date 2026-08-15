@@ -21,6 +21,14 @@ python3 -m venv .venv
 CUDA-библиотеки (cuBLAS/cuDNN) ставятся из `requirements.txt` в venv;
 `run_stt.sh` выставляет `LD_LIBRARY_PATH`.
 
+Захват звука идёт через `parec` (из пакета `pulseaudio-utils`) — он
+корректно подключается к реальному источнику PipeWire. Установи при
+необходимости:
+
+```bash
+sudo pacman -S pulseaudio-utils
+```
+
 ## Запуск
 
 ```bash
