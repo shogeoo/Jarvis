@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.idea/
+segments/
+models/silero_vad.onnx
+*.wav
