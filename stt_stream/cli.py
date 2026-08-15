@@ -35,13 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["float16", "float32", "int8"],
                    help="Точность вычислений; по умолчанию float16 на CUDA")
     p.add_argument("--language", default=None,
-                   help="Язык, напр. ru; по умолчанию автоопределение")
+                   help="Жёстко заданный язык, напр. ru; по умолчанию — авто из --languages")
+    p.add_argument("--languages", default="ru,en",
+                   help="Допустимые языки через запятую; мисдетект перегоняется на первый")
     p.add_argument("--pre-roll", type=float, default=0.5,
                    help="Запас аудио перед стартом речи, с")
-    p.add_argument("--chunk-silence", type=float, default=1.0,
-                   help="Тишина для завершения чанка, с")
-    p.add_argument("--blank-pause", type=float, default=2.0,
-                   help="Пауза для пустой строки, с (больше средней речевой)")
+    p.add_argument("--chunk-silence", type=float, default=2.0,
+                   help="Сколько секунд VAD=false, чтобы завершить запись сегмента, с")
     p.add_argument("--threshold", type=float, default=0.5, help="Порог VAD")
     p.add_argument("--sample-rate", type=int, default=16000)
     p.add_argument("--out-dir", default="segments", help="Каталог WAV-чанков")
@@ -59,7 +59,7 @@ def main(argv=None) -> int:
         return _list_devices(args)
 
     ensure_model()
-    printer = Printer(args.blank_pause)
+    printer = Printer()
 
     vad = SileroVAD(threshold=args.threshold)
     segmenter = Segmenter(
@@ -70,8 +70,10 @@ def main(argv=None) -> int:
     stop = threading.Event()
 
     def worker():
-        tr = Transcriber(args.model, args.device, args.language,
-                         args.compute_type)
+        tr = Transcriber(
+            args.model, args.device, args.language, args.compute_type,
+            languages=tuple(x.strip() for x in args.languages.split(",") if x.strip()),
+        )
         try:
             tr.load()
         except RuntimeError as exc:
@@ -88,7 +90,7 @@ def main(argv=None) -> int:
                     os.remove(item["path"])
                 except OSError:
                     pass
-            printer.print_segment(text, item["pause"])
+            printer.print_segment(text)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()

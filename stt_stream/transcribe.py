@@ -1,23 +1,24 @@
-"""Транскрипция аудио-чанков через faster-whisper (large-v3, CUDA)."""
+"""Транскрипция аудио-чанков через faster-whisper (large-v3, CUDA).
+
+Язык ограничен списком допустимых (по умолчанию ru/en): если
+автоопределение whisper выдало язык вне списка — сегмент транскрибируется
+повторно с принудительным фолбек-языком (по умолчанию русский).
+"""
 
 from __future__ import annotations
 
-import os
-
 from faster_whisper import WhisperModel
-
-CUDA_LIBS = {
-    "cuBLAS": os.path.expanduser("~/.local/lib/python3.14/site-packages/nvidia/cublas/lib"),
-    "cuDNN": os.path.expanduser("~/.local/lib/python3.14/site-packages/nvidia/cudnn/lib"),
-}
 
 
 class Transcriber:
     def __init__(self, model_name: str = "large-v3", device: str = "cuda",
-                 language: str | None = None, compute_type: str | None = None):
+                 language: str | None = None, compute_type: str | None = None,
+                 languages: tuple[str, ...] = ("ru", "en")):
         self.model_name = model_name
         self.device = device
         self.language = language
+        self.languages = tuple(languages) or ("ru", "en")
+        self.fallback = self.languages[0]
         self.compute_type = compute_type or (
             "float16" if device == "cuda" else "int8"
         )
@@ -43,13 +44,23 @@ class Transcriber:
             ) from exc
         print("Модель загружена", flush=True)
 
-    def transcribe_file(self, path: str) -> str:
-        segments, _ = self.model.transcribe(
+    def _transcribe(self, path: str, language: str | None) -> tuple[str, str]:
+        segments, info = self.model.transcribe(
             path,
-            language=self.language,
+            language=language,
             beam_size=5,
             vad_filter=False,
             without_timestamps=True,
         )
         text = " ".join(s.text.strip() for s in segments).strip()
+        return text, info.language
+
+    def transcribe_file(self, path: str) -> str:
+        if self.language is not None:
+            text, _ = self._transcribe(path, self.language)
+            return text
+        text, detected = self._transcribe(path, None)
+        if detected in self.languages:
+            return text
+        text, _ = self._transcribe(path, self.fallback)
         return text
