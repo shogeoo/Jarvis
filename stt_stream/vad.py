@@ -21,8 +21,8 @@ import onnxruntime as ort
 from .audio import FRAME_SIZE, SAMPLE_RATE
 
 MODEL_URL = (
-    "https://github.com/snakers4/silero-vad/raw/master/"
-    "src/silero_vad/data/silero_vad.onnx"
+    "https://huggingface.co/onnx-community/silero-vad/resolve/main/"
+    "onnx/model.onnx"
 )
 DEFAULT_MODEL_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -47,9 +47,11 @@ class SileroVAD:
         self.threshold = threshold
         self.sr = np.array(SAMPLE_RATE, dtype=np.int64)
         self.state = np.zeros((2, 1, 128), dtype=np.float32)
+        self.last_prob = 0.0
 
     def reset(self):
         self.state = np.zeros((2, 1, 128), dtype=np.float32)
+        self.last_prob = 0.0
 
     def is_speech(self, frame_int16) -> bool:
         x = frame_int16.astype(np.float32) / 32768.0
@@ -59,6 +61,7 @@ class SileroVAD:
         )
         prob = float(out[0].ravel()[0])
         self.state = out[1]
+        self.last_prob = prob
         return prob > self.threshold
 
 
