@@ -41,5 +41,5 @@ echo "==> Скачивание silero_vad.onnx"
 VAD="$DIR/models/silero_vad.onnx"
 mkdir -p "$(dirname "$VAD")"
 curl -fL -o "$VAD" \
-  "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
+  "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx"
 echo "OK: $VAD ($(du -h "$VAD" | cut -f1))"

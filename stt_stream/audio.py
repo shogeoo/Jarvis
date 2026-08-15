@@ -1,5 +1,7 @@
 """Захват звука с микрофона в реальном времени.
 
+Бэкенд: parec (PulseAudio/PipeWire) — он корректно коннектится к реальному
+источнику (в отличие от PortAudio в некоторых PipeWire-конфигурациях).
 Аудио режется на короткие чанки по 32 мс (512 сэмплов @16 кГц) и
 складывается в очередь для VAD-обработки.
 """
@@ -7,9 +9,10 @@
 from __future__ import annotations
 
 import queue
+import subprocess
+import threading
 
 import numpy as np
-import sounddevice as sd
 
 SAMPLE_RATE = 16000
 FRAME_SIZE = 512
@@ -19,52 +22,49 @@ class MicStream:
     """Поток микрофона, отдающий чанки int16 (моно, 16 кГц) в очередь."""
 
     def __init__(self, sample_rate: int = SAMPLE_RATE, frame_size: int = FRAME_SIZE,
-                 device=None):
+                 device: str | None = None):
         self.sample_rate = sample_rate
         self.frame_size = frame_size
         self.device = device
         self.frames: "queue.Queue[np.ndarray]" = queue.Queue()
-        self._stream = None
-        self._decim = 1
-        self._actual_rate = sample_rate
-
-    def _callback(self, indata, frames, time_info, status):
-        audio = np.frombuffer(indata, dtype=np.int16)
-        if self._decim > 1:
-            audio = audio[:: self._decim]
-        self.frames.put(audio)
+        self._proc: subprocess.Popen | None = None
+        self._stop = threading.Event()
 
     def start(self) -> "MicStream":
-        candidates = [self.sample_rate]
-        if 48000 not in candidates:
-            candidates.append(48000)
-        last_error = None
-        for rate in candidates:
-            decim = rate // self.sample_rate
-            block = self.frame_size * decim
-            try:
-                self._stream = sd.RawInputStream(
-                    samplerate=rate,
-                    channels=1,
-                    dtype="int16",
-                    blocksize=block,
-                    device=self.device,
-                    callback=self._callback,
-                )
-                self._stream.start()
-                self._decim = decim
-                self._actual_rate = rate
-                return self
-            except Exception as exc:
-                last_error = exc
-        raise RuntimeError(
-            f"Не удалось открыть микрофон на {self.sample_rate} Гц: {last_error}"
+        cmd = [
+            "parec",
+            "--format=s16le",
+            f"--rate={self.sample_rate}",
+            "--channels=1",
+            "--file-format=raw",
+        ]
+        if self.device:
+            cmd.append(f"--device={self.device}")
+        self._proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
+        threading.Thread(target=self._read_loop, daemon=True).start()
+        return self
+
+    def _read_loop(self):
+        nbytes = self.frame_size * 2
+        while not self._stop.is_set() and self._proc is not None \
+                and self._proc.poll() is None:
+            raw = self._proc.stdout.read(nbytes)
+            if len(raw) < nbytes:
+                if raw:
+                    self.frames.put(np.frombuffer(raw, dtype=np.int16))
+                break
+            self.frames.put(np.frombuffer(raw, dtype=np.int16))
+        if not self._stop.is_set():
+            self._stop.set()
 
     def stop(self):
-        if self._stream is not None:
+        self._stop.set()
+        if self._proc is not None:
             try:
-                self._stream.stop()
-                self._stream.close()
-            finally:
-                self._stream = None
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None
