@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="stt_stream",
         description="STT в реальном времени: VAD -> чанки -> whisper -> строки",
     )
-    p.add_argument("--model", default="large-v3", help="Модель faster-whisper")
+    p.add_argument("--model", default="large-v3-turbo", help="Модель faster-whisper")
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"],
                    help="Устройство (без фолбека: если CUDA нет — ошибка с подсказкой)")
     p.add_argument("--compute-type", default=None,

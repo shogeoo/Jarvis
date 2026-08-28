@@ -36,21 +36,21 @@ sudo pacman -S pulseaudio-utils
 ## Запуск
 
 ```bash
-./run_stt.sh                     # large-v3 на CUDA, языки ru/en
+./run_stt.sh                     # large-v3-turbo на CUDA, языки ru/en
 ./run_stt.sh --language ru       # только русский (жёстко)
 ./run_stt.sh --languages ru,en   # допустимые языки (по умолчанию)
 ./run_stt.sh --list-devices      # список микрофонов
 ./run_stt.sh --keep-audio        # сохранять WAV-чанки в segments/
 ```
 
-Модель Whisper скачивается с Hugging Face при первом запуске; VAD-модель —
+Модель Whisper (large-v3-turbo) скачивается с Hugging Face при первом запуске; VAD-модель —
 автоматически при первом запуске.
 
 ## Параметры
 
 | Флаг | По умолчанию | Назначение |
 | :--- | :--- | :--- |
-| `--model` | `large-v3` | Модель faster-whisper |
+| `--model` | `large-v3-turbo` | Модель faster-whisper |
 | `--device` | `cuda` | Без фолбека: при отсутствии CUDA — ошибка с подсказкой |
 | `--language` | — | Жёстко заданный язык, напр. `ru` |
 | `--languages` | `ru,en` | Допустимые языки; мисдетект → первый из списка |
