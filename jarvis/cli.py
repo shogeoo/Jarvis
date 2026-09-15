@@ -1,8 +1,8 @@
 """CLI: реальное время STT.
 
 Микрофон -> VAD -> запись чанка в WAV -> whisper -> строка текста.
-Если задана модель OpenAI-совместимого API, расшифровка также уходит в
-нейросеть, а её ответ печатается в консоль.
+Если задана модель LLM, расшифровка уходит в неё, а ответ печатается и
+озвучивается через Fish Audio S2 Pro (s2.cpp).
 """
 
 from __future__ import annotations
@@ -74,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Файл мастер-промпта (по умолчанию system_prompt.txt)")
     p.add_argument("--no-llm", action="store_true",
                    help="Отключить нейросеть, только расшифровка")
+    p.add_argument("--no-tts", action="store_true",
+                   help="Не озвучивать ответы через Fish Audio")
     return p
 
 
@@ -84,20 +86,34 @@ def main(argv=None) -> int:
 
     ensure_model()
     printer = Printer()
+    config = load_config(args.env_file, args.system_prompt)
+
+    speaker = None
+    if not args.no_tts and config.tts_enabled and config.tts_url:
+        from .tts import Speaker
+
+        try:
+            speaker = Speaker(config).start()
+        except RuntimeError as exc:
+            print(exc, file=os.sys.stderr)
+            speaker = None
+
+    def on_reply(answer: str) -> None:
+        printer.print_reply(answer)
+        if speaker is not None:
+            speaker.submit(answer)
 
     assistant = None
-    if not args.no_llm:
-        config = load_config(args.env_file, args.system_prompt)
-        if config.llm_enabled:
-            from .assistant import Assistant
+    if not args.no_llm and config.llm_enabled:
+        from .assistant import Assistant
 
-            assistant = Assistant(
-                model=config.model,
-                base_url=config.base_url,
-                api_key=config.api_key,
-                system=config.system,
-                on_reply=printer.print_reply,
-            ).start()
+        assistant = Assistant(
+            model=config.model,
+            base_url=config.base_url,
+            api_key=config.api_key,
+            system=config.system,
+            on_reply=on_reply,
+        ).start()
 
     vad = SileroVAD(threshold=args.threshold)
     segmenter = Segmenter(
@@ -159,4 +175,6 @@ def main(argv=None) -> int:
         thread.join(timeout=60)
         if assistant is not None:
             assistant.stop()
+        if speaker is not None:
+            speaker.stop()
     return 0
