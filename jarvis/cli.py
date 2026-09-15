@@ -42,7 +42,7 @@ def _list_devices(args):
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="stt_stream",
+        prog="jarvis",
         description="STT в реальном времени: VAD -> чанки -> whisper -> строки",
     )
     p.add_argument("--model", default="large-v3-turbo", help="Модель faster-whisper")

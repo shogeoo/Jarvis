@@ -1,4 +1,4 @@
-# Jarvis — STT в реальном времени
+# Jarvis — голосовой ассистент
 
 Локальное распознавание речи (русский/английский) с нарезкой на аудио-чанки
 по паузам. Микрофон → VAD → WAV-сегменты → faster-whisper → текст в stdout.
@@ -34,19 +34,19 @@ sudo pacman -S pulseaudio-utils    # Arch
 ## Запуск
 
 ```bash
-.venv/bin/jarvis-stt                 # large-v3-turbo на CUDA, языки ru/en
-.venv/bin/jarvis-stt --device cpu    # без GPU
-.venv/bin/jarvis-stt --language ru   # только русский (жёстко)
+.venv/bin/jarvis                 # large-v3-turbo на CUDA, языки ru/en
+.venv/bin/jarvis --device cpu    # без GPU
+.venv/bin/jarvis --language ru   # только русский (жёстко)
 ```
 
 Эквивалент без установки entry point:
 
 ```bash
-.venv/bin/python -m stt_stream
+.venv/bin/python -m jarvis
 ```
 
 CUDA-каталоги `nvidia/cublas/lib` и `nvidia/cudnn/lib` из venv подставляются в
-`LD_LIBRARY_PATH` автоматически (`stt_stream/bootstrap.py`); shell-обёртка не
+`LD_LIBRARY_PATH` автоматически (`jarvis/bootstrap.py`); shell-обёртка не
 нужна.
 
 ## Модели
@@ -76,7 +76,7 @@ export OPENAI_API_KEY=sk-...
 export OPENAI_BASE_URL=https://api.openai.com/v1        # или свой эндпоинт
 export OPENAI_MODEL=gpt-4o-mini
 export JARVIS_SYSTEM="Ты — Jarvis, отвечай кратко."     # необязательно
-.venv/bin/jarvis-stt
+.venv/bin/jarvis
 ```
 
 Флаги `--llm-model`, `--llm-base-url`, `--llm-api-key`, `--llm-system`

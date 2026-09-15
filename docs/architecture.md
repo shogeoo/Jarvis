@@ -4,14 +4,14 @@
 
 ```
 parec (PulseAudio/PipeWire)
-  └─> MicStream            stt_stream/audio.py    очередь чанков int16, 32 мс (512 сэмплов @16 кГц)
-        └─> SileroVAD      stt_stream/vad.py      вероятность речи на каждом чанке (CPU, onnxruntime)
-              └─> Segmenter stt_stream/vad.py      конечный автомат; при паузе отдаёт готовый WAV
+  └─> MicStream            jarvis/audio.py    очередь чанков int16, 32 мс (512 сэмплов @16 кГц)
+        └─> SileroVAD      jarvis/vad.py      вероятность речи на каждом чанке (CPU, onnxruntime)
+              └─> Segmenter jarvis/vad.py      конечный автомат; при паузе отдаёт готовый WAV
                      └─> queue.Queue                передача сегментов рабочему потоку
-                           └─> Transcriber          stt_stream/transcribe.py  faster-whisper, CUDA/CPU
-                                 ├─> Printer        stt_stream/printer.py     строка текста + пустая строка
-                                 └─> Assistant      stt_stream/assistant.py   реплики -> OpenAI-совместимый API
-                                       └─> Printer  stt_stream/printer.py     ответ "Jarvis: ..."
+                           └─> Transcriber          jarvis/transcribe.py  faster-whisper, CUDA/CPU
+                                 ├─> Printer        jarvis/printer.py     строка текста + пустая строка
+                                 └─> Assistant      jarvis/assistant.py   реплики -> OpenAI-совместимый API
+                                       └─> Printer  jarvis/printer.py     ответ "Jarvis: ..."
 ```
 
 ## Компоненты
