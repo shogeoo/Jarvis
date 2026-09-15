@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .idea/
+.env
 segments/
 models/silero_vad.onnx
 *.wav
