@@ -187,7 +187,7 @@ class Speaker:
     def _play(self, chunks, rate: int) -> None:
         cmd = [
             "ffplay", "-autoexit", "-nodisp", "-loglevel", "error", "-infbuf",
-            "-f", "s16le", "-ar", str(rate), "-ac", "1", "-",
+            "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
         ]
         try:
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
@@ -199,9 +199,13 @@ class Speaker:
             return
         try:
             for chunk in chunks:
-                proc.stdin.write(chunk)  # type: ignore[union-attr]
-            proc.stdin.close()  # type: ignore[union-attr]
-        except (BrokenPipeError, OSError):
-            pass
+                try:
+                    proc.stdin.write(chunk)  # type: ignore[union-attr]
+                except (BrokenPipeError, OSError):
+                    break
         finally:
+            try:
+                proc.stdin.close()  # type: ignore[union-attr]
+            except (BrokenPipeError, OSError):
+                pass
             proc.wait()
