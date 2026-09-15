@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-stt"
+description = "STT в реальном времени: parec -> VAD -> чанки по паузам -> faster-whisper"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+dependencies = [
+    "faster-whisper>=1.1",
+    "numpy>=1.26",
+    "onnxruntime>=1.20",
+]
+
+[project.optional-dependencies]
+cuda = [
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+]
+
+[project.scripts]
+jarvis-stt = "stt_stream.bootstrap:main"
+
+[tool.setuptools.packages.find]
+include = ["stt_stream*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "stt_stream.__version__" }

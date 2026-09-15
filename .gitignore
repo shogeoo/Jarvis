@@ -5,3 +5,6 @@ __pycache__/
 segments/
 models/silero_vad.onnx
 *.wav
+*.egg-info/
+build/
+dist/

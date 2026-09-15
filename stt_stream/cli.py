@@ -8,9 +8,8 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import subprocess
 import threading
-
-import sounddevice as sd
 
 from .audio import FRAME_SIZE, MicStream
 from .printer import Printer
@@ -19,7 +18,23 @@ from .vad import Segmenter, SileroVAD, ensure_model
 
 
 def _list_devices(args):
-    print(sd.query_devices())
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "short", "sources"],
+            capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        print(
+            "pactl не найден. Установи pulseaudio-utils "
+            "(Arch: sudo pacman -S pulseaudio-utils).",
+            file=os.sys.stderr,
+        )
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(f"pactl завершился с ошибкой: {exc}", file=os.sys.stderr)
+        return 1
+    print("Источники PulseAudio (имя из 2-й колонки — для --input-device):")
+    print(out.stdout.strip() or "  (нет источников)")
     return 0
 
 
@@ -47,9 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", default="segments", help="Каталог WAV-чанков")
     p.add_argument("--keep-audio", action="store_true",
                    help="Не удалять WAV-чанки после расшифровки")
-    p.add_argument("--input-device", default=None, help="ID устройства ввода")
+    p.add_argument("--input-device", default=None, help="Имя источника PulseAudio")
     p.add_argument("--list-devices", action="store_true",
-                   help="Список аудиоустройств и выход")
+                   help="Список источников PulseAudio и выход")
     return p
 
 
