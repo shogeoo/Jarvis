@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Скачивание моделей для Jarvis.
-#   ./download_model.sh              # faster-whisper large-v3 в HF-кэш
+#   ./download_model.sh              # faster-whisper large-v3-turbo в HF-кэш
 #   HF_ENDPOINT=https://hf-mirror.com ./download_model.sh   # через зеркало
 #   ./download_model.sh --tiny       # маленькая модель для проверки
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$DIR/.venv/bin/python"
-REPO="${REPO:-Systran/faster-whisper-large-v3}"
-MODEL="${1:-large-v3}"
+REPO="${REPO:-mobiuslabsgmbh/faster-whisper-large-v3-turbo}"
+MODEL="${1:-large-v3-turbo}"
 
 case "$MODEL" in
   tiny) REPO="Systran/faster-whisper-tiny" ;;
   base) REPO="Systran/faster-whisper-base" ;;
   small) REPO="Systran/faster-whisper-small" ;;
   medium) REPO="Systran/faster-whisper-medium" ;;
-  large-v3 | large-v3-turbo | large) : ;;
+  large-v3-turbo) REPO="mobiuslabsgmbh/faster-whisper-large-v3-turbo" ;;
+  large-v3 | large) REPO="Systran/faster-whisper-large-v3" ;;
   *) echo "Неизвестная модель: $MODEL"; exit 1 ;;
 esac
 
