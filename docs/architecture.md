@@ -7,9 +7,11 @@ parec (PulseAudio/PipeWire)
   └─> MicStream            stt_stream/audio.py    очередь чанков int16, 32 мс (512 сэмплов @16 кГц)
         └─> SileroVAD      stt_stream/vad.py      вероятность речи на каждом чанке (CPU, onnxruntime)
               └─> Segmenter stt_stream/vad.py      конечный автомат; при паузе отдаёт готовый WAV
-                    └─> queue.Queue                передача сегментов рабочему потоку
-                          └─> Transcriber          stt_stream/transcribe.py  faster-whisper, CUDA/CPU
-                                └─> Printer        stt_stream/printer.py     строка текста + пустая строка
+                     └─> queue.Queue                передача сегментов рабочему потоку
+                           └─> Transcriber          stt_stream/transcribe.py  faster-whisper, CUDA/CPU
+                                 ├─> Printer        stt_stream/printer.py     строка текста + пустая строка
+                                 └─> Assistant      stt_stream/assistant.py   реплики -> OpenAI-совместимый API
+                                       └─> Printer  stt_stream/printer.py     ответ "Jarvis: ..."
 ```
 
 ## Компоненты
@@ -28,6 +30,12 @@ parec (PulseAudio/PipeWire)
 - **`bootstrap`** — до импорта CTranslate2 добавляет каталоги
   `nvidia/{cublas,cudnn}/lib` из venv в `LD_LIBRARY_PATH`; при изменении env
   перезапускает процесс.
+- **`assistant.Assistant`** — если задана модель (`OPENAI_MODEL`/`--llm-model`),
+  держит `system`-промпт и полную историю сообщений. `submit(text)` кладёт
+  реплику в очередь; отдельный поток, как освободится, забирает все
+  накопившиеся реплики, отправляет их одним запросом `chat/completions` и
+  передаёт ответ в `Printer.print_reply`. Ошибки сети печатаются в stderr, а
+  реплики остаются в истории и уходят при следующей отправке.
 
 ## Инварианты
 
@@ -37,6 +45,8 @@ parec (PulseAudio/PipeWire)
 - Модель и VAD загружаются один раз в рабочем потоке; основной поток только
   читает микрофон и подаёт кадры в VAD.
 - На выходе — по строке на сегмент, между расшифровками пустая строка.
+- История диалога не обрезается: каждая реплика пользователя и ответ
+  ассистента остаются в `messages` до конца сессии.
 
 ## Точки расширения
 
