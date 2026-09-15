@@ -36,7 +36,7 @@ def prepare_cuda_env() -> None:
         return
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(lib_dirs + current)
     os.environ[_REEXEC_FLAG] = "1"
-    os.execv(sys.executable, [sys.executable, "-m", "stt_stream", *sys.argv[1:]])
+    os.execv(sys.executable, [sys.executable, "-m", "jarvis", *sys.argv[1:]])
 
 
 def main() -> int:

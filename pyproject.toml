@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jarvis-stt"
-description = "STT в реальном времени: parec -> VAD -> чанки по паузам -> faster-whisper -> OpenAI-совместимый ассистент"
+name = "jarvis"
+description = "Jarvis — голосовой ассистент: parec -> VAD -> faster-whisper -> OpenAI-совместимый LLM"
 readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["version"]
@@ -22,10 +22,10 @@ cuda = [
 ]
 
 [project.scripts]
-jarvis-stt = "stt_stream.bootstrap:main"
+jarvis = "jarvis.bootstrap:main"
 
 [tool.setuptools.packages.find]
-include = ["stt_stream*"]
+include = ["jarvis*"]
 
 [tool.setuptools.dynamic]
-version = { attr = "stt_stream.__version__" }
+version = { attr = "jarvis.__version__" }
