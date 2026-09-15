@@ -1,9 +1,9 @@
 """Озвучка ответов через Fish Audio S2 Pro (s2.cpp).
 
 Синтез идёт в ``POST {TTS_URL}`` (multipart/form-data), голос берётся из
-профиля ``.s2voice``. Сервер s2.cpp держит модель в VRAM; Jarvis при
-необходимости поднимает его сам (``TTS_AUTOSTART``) и оставляет работать после
-выхода, чтобы модель оставалась загруженной.
+профиля ``.s2voice``. Сервер s2.cpp держит модель в VRAM: Jarvis поднимает его
+при старте (``TTS_AUTOSTART``), если он ещё не запущен, и останавливает при
+выходе. Если сервер был запущен извне, Jarvis им не управляет.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import socket
 import subprocess
 import threading
@@ -65,6 +66,7 @@ class Speaker:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+        self._stop_server()
 
     def submit(self, text: str) -> None:
         text = (text or "").strip()
@@ -105,7 +107,33 @@ class Speaker:
             cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
         )
         log.close()
-        self._wait_server()
+        try:
+            self._wait_server()
+        except Exception:
+            self._stop_server()
+            raise
+
+    def _stop_server(self) -> None:
+        """Остановить сервер, если его запустил Jarvis (в своём процессе-группе)."""
+        proc = self._server
+        if proc is None:
+            return
+        self._server = None
+        if proc.poll() is not None:
+            return
+        print("Остановка TTS-сервера...", flush=True)
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
 
     def _wait_server(self) -> None:
         deadline = time.time() + SERVER_START_TIMEOUT
