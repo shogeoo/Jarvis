@@ -85,8 +85,9 @@ $EDITOR system_prompt.txt  # мастер-промпт
 ## TTS (Fish Audio S2 Pro)
 
 Ответ LLM озвучивается через [s2.cpp](https://github.com/rodrigomatta/s2.cpp)
-(`q4_k_m`, CUDA). Jarvis сам поднимает сервер, если он не запущен, и оставляет
-его работать после выхода — модель постоянно остаётся в VRAM.
+(`q4_k_m`, CUDA). Jarvis сам поднимает сервер при старте, если он не запущен, и
+останавливает его при выходе — модель в VRAM только пока работает Jarvis.
+Внешний сервер (запущенный вручную) Jarvis не трогает.
 
 Референсный голос уже в репозитории: `assets/voices/jarvis_reference.mp3` и
 `assets/voices/jarvis_reference.txt`. При первом запуске профиль
