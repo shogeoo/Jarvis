@@ -10,8 +10,9 @@ parec (PulseAudio/PipeWire)
                      └─> queue.Queue                передача сегментов рабочему потоку
                            └─> Transcriber          jarvis/transcribe.py  faster-whisper, CUDA/CPU
                                  ├─> Printer        jarvis/printer.py     строка текста + пустая строка
-                                 └─> Assistant      jarvis/assistant.py   реплики -> OpenAI-совместимый API
-                                       └─> Printer  jarvis/printer.py     ответ "Jarvis: ..."
+                                 └─> Assistant      jarvis/assistant.py   реплики -> LLM (chat/completions)
+                                       ├─> Printer  jarvis/printer.py     ответ "Jarvis: ..."
+                                       └─> Speaker  jarvis/tts.py         ответ -> s2.cpp /generate -> ffplay
 ```
 
 ## Компоненты
@@ -30,15 +31,22 @@ parec (PulseAudio/PipeWire)
 - **`bootstrap`** — до импорта CTranslate2 добавляет каталоги
   `nvidia/{cublas,cudnn}/lib` из venv в `LD_LIBRARY_PATH`; при изменении env
   перезапускает процесс.
-- **`config`** — читает `.env` (`OPENAI_API_KEY`, `OPENAI_BASE_URL`,
-  `OPENAI_MODEL`) и мастер-промпт из `system_prompt.txt`; ассистент включается,
-  если задана модель.
+- **`config`** — читает `.env` (LLM: `LLM_API_KEY`, `LLM_BASE_URL`,
+  `LLM_MODEL`; TTS: `TTS_*`) и мастер-промпт из `system_prompt.txt`.
+  Ассистент включается при заданной `LLM_MODEL`, озвучка — при `TTS_ENABLED`.
 - **`assistant.Assistant`** — держит `system`-промпт и полную историю
   сообщений. `submit(text)` кладёт
   реплику в очередь; отдельный поток, как освободится, забирает все
   накопившиеся реплики, отправляет их одним запросом `chat/completions` и
-  передаёт ответ в `Printer.print_reply`. Ошибки сети печатаются в stderr, а
+  передаёт ответ в `on_reply`. Ошибки сети печатаются в stderr, а
   реплики остаются в истории и уходят при следующей отправке.
+- **`tts.Speaker`** — очередь ответов в отдельном потоке. Проверяет
+  `TTS_URL`; если сервер не поднят и `TTS_AUTOSTART=true`, запускает бинарь
+  `s2.cpp` (`--server`, `TTS_SERVER_ARGS`) и ждёт готовности по TCP. Профиль
+  голоса `.s2voice` создаётся из `TTS_REFERENCE`/`TTS_REFERENCE_TEXT`, если
+  отсутствует. Синтез — `POST {TTS_URL}` (multipart, `stream/chunked/pcm_s16le`),
+  воспроизведение — `ffplay` (сэмплрейт из `X-Audio-Sample-Rate`). Запущенный
+  сервер остаётся жить после выхода Jarvis — модель остаётся в VRAM.
 
 ## Инварианты
 
@@ -50,9 +58,13 @@ parec (PulseAudio/PipeWire)
 - На выходе — по строке на сегмент, между расшифровками пустая строка.
 - История диалога не обрезается: каждая реплика пользователя и ответ
   ассистента остаются в `messages` до конца сессии.
+- Пока Jarvis запущен, в VRAM резидентны и STT (whisper в процессе Jarvis), и
+  TTS (отдельный процесс `s2.cpp`). Запущенный Speaker сервер после выхода не
+  останавливается.
 
 ## Точки расширения
 
 - Другой источник звука — заменить `MicStream` (интерфейс: очередь `frames`).
 - Другой детектор речи — заменить `SileroVAD.is_speech`/`reset`.
 - Другой ASR — заменить `Transcriber.transcribe_file(path) -> str`.
+- Другой TTS — заменить `Speaker` (интерфейс: `submit(text)`, `stop()`).
