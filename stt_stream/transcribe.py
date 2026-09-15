@@ -1,4 +1,4 @@
-"""Транскрипция аудио-чанков через faster-whisper (large-v3, CUDA).
+"""Транскрипция аудио-чанков через faster-whisper (large-v3-turbo, CUDA).
 
 Язык ограничен списком допустимых (по умолчанию ru/en): если
 автоопределение whisper выдало язык вне списка — сегмент транскрибируется
@@ -11,7 +11,7 @@ from faster_whisper import WhisperModel
 
 
 class Transcriber:
-    def __init__(self, model_name: str = "large-v3", device: str = "cuda",
+    def __init__(self, model_name: str = "large-v3-turbo", device: str = "cuda",
                  language: str | None = None, compute_type: str | None = None,
                  languages: tuple[str, ...] = ("ru", "en")):
         self.model_name = model_name
