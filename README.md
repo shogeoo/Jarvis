@@ -65,23 +65,21 @@ VAD-модель silero скачивается автоматически в `mo
 
 ## Нейросеть (OpenAI-совместимый API)
 
-Если задана переменная `OPENAI_MODEL`, каждая расшифровка уходит в
+Параметры API задаются в `.env` (шаблон — `.env.example`), мастер-промпт —
+в `system_prompt.txt`. Если задан `OPENAI_MODEL`, каждая расшифровка уходит в
 OpenAI-совместимый чат, а ответ печатается с префиксом `Jarvis:`. Ассистент
-держит контекст (system-промпт + вся история сообщений, без обрезки) и
+держит контекст (мастер-промпт + вся история сообщений, без обрезки) и
 работает в отдельном потоке: пока он занят, новые реплики накапливаются и
 отправляются одним запросом.
 
 ```bash
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://api.openai.com/v1        # или свой эндпоинт
-export OPENAI_MODEL=gpt-4o-mini
-export JARVIS_SYSTEM="Ты — Jarvis, отвечай кратко."     # необязательно
+cp .env.example .env        # заполни OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+$EDITOR system_prompt.txt   # мастер-промпт
 .venv/bin/jarvis
 ```
 
-Флаги `--llm-model`, `--llm-base-url`, `--llm-api-key`, `--llm-system`
-переопределяют переменные; `--no-llm` выключает нейросеть. Без
-`OPENAI_MODEL`/`--llm-model` работает только расшифровка.
+Пути переопределяются флагами `--env-file` и `--system-prompt`; `--no-llm`
+выключает нейросеть. Без `OPENAI_MODEL` в `.env` работает только расшифровка.
 
 ## Параметры
 
@@ -100,10 +98,8 @@ export JARVIS_SYSTEM="Ты — Jarvis, отвечай кратко."     # не�
 | `--keep-audio` | — | Не удалять WAV после расшифровки |
 | `--input-device` | — | Имя источника PulseAudio |
 | `--list-devices` | — | Список источников PulseAudio и выход |
-| `--llm-model` | env `OPENAI_MODEL` | Модель API; без неё нейросеть выключена |
-| `--llm-base-url` | env `OPENAI_BASE_URL` | Эндпоинт OpenAI-совместимого API |
-| `--llm-api-key` | env `OPENAI_API_KEY` | API-ключ |
-| `--llm-system` | env `JARVIS_SYSTEM` | System-промпт ассистента |
+| `--env-file` | `.env` | Файл с параметрами API |
+| `--system-prompt` | `system_prompt.txt` | Файл мастер-промпта |
 | `--no-llm` | — | Только расшифровка, без нейросети |
 
 ## Документация
