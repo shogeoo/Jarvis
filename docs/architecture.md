@@ -45,8 +45,9 @@ parec (PulseAudio/PipeWire)
   `s2.cpp` (`--server`, `TTS_SERVER_ARGS`) и ждёт готовности по TCP. Профиль
   голоса `.s2voice` создаётся из `TTS_REFERENCE`/`TTS_REFERENCE_TEXT`, если
   отсутствует. Синтез — `POST {TTS_URL}` (multipart, `stream/chunked/pcm_s16le`),
-  воспроизведение — `ffplay` (сэмплрейт из `X-Audio-Sample-Rate`). Запущенный
-  сервер остаётся жить после выхода Jarvis — модель остаётся в VRAM.
+  воспроизведение — `ffplay` (сэмплрейт из `X-Audio-Sample-Rate`). Сервер,
+  запущенный Jarvis, останавливается при выходе (`Speaker.stop()`), так что
+  модель в VRAM только пока работает Jarvis; внешний сервер не трогается.
 
 ## Инварианты
 
@@ -59,7 +60,7 @@ parec (PulseAudio/PipeWire)
 - История диалога не обрезается: каждая реплика пользователя и ответ
   ассистента остаются в `messages` до конца сессии.
 - Пока Jarvis запущен, в VRAM резидентны и STT (whisper в процессе Jarvis), и
-  TTS (отдельный процесс `s2.cpp`). Запущенный Speaker сервер после выхода не
+  TTS (отдельный процесс `s2.cpp`); при выходе сервер, запущенный Jarvis,
   останавливается.
 
 ## Точки расширения
