@@ -40,7 +40,7 @@ class Transcriber:
                 f"Причина: {exc}\n\n"
                 "Для CUDA нужны библиотеки cuBLAS/cuDNN. Установи:\n"
                 "  pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
-                "и запускай через run_stt.sh (он выставляет LD_LIBRARY_PATH)."
+                "или переустанови пакет с extra: pip install -e '.[cuda]'."
             ) from exc
         print("Модель загружена", flush=True)
 
