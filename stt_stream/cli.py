@@ -1,6 +1,8 @@
 """CLI: реальное время STT.
 
 Микрофон -> VAD -> запись чанка в WAV -> whisper -> строка текста.
+Если задана модель OpenAI-совместимого API, расшифровка также уходит в
+нейросеть, а её ответ печатается в консоль.
 """
 
 from __future__ import annotations
@@ -65,6 +67,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input-device", default=None, help="Имя источника PulseAudio")
     p.add_argument("--list-devices", action="store_true",
                    help="Список источников PulseAudio и выход")
+    p.add_argument("--llm-model", default=os.environ.get("OPENAI_MODEL"),
+                   help="Модель OpenAI-совместимого API (env OPENAI_MODEL); "
+                        "если не задана — нейросеть выключена")
+    p.add_argument("--llm-base-url", default=os.environ.get("OPENAI_BASE_URL"),
+                   help="Эндпоинт API (env OPENAI_BASE_URL)")
+    p.add_argument("--llm-api-key", default=os.environ.get("OPENAI_API_KEY"),
+                   help="API-ключ (env OPENAI_API_KEY)")
+    p.add_argument("--llm-system", default=os.environ.get("JARVIS_SYSTEM"),
+                   help="System-промпт ассистента (env JARVIS_SYSTEM)")
+    p.add_argument("--no-llm", action="store_true",
+                   help="Отключить нейросеть, только расшифровка")
     return p
 
 
@@ -75,6 +88,18 @@ def main(argv=None) -> int:
 
     ensure_model()
     printer = Printer()
+
+    assistant = None
+    if not args.no_llm and args.llm_model:
+        from .assistant import Assistant
+
+        assistant = Assistant(
+            model=args.llm_model,
+            base_url=args.llm_base_url,
+            api_key=args.llm_api_key,
+            system=args.llm_system,
+            on_reply=printer.print_reply,
+        ).start()
 
     vad = SileroVAD(threshold=args.threshold)
     segmenter = Segmenter(
@@ -106,6 +131,8 @@ def main(argv=None) -> int:
                 except OSError:
                     pass
             printer.print_segment(text)
+            if assistant is not None:
+                assistant.submit(text)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -132,4 +159,6 @@ def main(argv=None) -> int:
             out_queue.put(final)
         out_queue.put(None)
         thread.join(timeout=60)
+        if assistant is not None:
+            assistant.stop()
     return 0

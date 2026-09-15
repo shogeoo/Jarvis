@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-stt"
-description = "STT в реальном времени: parec -> VAD -> чанки по паузам -> faster-whisper"
+description = "STT в реальном времени: parec -> VAD -> чанки по паузам -> faster-whisper -> OpenAI-совместимый ассистент"
 readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["version"]
@@ -12,6 +12,7 @@ dependencies = [
     "faster-whisper>=1.1",
     "numpy>=1.26",
     "onnxruntime>=1.20",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
