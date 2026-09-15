@@ -14,6 +14,7 @@ import subprocess
 import threading
 
 from .audio import FRAME_SIZE, MicStream
+from .config import load_config
 from .printer import Printer
 from .transcribe import Transcriber
 from .vad import Segmenter, SileroVAD, ensure_model
@@ -67,15 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input-device", default=None, help="Имя источника PulseAudio")
     p.add_argument("--list-devices", action="store_true",
                    help="Список источников PulseAudio и выход")
-    p.add_argument("--llm-model", default=os.environ.get("OPENAI_MODEL"),
-                   help="Модель OpenAI-совместимого API (env OPENAI_MODEL); "
-                        "если не задана — нейросеть выключена")
-    p.add_argument("--llm-base-url", default=os.environ.get("OPENAI_BASE_URL"),
-                   help="Эндпоинт API (env OPENAI_BASE_URL)")
-    p.add_argument("--llm-api-key", default=os.environ.get("OPENAI_API_KEY"),
-                   help="API-ключ (env OPENAI_API_KEY)")
-    p.add_argument("--llm-system", default=os.environ.get("JARVIS_SYSTEM"),
-                   help="System-промпт ассистента (env JARVIS_SYSTEM)")
+    p.add_argument("--env-file", default=None,
+                   help="Файл с параметрами API (по умолчанию .env в корне проекта)")
+    p.add_argument("--system-prompt", default=None,
+                   help="Файл мастер-промпта (по умолчанию system_prompt.txt)")
     p.add_argument("--no-llm", action="store_true",
                    help="Отключить нейросеть, только расшифровка")
     return p
@@ -90,16 +86,18 @@ def main(argv=None) -> int:
     printer = Printer()
 
     assistant = None
-    if not args.no_llm and args.llm_model:
-        from .assistant import Assistant
+    if not args.no_llm:
+        config = load_config(args.env_file, args.system_prompt)
+        if config.llm_enabled:
+            from .assistant import Assistant
 
-        assistant = Assistant(
-            model=args.llm_model,
-            base_url=args.llm_base_url,
-            api_key=args.llm_api_key,
-            system=args.llm_system,
-            on_reply=printer.print_reply,
-        ).start()
+            assistant = Assistant(
+                model=config.model,
+                base_url=config.base_url,
+                api_key=config.api_key,
+                system=config.system,
+                on_reply=printer.print_reply,
+            ).start()
 
     vad = SileroVAD(threshold=args.threshold)
     segmenter = Segmenter(

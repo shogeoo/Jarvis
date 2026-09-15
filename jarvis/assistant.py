@@ -15,8 +15,6 @@ from typing import Callable
 
 from openai import OpenAI
 
-DEFAULT_SYSTEM = "Ты — Jarvis, голосовой ассистент. Отвечай кратко и по делу."
-
 
 class Assistant:
     """Обёртка над chat/completions с контекстом диалога в отдельном потоке."""
@@ -26,14 +24,16 @@ class Assistant:
         model: str,
         base_url: str | None = None,
         api_key: str | None = None,
-        system: str | None = None,
+        system: str = "",
         on_reply: Callable[[str], None] | None = None,
         timeout: float = 60.0,
     ):
         self.model = model
-        self.system = system or DEFAULT_SYSTEM
+        self.system = system
         self.on_reply = on_reply
-        self.messages: list[dict] = [{"role": "system", "content": self.system}]
+        self.messages: list[dict] = []
+        if system:
+            self.messages.append({"role": "system", "content": system})
         self.client = OpenAI(
             base_url=base_url or None,
             api_key=api_key or None,
