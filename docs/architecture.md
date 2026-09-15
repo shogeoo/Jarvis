@@ -30,8 +30,11 @@ parec (PulseAudio/PipeWire)
 - **`bootstrap`** — до импорта CTranslate2 добавляет каталоги
   `nvidia/{cublas,cudnn}/lib` из venv в `LD_LIBRARY_PATH`; при изменении env
   перезапускает процесс.
-- **`assistant.Assistant`** — если задана модель (`OPENAI_MODEL`/`--llm-model`),
-  держит `system`-промпт и полную историю сообщений. `submit(text)` кладёт
+- **`config`** — читает `.env` (`OPENAI_API_KEY`, `OPENAI_BASE_URL`,
+  `OPENAI_MODEL`) и мастер-промпт из `system_prompt.txt`; ассистент включается,
+  если задана модель.
+- **`assistant.Assistant`** — держит `system`-промпт и полную историю
+  сообщений. `submit(text)` кладёт
   реплику в очередь; отдельный поток, как освободится, забирает все
   накопившиеся реплики, отправляет их одним запросом `chat/completions` и
   передаёт ответ в `Printer.print_reply`. Ошибки сети печатаются в stderr, а
