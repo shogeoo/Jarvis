@@ -1,8 +1,8 @@
 """CLI: реальное время STT.
 
 Микрофон -> VAD -> запись чанка в WAV -> whisper -> строка текста.
-Если задана модель LLM, расшифровка уходит в неё, а ответ печатается и
-озвучивается через Fish Audio S2 Pro (s2.cpp).
+Если задана модель LLM, расшифровка уходит в неё, а ответ озвучивается через
+Fish Audio S2 Pro (s2.cpp). Model-visible JSON выводится в CLI без изменений.
 """
 
 from __future__ import annotations
@@ -85,6 +85,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def publish_stt_event(event_bus, speaker, text: str) -> None:
+    """Передать STT-событие main и после этого перебить текущий TTS."""
+
+    event_bus.publish(
+        Event(
+            type="speech",
+            data={"text": text},
+            source="stt",
+            target="main",
+        )
+    )
+    if speaker is not None:
+        speaker.interrupt()
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.list_devices:
@@ -139,7 +154,7 @@ def main(argv=None) -> int:
         register_builtin_actions(
             action_registry,
             agent_manager,
-            printer=printer,
+            printer=None,
             speaker=speaker,
         )
         module_manager.load_all()
@@ -175,16 +190,10 @@ def main(argv=None) -> int:
                     os.remove(item["path"])
                 except OSError:
                     pass
-            printer.print_segment(text)
             if event_bus is not None:
-                event_bus.publish(
-                    Event(
-                        type="speech",
-                        data={"text": text},
-                        source="stt",
-                        target="main",
-                    )
-                )
+                publish_stt_event(event_bus, speaker, text)
+            else:
+                printer.print_segment(text)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
