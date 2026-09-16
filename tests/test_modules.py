@@ -128,15 +128,17 @@ def create_module():
             self.assertIn("example.run", action_registry.for_agent("main"))
             self.assertIn("example.run", action_registry.for_agent("developer"))
             self.assertNotIn("example.run", action_registry.for_agent("other"))
-            with self.assertRaises(ValueError):
-                manager.copy(
-                    "example",
-                    source_scope="developer",
-                    target_scope="main",
-                )
+            copied = manager.copy(
+                "example",
+                source_scope="developer",
+                target_scope="other",
+            )
+            self.assertEqual(copied["target_scope"], "other")
+            self.assertIn("example.run", action_registry.for_agent("other"))
             manager.unload("example", scope="main")
             self.assertIn("example.run", action_registry.for_agent("developer"))
             manager.unload("example", scope="developer")
+            manager.unload("example", scope="other")
 
 
 if __name__ == "__main__":

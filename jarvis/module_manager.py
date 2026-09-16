@@ -386,8 +386,6 @@ class ModuleManager:
         self.validate_name(module_name)
         self.validate_scope(source_scope)
         self.validate_scope(target_scope)
-        if source_scope != MAIN_SCOPE and target_scope == MAIN_SCOPE:
-            raise ValueError("Инструмент субагента нельзя копировать в main")
         source = self.module_path(module_name, source_scope)
         target = self.module_path(module_name, target_scope)
         if not source.is_dir():
