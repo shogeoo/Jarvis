@@ -306,6 +306,8 @@ class Speaker:
                 rate = int(resp.headers.get("X-Audio-Sample-Rate", "44100"))
                 self._play(resp.iter_content(chunk_size=8192), rate, request)
         except Exception as exc:  # noqa: BLE001
+            if request.interrupted.is_set():
+                raise SpeechInterrupted("interrupted") from None
             if isinstance(exc, SpeechInterrupted):
                 raise
             print(f"Ошибка синтеза речи: {exc}", file=os.sys.stderr, flush=True)
