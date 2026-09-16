@@ -2,6 +2,7 @@ import json
 import threading
 import time
 import unittest
+from concurrent.futures import Future
 
 from jarvis.debug import Debugger
 from jarvis.module_manager import ModuleManager
@@ -39,6 +40,16 @@ class _Completions:
 class _Client:
     def __init__(self, first_output):
         self.chat = type("Chat", (), {"completions": _Completions(first_output)})()
+
+
+class _DeferredSpeaker:
+    def __init__(self):
+        self.submitted = threading.Event()
+        self.future = Future()
+
+    def submit(self, text):
+        self.submitted.set()
+        return self.future
 
 
 class RuntimeTests(unittest.TestCase):
@@ -124,6 +135,65 @@ class RuntimeTests(unittest.TestCase):
             values,
         )
         manager.shutdown()
+
+    def test_speech_keeps_agent_busy_until_playback_finishes(self):
+        events = EventRegistry()
+        register_builtin_events(events)
+        actions = ActionRegistry()
+        bus = EventBus(events, debug=Debugger(enabled=False))
+        modules = ModuleManager(bus, actions, events, debug=Debugger(enabled=False))
+        speaker = _DeferredSpeaker()
+
+        def speech_action(data, context):
+            speaker.submit(data["text"]).result()
+            return {"spoken": True}
+
+        actions.register(
+            ActionSpec(
+                type="speech",
+                description="speech",
+                data_schema=object_schema({"text": {"type": "string"}}),
+                handler=speech_action,
+                audiences=frozenset({"main"}),
+                owner="test",
+            )
+        )
+        actions.register(
+            ActionSpec(
+                type="no_action",
+                description="wait",
+                data_schema=empty_object_schema(),
+                handler=lambda data, context: None,
+                owner="builtin",
+            )
+        )
+        client = _Client(
+            '{"actions":[{"type":"speech","data":{"text":"ответ"}}]}'
+        )
+        manager = AgentManager(
+            model="test",
+            client=client,
+            actions=actions,
+            events=events,
+            bus=bus,
+            module_manager=modules,
+            debug=Debugger(enabled=False),
+        )
+        manager.create_main("test")
+        try:
+            bus.publish(Event(type="speech", data={"text": "первое"}))
+            self.assertTrue(speaker.submitted.wait(timeout=2))
+            bus.publish(Event(type="speech", data={"text": "второе"}))
+            time.sleep(0.05)
+            self.assertEqual(len(client.chat.completions.calls), 1)
+
+            speaker.future.set_result({"spoken": True})
+            deadline = time.time() + 2
+            while len(client.chat.completions.calls) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(len(client.chat.completions.calls), 2)
+        finally:
+            manager.shutdown()
 
 
 if __name__ == "__main__":

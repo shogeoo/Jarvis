@@ -356,7 +356,7 @@ def _speech(printer: Any, speaker: Any):
             printer.print_reply(text)
         if speaker is None:
             return {"spoken": False, "reason": "tts_disabled"}
-        speaker.submit(text)
+        speaker.submit(text).result()
         return {"spoken": True}
 
     return handler

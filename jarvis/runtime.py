@@ -68,7 +68,6 @@ class EventBus:
                 event=event.debug_value(),
             )
             return False
-        self.debug.event("deliver", target, event)
         agent.enqueue(event)
         return True
 
@@ -187,6 +186,7 @@ class Agent:
         self._set_state("thinking", event_count=len(events))
         for event in events:
             self.history.append({"role": "user", "content": event.model_content()})
+            self.manager.debug.input(event)
         specs = self.available_actions()
         schema = {name: spec.data_schema for name, spec in specs.items()}
         try:
@@ -199,6 +199,7 @@ class Agent:
             refusal = getattr(message, "refusal", None)
             content = message.content or ""
             self.history.append({"role": "assistant", "content": content})
+            self.manager.debug.model(self.agent_id, content)
             if refusal:
                 raise RuntimeError(f"Модель отказалась выполнить запрос: {refusal}")
             value = json.loads(content)
@@ -211,7 +212,6 @@ class Agent:
             for action in actions:
                 if action.type not in specs:
                     raise ValueError(f"Действие недоступно этому агенту: {action.type}")
-            self.manager.debug.model(self.agent_id, content, actions=actions)
         except Exception as exc:  # noqa: BLE001
             self._model_failure(exc)
             return
