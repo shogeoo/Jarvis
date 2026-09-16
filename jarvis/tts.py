@@ -16,6 +16,8 @@ import socket
 import subprocess
 import threading
 import time
+from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -37,15 +39,30 @@ STREAM_PARAMS = {
 }
 
 
+class SpeechInterrupted(RuntimeError):
+    """Реплика не была воспроизведена из-за перебивания пользователя."""
+
+
+@dataclass(slots=True)
+class _SpeechRequest:
+    text: str
+    future: Future
+    interrupted: threading.Event
+
+
 class Speaker:
     """Очередь реплик -> синтез на s2.cpp -> воспроизведение через ffplay."""
 
     def __init__(self, config: Config):
         self.cfg = config
-        self._queue: "queue.Queue[str]" = queue.Queue()
+        self._queue: "queue.Queue[_SpeechRequest]" = queue.Queue()
         self._stop = threading.Event()
+        self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._server: subprocess.Popen | None = None
+        self._current: _SpeechRequest | None = None
+        self._response: requests.Response | None = None
+        self._player: subprocess.Popen | None = None
         self._host, self._port = self._parse_url(config.tts_url)
 
     @staticmethod
@@ -63,15 +80,58 @@ class Speaker:
         return self
 
     def stop(self, timeout: float = 20.0) -> None:
+        self.interrupt()
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         self._stop_server()
 
-    def submit(self, text: str) -> None:
+    def submit(self, text: str) -> Future:
         text = (text or "").strip()
-        if text:
-            self._queue.put(text)
+        future: Future = Future()
+        if not text:
+            future.set_result({"spoken": False})
+            return future
+        with self._lock:
+            if self._stop.is_set():
+                future.set_exception(RuntimeError("speaker_stopped"))
+                return future
+            self._queue.put(
+                _SpeechRequest(
+                    text=text,
+                    future=future,
+                    interrupted=threading.Event(),
+                )
+            )
+        return future
+
+    def interrupt(self) -> int:
+        """Остановить текущую реплику и отменить всю очередь озвучки.
+
+        Каждая отменённая заявка получает собственное исключение, поэтому
+        ожидающее её действие speech вернёт отдельный action_result.
+        """
+
+        requests: list[_SpeechRequest] = []
+        with self._lock:
+            if self._current is not None and not self._current.future.done():
+                requests.append(self._current)
+            while True:
+                try:
+                    requests.append(self._queue.get_nowait())
+                except queue.Empty:
+                    break
+            response = self._response
+            player = self._player
+            for request in requests:
+                request.interrupted.set()
+                if not request.future.done():
+                    request.future.set_exception(SpeechInterrupted("interrupted"))
+        if response is not None:
+            response.close()
+        if player is not None and player.poll() is None:
+            player.terminate()
+        return len(requests)
 
     # --- server ------------------------------------------------------
     def _base_cmd(self) -> list[str]:
@@ -190,14 +250,27 @@ class Speaker:
     def _run(self) -> None:
         while not (self._stop.is_set() and self._queue.empty()):
             try:
-                text = self._queue.get(timeout=0.1)
+                with self._lock:
+                    request = self._queue.get(timeout=0.1)
+                    self._current = request
             except queue.Empty:
                 continue
-            self._speak(text)
+            try:
+                self._speak(request)
+                with self._lock:
+                    if not request.future.done():
+                        request.future.set_result({"spoken": True})
+            except Exception as exc:  # noqa: BLE001
+                if not request.future.done():
+                    request.future.set_exception(exc)
+            finally:
+                with self._lock:
+                    if self._current is request:
+                        self._current = None
 
-    def _speak(self, text: str) -> None:
+    def _speak(self, request: _SpeechRequest) -> None:
         form = {
-            "text": (None, text),
+            "text": (None, request.text),
             "voice": (None, self.cfg.tts_voice),
             "voice_dir": (None, str(self.cfg.tts_voice_dir)),
             "params": (None, json.dumps(STREAM_PARAMS)),
@@ -206,13 +279,23 @@ class Speaker:
             with requests.post(
                 self.cfg.tts_url, files=form, stream=True, timeout=(5, 600)
             ) as resp:
+                with self._lock:
+                    self._response = resp
+                if request.interrupted.is_set():
+                    raise SpeechInterrupted("interrupted")
                 resp.raise_for_status()
                 rate = int(resp.headers.get("X-Audio-Sample-Rate", "44100"))
-                self._play(resp.iter_content(chunk_size=8192), rate)
+                self._play(resp.iter_content(chunk_size=8192), rate, request)
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, SpeechInterrupted):
+                raise
             print(f"Ошибка синтеза речи: {exc}", file=os.sys.stderr, flush=True)
+            raise
+        finally:
+            with self._lock:
+                self._response = None
 
-    def _play(self, chunks, rate: int) -> None:
+    def _play(self, chunks, rate: int, request: _SpeechRequest) -> None:
         cmd = [
             "ffplay", "-autoexit", "-nodisp", "-loglevel", "error", "-infbuf",
             "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
@@ -224,16 +307,27 @@ class Speaker:
                 "ffplay не найден (пакет ffmpeg). Установи ffmpeg для озвучки.",
                 file=os.sys.stderr, flush=True,
             )
-            return
+            raise RuntimeError("ffplay_not_found")
+        with self._lock:
+            self._player = proc
         try:
             for chunk in chunks:
+                if request.interrupted.is_set():
+                    raise SpeechInterrupted("interrupted")
                 try:
                     proc.stdin.write(chunk)  # type: ignore[union-attr]
                 except (BrokenPipeError, OSError):
                     break
         finally:
+            if request.interrupted.is_set() and proc.poll() is None:
+                proc.terminate()
             try:
                 proc.stdin.close()  # type: ignore[union-attr]
             except (BrokenPipeError, OSError):
                 pass
             proc.wait()
+            with self._lock:
+                if self._player is proc:
+                    self._player = None
+        if request.interrupted.is_set():
+            raise SpeechInterrupted("interrupted")
