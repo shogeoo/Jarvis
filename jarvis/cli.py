@@ -1,8 +1,8 @@
 """CLI: реальное время STT.
 
 Микрофон -> VAD -> запись чанка в WAV -> whisper -> строка текста.
-Если задана модель LLM, расшифровка уходит в неё, а ответ печатается и
-озвучивается через Fish Audio S2 Pro (s2.cpp).
+Если задана модель LLM, расшифровка уходит в неё, а ответ озвучивается через
+Fish Audio S2 Pro (s2.cpp). Model-visible JSON выводится в CLI без изменений.
 """
 
 from __future__ import annotations
@@ -14,8 +14,14 @@ import subprocess
 import threading
 
 from .audio import FRAME_SIZE, MicStream
+from .builtin import register_builtin_actions, register_builtin_events
 from .config import load_config
+from .debug import Debugger
+from .module_manager import ModuleManager
 from .printer import Printer
+from .protocol import Event
+from .registry import ActionRegistry, EventRegistry
+from .runtime import AgentManager, EventBus
 from .transcribe import Transcriber
 from .vad import Segmenter, SileroVAD, ensure_model
 
@@ -79,6 +85,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def publish_stt_event(event_bus, speaker, text: str) -> None:
+    """Передать STT-событие main и после этого перебить текущий TTS."""
+
+    event_bus.publish(
+        Event(
+            type="speech",
+            data={"text": text},
+            source="stt",
+            target="main",
+        )
+    )
+    if speaker is not None:
+        speaker.interrupt()
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.list_devices:
@@ -98,22 +119,47 @@ def main(argv=None) -> int:
             print(exc, file=os.sys.stderr)
             speaker = None
 
-    def on_reply(answer: str) -> None:
-        printer.print_reply(answer)
-        if speaker is not None:
-            speaker.submit(answer)
-
-    assistant = None
+    agent_manager = None
+    event_bus = None
     if not args.no_llm and config.llm_enabled:
-        from .assistant import Assistant
+        from openai import OpenAI
 
-        assistant = Assistant(
+        debug = Debugger(enabled=True)
+        event_registry = EventRegistry()
+        register_builtin_events(event_registry)
+        action_registry = ActionRegistry()
+        event_bus = EventBus(event_registry, debug=debug)
+        module_manager = ModuleManager(
+            event_bus,
+            action_registry,
+            event_registry,
+            config=config,
+            debug=debug,
+        )
+        client = OpenAI(
+            base_url=config.base_url or None,
+            api_key=config.api_key or None,
+            timeout=60.0,
+        )
+        agent_manager = AgentManager(
             model=config.model,
-            base_url=config.base_url,
-            api_key=config.api_key,
-            system=config.system,
-            on_reply=on_reply,
-        ).start()
+            client=client,
+            actions=action_registry,
+            events=event_registry,
+            bus=event_bus,
+            module_manager=module_manager,
+            config=config,
+            debug=debug,
+        )
+        register_builtin_actions(
+            action_registry,
+            agent_manager,
+            printer=None,
+            speaker=speaker,
+        )
+        module_manager.load_all()
+        agent_manager.create_main(config.system)
+        module_manager.start_all()
 
     vad = SileroVAD(threshold=args.threshold)
     segmenter = Segmenter(
@@ -144,9 +190,10 @@ def main(argv=None) -> int:
                     os.remove(item["path"])
                 except OSError:
                     pass
-            printer.print_segment(text)
-            if assistant is not None:
-                assistant.submit(text)
+            if event_bus is not None:
+                publish_stt_event(event_bus, speaker, text)
+            else:
+                printer.print_segment(text)
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -173,8 +220,8 @@ def main(argv=None) -> int:
             out_queue.put(final)
         out_queue.put(None)
         thread.join(timeout=60)
-        if assistant is not None:
-            assistant.stop()
+        if agent_manager is not None:
+            agent_manager.shutdown()
         if speaker is not None:
             speaker.stop()
     return 0
