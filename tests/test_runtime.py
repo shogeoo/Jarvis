@@ -183,11 +183,12 @@ class RuntimeTests(unittest.TestCase):
         try:
             bus.publish(Event(type="speech", data={"text": "первое"}))
             self.assertTrue(speaker.submitted.wait(timeout=2))
-            bus.publish(Event(type="speech", data={"text": "второе"}))
+            manager.hold(agent_id="main", until_event="speech")
+            speaker.future.set_result({"spoken": True})
             time.sleep(0.05)
             self.assertEqual(len(client.chat.completions.calls), 1)
 
-            speaker.future.set_result({"spoken": True})
+            bus.publish(Event(type="speech", data={"text": "второе"}))
             deadline = time.time() + 2
             while len(client.chat.completions.calls) < 2 and time.time() < deadline:
                 time.sleep(0.01)

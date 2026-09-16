@@ -86,15 +86,18 @@ class Segmenter:
         self._prev_end_idx = None
         self._idx = 0
         self._seq = 0
+        self._speech_started = False
 
     def feed(self, frame_int16):
         """Подать один чанк. Возвращает словарь сегмента или None."""
+        self._speech_started = False
         speech = self.vad.is_speech(frame_int16)
         result = None
         self._roll.append(frame_int16)
 
         if not self._recording:
             if speech:
+                self._speech_started = True
                 self.vad.reset()
                 if self._prev_end_idx is not None:
                     self._pause = (
@@ -139,6 +142,13 @@ class Segmenter:
 
         self._idx += 1
         return result
+
+    def consume_speech_started(self) -> bool:
+        """Забрать одноразовый сигнал начала нового речевого сегмента."""
+
+        started = self._speech_started
+        self._speech_started = False
+        return started
 
     def flush(self):
         """Завершить незакрытый сегмент при выходе. Возвращает словарь или None."""

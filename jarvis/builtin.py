@@ -1,7 +1,7 @@
 """Встроенные события и действия ядра Jarvis.
 
 Эти компоненты находятся в исходниках и никогда не загружаются из
-``.jarvis/modules``. Пользовательские модули получают тот же протокол через
+``modules/``. Пользовательские модули получают тот же протокол через
 публичный ``jarvis.module_api``.
 """
 
@@ -59,6 +59,8 @@ def builtin_event_definitions() -> list[EventDefinition]:
                 agent_id=STRING,
                 parent_id=STRING,
                 preset=STRING,
+                name=STRING,
+                agent_type=STRING,
                 task=STRING,
             ),
         ),
@@ -93,6 +95,7 @@ def builtin_event_definitions() -> list[EventDefinition]:
             _schema(
                 agent_id=STRING,
                 module=STRING,
+                scope=STRING,
                 operation={"type": "string", "enum": ["create", "update", "delete"]},
                 version=NULLABLE_STRING,
                 summary=STRING,
@@ -166,6 +169,7 @@ def register_builtin_actions(
             description="Запустить субагента параллельно с заданием.",
             data_schema=_schema(
                 preset=STRING,
+                name=STRING,
                 task=STRING,
                 system_prompt=NULLABLE_STRING,
                 actions={"type": "array", "items": STRING},
@@ -251,7 +255,7 @@ def register_builtin_actions(
         ActionSpec(
             type="module.create",
             description="Запустить разработчика для создания модуля.",
-            data_schema=_schema(module=STRING, request=STRING),
+            data_schema=_schema(module=STRING, scope=STRING, request=STRING),
             handler=_module_request(manager, "create"),
             audiences=frozenset({"main", "subagent"}),
             owner="builtin",
@@ -259,7 +263,7 @@ def register_builtin_actions(
         ActionSpec(
             type="module.update",
             description="Запустить разработчика для изменения модуля.",
-            data_schema=_schema(module=STRING, request=STRING),
+            data_schema=_schema(module=STRING, scope=STRING, request=STRING),
             handler=_module_request(manager, "update"),
             audiences=frozenset({"main", "subagent"}),
             owner="builtin",
@@ -267,7 +271,7 @@ def register_builtin_actions(
         ActionSpec(
             type="module.delete",
             description="Запустить разработчика для удаления модуля.",
-            data_schema=_schema(module=STRING, request=STRING),
+            data_schema=_schema(module=STRING, scope=STRING, request=STRING),
             handler=_module_request(manager, "delete"),
             audiences=frozenset({"main", "subagent"}),
             owner="builtin",
@@ -275,16 +279,18 @@ def register_builtin_actions(
         ActionSpec(
             type="module.list",
             description="Получить список подключённых модулей.",
-            data_schema=empty_object_schema(),
-            handler=lambda data, context: {"modules": manager.module_manager.list_modules()},
+            data_schema=_schema(scope=STRING),
+            handler=lambda data, context: {"modules": manager.module_manager.list_modules(data["scope"])},
             audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="module.describe",
             description="Получить полное описание подключённого модуля.",
-            data_schema=_schema(module=STRING),
-            handler=lambda data, context: manager.module_manager.describe(data["module"]),
+            data_schema=_schema(module=STRING, scope=STRING),
+            handler=lambda data, context: manager.module_manager.describe(
+                data["module"], scope=data["scope"]
+            ),
             audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
@@ -331,8 +337,10 @@ def register_builtin_actions(
         ActionSpec(
             type="module.validate",
             description="Проверить module.json и factory модуля без подключения.",
-            data_schema=_schema(module=STRING),
-            handler=lambda data, context: context.module_manager.validate(data["module"]),
+            data_schema=_schema(module=STRING, scope=STRING),
+            handler=lambda data, context: context.module_manager.validate(
+                data["module"], scope=data["scope"]
+            ),
             audiences=frozenset({"module_builder"}),
             owner="builtin",
         ),
@@ -342,6 +350,22 @@ def register_builtin_actions(
             data_schema=_schema(summary=STRING),
             handler=_module_complete(manager),
             audiences=frozenset({"module_builder"}),
+            owner="builtin",
+        ),
+        ActionSpec(
+            type="module.copy",
+            description="Скопировать модуль из main или одной области агента в другую.",
+            data_schema=_schema(
+                module=STRING,
+                source_scope=STRING,
+                target_scope=STRING,
+            ),
+            handler=lambda data, context: context.module_manager.copy(
+                data["module"],
+                source_scope=data["source_scope"],
+                target_scope=data["target_scope"],
+            ),
+            audiences=frozenset({"main", "module_builder"}),
             owner="builtin",
         ),
     ]
@@ -367,6 +391,7 @@ def _spawn(manager: AgentManager):
         return manager.spawn(
             parent_id=context.agent_id,
             preset=data["preset"],
+            name=data["name"],
             task=data["task"],
             system_prompt=data["system_prompt"],
             allowed_actions=data["actions"] or None,
@@ -419,10 +444,11 @@ def _complete(manager: AgentManager):
 def _module_request(manager: AgentManager, operation: str):
     def handler(data: dict[str, Any], context: Any) -> dict[str, Any]:
         module_name = data["module"]
+        scope = data["scope"]
         if manager.module_manager is None:
             raise RuntimeError("Менеджер модулей не инициализирован")
         manager.module_manager.validate_name(module_name)
-        workspace = manager.module_manager.modules_dir / module_name
+        workspace = manager.module_manager.module_path(module_name, scope)
         task = (
             f"Операция: {operation}. Модуль: {module_name}. Рабочая папка: {workspace}.\n"
             f"Требования родителя:\n{data['request']}\n"
@@ -431,10 +457,12 @@ def _module_request(manager: AgentManager, operation: str):
         result = manager.spawn(
             parent_id=context.agent_id,
             preset="module_builder",
+            name=f"module-builder-{scope}-{module_name}",
             task=task,
             metadata={
                 "preset": "module_builder",
                 "module": module_name,
+                "scope": scope,
                 "operation": operation,
                 "workspace": str(workspace),
             },
@@ -514,16 +542,18 @@ def _module_complete(manager: AgentManager):
         if module_manager is None:
             raise RuntimeError("Менеджер модулей не инициализирован")
         module_name = context.metadata.get("module")
+        scope = context.metadata.get("scope", "main")
         operation = context.metadata.get("operation")
         if not module_name or not operation:
             raise ValueError("У агента нет операции и имени модуля")
-        summary = module_manager.apply(operation, module_name)
+        summary = module_manager.apply(operation, module_name, scope=scope)
         manager.complete(
             agent_id=context.agent_id,
             summary=data["summary"],
             event_type="module.completed",
             extra={
                 "module": module_name,
+                "scope": scope,
                 "operation": operation,
                 "version": summary.get("version"),
                 "actions": [item["type"] for item in summary.get("actions", [])],

@@ -13,6 +13,7 @@ from typing import Any, Callable
 from .debug import Debugger
 from .config import ROOT
 from .module_api import ActionContext
+from .model_capabilities import ModelCapabilities
 from .prompts import agent_system_prompt
 from .protocol import (
     ActionRequest,
@@ -78,6 +79,7 @@ class Agent:
     def __init__(
         self,
         agent_id: str,
+        name: str,
         manager: "AgentManager",
         *,
         model: str,
@@ -87,8 +89,10 @@ class Agent:
         allowed_actions: set[str] | None = None,
         parent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        capabilities: ModelCapabilities | None = None,
     ):
         self.agent_id = agent_id
+        self.name = name
         self.manager = manager
         self.model = model
         self.client = client
@@ -97,16 +101,25 @@ class Agent:
         self.allowed_actions = allowed_actions
         self.parent_id = parent_id
         self.metadata = metadata or {}
+        self.capabilities = capabilities
         initial_specs = self.available_actions()
-        self.history: list[dict[str, str]] = [
+        self.history: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": agent_system_prompt(self.base_prompt, initial_specs),
+                "content": agent_system_prompt(
+                    self.base_prompt,
+                    initial_specs,
+                    capabilities=self.capabilities,
+                ),
             }
         ]
         self._events: "queue.Queue[Event | None]" = queue.Queue()
         self._stop = threading.Event()
         self._close_after_actions = threading.Event()
+        self._hold_until_event = threading.Event()
+        self._hold_released = threading.Event()
+        self._hold_released.set()
+        self._hold_event_type: str | None = None
         self._thread: threading.Thread | None = None
         self._future_lock = threading.Lock()
         self._active_futures: set[Future] = set()
@@ -150,13 +163,22 @@ class Agent:
                 event=event.debug_value(),
             )
             return
+        if self._hold_until_event.is_set() and event.type == self._hold_event_type:
+            self._hold_until_event.clear()
+            self._hold_released.set()
         self._events.put(event)
+
+    def hold_until(self, event_type: str) -> None:
+        self._hold_event_type = event_type
+        self._hold_released.clear()
+        self._hold_until_event.set()
 
     def request_close(self) -> None:
         self._close_after_actions.set()
 
     def stop(self, *, wait: bool = True, timeout: float = 10.0) -> None:
         self._stop.set()
+        self._hold_released.set()
         with self._future_lock:
             for future in self._active_futures:
                 future.cancel()
@@ -169,6 +191,17 @@ class Agent:
         while not self._stop.is_set():
             first = self._events.get()
             if first is None:
+                return
+            while self._hold_until_event.is_set() and not self._stop.is_set():
+                if first.type == self._hold_event_type:
+                    self._hold_until_event.clear()
+                    break
+                self._events.put(first)
+                self._hold_released.wait(timeout=0.1)
+                if self._stop.is_set():
+                    return
+                first = self._events.get()
+            if first is None or self._stop.is_set():
                 return
             batch = [first]
             while True:
@@ -185,8 +218,9 @@ class Agent:
     def _turn(self, events: list[Event]) -> None:
         self._set_state("thinking", event_count=len(events))
         for event in events:
-            self.history.append({"role": "user", "content": event.model_content()})
-            self.manager.debug.input(event)
+            message = event.model_message(self.capabilities)
+            self.history.append(message)
+            self.manager.debug.input(event, self.capabilities)
         specs = self.available_actions()
         schema = {name: spec.data_schema for name, spec in specs.items()}
         try:
@@ -342,6 +376,7 @@ class AgentManager:
         config: Any = None,
         debug: Debugger | None = None,
         max_workers: int = 16,
+        capabilities: ModelCapabilities | None = None,
     ):
         self.model = model
         self.client = client
@@ -350,6 +385,7 @@ class AgentManager:
         self.bus = bus
         self.module_manager = module_manager
         self.config = config
+        self.capabilities = capabilities
         self.debug = debug or Debugger(enabled=False)
         self.action_pool = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -384,7 +420,7 @@ class AgentManager:
                     name=raw["name"],
                     description=raw.get("description", ""),
                     system_prompt=raw["system_prompt"],
-                    audience="subagent",
+                    audience=raw.get("agent_type", raw["name"]),
                     allowed_actions=frozenset(raw.get("actions", [])) or None,
                 )
             except (KeyError, TypeError):
@@ -397,6 +433,7 @@ class AgentManager:
                 "name": preset.name,
                 "description": preset.description,
                 "system_prompt": preset.system_prompt,
+                "agent_type": preset.audience,
                 "actions": sorted(preset.allowed_actions or []),
             }
             for preset in sorted(self.presets.values(), key=lambda item: item.name)
@@ -425,6 +462,7 @@ class AgentManager:
                 name=name,
                 description=description,
                 system_prompt=system_prompt,
+                audience=name,
                 allowed_actions=frozenset(allowed_actions) or None,
             )
         )
@@ -457,11 +495,13 @@ class AgentManager:
                 return self.agents["main"]
             agent = Agent(
                 "main",
+                "main",
                 self,
                 model=self.model,
                 client=self.client,
                 base_prompt=system_prompt,
                 audience="main",
+                capabilities=self.capabilities,
             )
             self.agents[agent.agent_id] = agent
             self.bus.bind(agent)
@@ -473,6 +513,7 @@ class AgentManager:
         parent_id: str,
         preset: str,
         task: str,
+        name: str | None = None,
         system_prompt: str | None = None,
         allowed_actions: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -490,7 +531,7 @@ class AgentManager:
             if preset != "custom" or not system_prompt:
                 raise ValueError(f"Пресет агента не найден: {preset}")
             base_prompt = system_prompt
-            audience = "subagent"
+            audience = "custom"
             allowed = set(allowed_actions or []) or None
         if allowed_actions:
             allowed = set(allowed_actions)
@@ -500,11 +541,15 @@ class AgentManager:
                 raise ValueError(f"Неизвестные действия субагента: {unknown}")
         agent_metadata = dict(metadata or {})
         agent_metadata.setdefault("preset", preset)
+        agent_metadata.setdefault("agent_type", audience)
+        if self.module_manager is not None:
+            self.module_manager.load_scope(audience, start_handlers=True)
         with self._lock:
             self._counter += 1
             agent_id = f"agent-{self._counter:04d}"
             agent = Agent(
                 agent_id,
+                name or agent_id,
                 self,
                 model=self.model,
                 client=self.client,
@@ -513,6 +558,7 @@ class AgentManager:
                 allowed_actions=allowed,
                 parent_id=parent_id,
                 metadata=agent_metadata,
+                capabilities=self.capabilities,
             )
             self.agents[agent_id] = agent
             self.bus.bind(agent)
@@ -524,6 +570,8 @@ class AgentManager:
                     "agent_id": agent_id,
                     "parent_id": parent_id,
                     "preset": preset,
+                    "name": agent.name,
+                    "agent_type": audience,
                     "task": task,
                 },
                 source=f"agent:{parent_id}",
@@ -540,6 +588,8 @@ class AgentManager:
         )
         return {
             "agent_id": agent_id,
+            "name": agent.name,
+            "agent_type": audience,
             "parent_id": parent_id,
             "preset": preset,
             "state": agent.state,
@@ -575,6 +625,12 @@ class AgentManager:
             {"agent_id": agent_id, "reason": reason},
         )
         return {"agent_id": agent_id, "state": "stopped", "reason": reason}
+
+    def hold(self, *, agent_id: str, until_event: str) -> None:
+        agent = self.agents.get(agent_id)
+        if agent is None:
+            raise ValueError(f"Агент не найден: {agent_id}")
+        agent.hold_until(until_event)
 
     def delete(self, *, requester_id: str, agent_id: str, reason: str) -> dict[str, Any]:
         if agent_id == "main":
@@ -626,9 +682,11 @@ class AgentManager:
             return [
                 {
                     "agent_id": agent.agent_id,
+                    "name": agent.name,
                     "parent_id": agent.parent_id,
                     "state": agent.state,
                     "preset": agent.metadata.get("preset"),
+                    "agent_type": agent.metadata.get("agent_type", agent.audience),
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]
