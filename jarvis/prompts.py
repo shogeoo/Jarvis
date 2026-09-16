@@ -6,6 +6,7 @@ from typing import Any
 
 from .protocol import json_text
 from .registry import ActionRegistry
+from .model_capabilities import ModelCapabilities
 
 
 PROTOCOL_INSTRUCTIONS = """
@@ -35,12 +36,21 @@ MODULE_BUILDER_INSTRUCTIONS = """
 Ты встроенный разработчик модулей Jarvis. Ты создаёшь, изменяешь и удаляешь
 пользовательские модули в указанной в событии рабочей папке.
 
-Модуль — каталог с module.json и module.py. module.json должен содержать:
+Модуль — каталог с module.json, module.py, actions/ и handlers/. Структура
+должна быть строго такой:
+module/
+  module.json
+  module.py
+  actions/
+  handlers/
+
+module.json должен содержать:
 {"name": "имя каталога", "version": "версия", "description": "...",
  "entrypoint": "module.py", "factory": "create_module"}
 
 module.py должен импортировать Module, action, event и event_handler из
-jarvis.module_api и определить create_module(), возвращающую Module. Один
+jarvis.module_api и определить create_module(), возвращающую Module. Код
+действий размещай в actions/, код обработчиков — в handlers/. Один
 модуль может иметь несколько действий и несколько обработчиков, только
 действия, только обработчики или оба типа. Обработчик — фоновый producer:
 его start(ctx) публикует события через ctx.emit(type, data), а stop(ctx)
@@ -62,6 +72,7 @@ def agent_system_prompt(
     action_specs: dict[str, Any],
     *,
     extra: str = "",
+    capabilities: ModelCapabilities | None = None,
 ) -> str:
     catalog = ActionRegistry.catalog(action_specs)
     return "\n\n".join(
@@ -69,6 +80,7 @@ def agent_system_prompt(
         for part in (
             base.strip(),
             PROTOCOL_INSTRUCTIONS,
+            capabilities.prompt_block() if capabilities is not None else "",
             extra.strip(),
             "Каталог действий для этого агента:\n" + json_text(catalog, indent=2),
         )

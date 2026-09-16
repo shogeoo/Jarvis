@@ -71,15 +71,24 @@ class Speaker:
         return parsed.hostname or "127.0.0.1", parsed.port or 80
 
     def start(self) -> "Speaker":
+        print(
+            f"TTS Fish Audio: подключение к {self.cfg.tts_url} "
+            f"(голос: {self.cfg.tts_voice})...",
+            flush=True,
+        )
         server_running = self._port_open()
+        if server_running:
+            print("TTS Fish Audio: сервер уже запущен.", flush=True)
         self._ensure_voice(gpu=not server_running)
         if not server_running:
             self._start_server()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        print("TTS Fish Audio: готов.", flush=True)
         return self
 
     def stop(self, timeout: float = 20.0) -> None:
+        print("TTS Fish Audio: остановка.", flush=True)
         self.interrupt()
         self._stop.set()
         if self._thread is not None:
@@ -133,6 +142,12 @@ class Speaker:
             player.terminate()
         return len(requests)
 
+    def has_pending(self) -> bool:
+        """Есть ли текущая или ожидающая реплика, которую можно перебить."""
+
+        with self._lock:
+            return self._current is not None or not self._queue.empty()
+
     # --- server ------------------------------------------------------
     def _base_cmd(self) -> list[str]:
         cmd = [str(self.cfg.tts_server_bin), "--model", str(self.cfg.tts_model)]
@@ -150,7 +165,7 @@ class Speaker:
     def _start_server(self) -> None:
         if not self.cfg.tts_autostart:
             raise RuntimeError(
-                f"TTS-сервер недоступен: {self.cfg.tts_url}. "
+                f"TTS Fish Audio недоступен: {self.cfg.tts_url}. "
                 "Запусти s2.cpp вручную или включи TTS_AUTOSTART."
             )
         if not self.cfg.tts_server_bin.exists():
@@ -161,7 +176,10 @@ class Speaker:
         cmd += ["--server", "--host", self._host, "--port", str(self._port)]
         cmd += self.cfg.tts_server_args
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"Запуск TTS-сервера: {' '.join(cmd)}", flush=True)
+        print(
+            f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
+            flush=True,
+        )
         log = open(SERVER_LOG, "ab")
         self._server = subprocess.Popen(
             cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
@@ -181,7 +199,7 @@ class Speaker:
         self._server = None
         if proc.poll() is not None:
             return
-        print("Остановка TTS-сервера...", flush=True)
+        print("TTS Fish Audio: остановка сервера...", flush=True)
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except ProcessLookupError:
@@ -199,16 +217,17 @@ class Speaker:
         deadline = time.time() + SERVER_START_TIMEOUT
         while time.time() < deadline:
             if self._port_open():
-                print("TTS-сервер готов.", flush=True)
+                print("TTS Fish Audio: сервер готов.", flush=True)
                 return
             if self._server is not None and self._server.poll() is not None:
                 raise RuntimeError(
-                    f"TTS-сервер завершился (код {self._server.returncode}); "
+                    f"TTS Fish Audio завершился (код {self._server.returncode}); "
                     f"лог: {SERVER_LOG}"
                 )
             time.sleep(0.5)
         raise RuntimeError(
-            f"TTS-сервер не поднялся за {SERVER_START_TIMEOUT:.0f} с; лог: {SERVER_LOG}"
+            f"TTS Fish Audio не поднялся за {SERVER_START_TIMEOUT:.0f} с; "
+            f"лог: {SERVER_LOG}"
         )
 
     # --- voice profile ----------------------------------------------

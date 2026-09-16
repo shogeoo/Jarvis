@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import threading
 from typing import Any
@@ -27,20 +28,30 @@ class Debugger:
         намеренно подавляются.
         """
 
-    def message(self, content: str) -> None:
-        """Вывести содержимое одного сообщения без изменений."""
+    def message(self, content: Any) -> None:
+        """Вывести содержимое сообщения как читаемую JSON-структуру."""
 
         if not self.enabled:
             return
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError:
+                pass
+        rendered = (
+            json.dumps(content, ensure_ascii=False, indent=2)
+            if not isinstance(content, str)
+            else content
+        )
         with self._lock:
-            self.stream.write(content)
+            self.stream.write(rendered)
             self.stream.write("\n")
             self.stream.flush()
 
-    def input(self, event: Any) -> None:
-        """Вывести ровно JSON события, добавляемого как user message."""
+    def input(self, event: Any, capabilities: Any = None) -> None:
+        """Вывести model-visible content входного сообщения."""
 
-        self.message(event.model_content())
+        self.message(event.model_visible_content(capabilities))
 
     def event(self, direction: str, agent_id: str, event: Any) -> None:
         """Старый API: доставка события не является выводом для модели."""

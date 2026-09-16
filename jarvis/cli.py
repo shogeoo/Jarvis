@@ -18,6 +18,7 @@ from .builtin import register_builtin_actions, register_builtin_events
 from .config import load_config
 from .debug import Debugger
 from .module_manager import ModuleManager
+from .model_capabilities import discover_model_capabilities
 from .printer import Printer
 from .protocol import Event
 from .registry import ActionRegistry, EventRegistry
@@ -85,8 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def publish_stt_event(event_bus, speaker, text: str) -> None:
-    """Передать STT-событие main и после этого перебить текущий TTS."""
+def publish_stt_event(event_bus, text: str) -> None:
+    """Передать распознанную речь main без повторного перебивания TTS."""
 
     event_bus.publish(
         Event(
@@ -96,10 +97,6 @@ def publish_stt_event(event_bus, speaker, text: str) -> None:
             target="main",
         )
     )
-    if speaker is not None:
-        speaker.interrupt()
-
-
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.list_devices:
@@ -136,6 +133,11 @@ def main(argv=None) -> int:
             config=config,
             debug=debug,
         )
+        capabilities = discover_model_capabilities(
+            config.model,
+            config.base_url,
+            config.api_key,
+        )
         client = OpenAI(
             base_url=config.base_url or None,
             api_key=config.api_key or None,
@@ -150,6 +152,7 @@ def main(argv=None) -> int:
             module_manager=module_manager,
             config=config,
             debug=debug,
+            capabilities=capabilities,
         )
         register_builtin_actions(
             action_registry,
@@ -191,7 +194,7 @@ def main(argv=None) -> int:
                 except OSError:
                     pass
             if event_bus is not None:
-                publish_stt_event(event_bus, speaker, text)
+                publish_stt_event(event_bus, text)
             else:
                 printer.print_segment(text)
 
@@ -208,6 +211,10 @@ def main(argv=None) -> int:
             except queue.Empty:
                 continue
             result = segmenter.feed(frame)
+            if segmenter.consume_speech_started() and speaker is not None:
+                if speaker.has_pending() and agent_manager is not None:
+                    agent_manager.hold(agent_id="main", until_event="speech")
+                speaker.interrupt()
             if result:
                 out_queue.put(result)
     except KeyboardInterrupt:

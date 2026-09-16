@@ -1,9 +1,18 @@
 """Публичный контракт пользовательских модулей.
 
-Модуль — это каталог в ``.jarvis/modules`` с ``module.json`` и Python
-файлом, который возвращает :class:`Module`. В модуле можно объявить любое
-количество действий и обработчиков, включая ноль действий или ноль
-обработчиков.
+Модуль — комплект обработчиков событий и действий (или только одного из
+них) для одной области агентов. Каталог модуля обязан иметь структуру::
+
+    module/
+      module.json
+      module.py
+      actions/
+      handlers/
+
+``module.py`` возвращает :class:`Module`; код конкретных действий и
+обработчиков размещается в соответствующих каталогах и импортируется
+фабрикой. Модули верхнего уровня доступны main, а модули внутри
+``modules/<agent_type>/`` — только этому типу субагентов.
 
 Минимальный пример ``module.py``::
 
@@ -45,7 +54,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .protocol import Event, JSONSchema
+from .protocol import Event, InputPart, JSONSchema
 
 
 ActionHandler = Callable[[dict[str, Any], "ActionContext"], Any]
@@ -136,6 +145,12 @@ def event_handler(
     )
 
 
+def input_part(type: str, mime_type: str, base64_data: str) -> InputPart:
+    """Создать мультимодальную часть, подготовленную самим модулем."""
+
+    return InputPart(type=type, mime_type=mime_type, data=base64_data)
+
+
 @dataclass(slots=True)
 class ModuleContext:
     """Контекст фонового обработчика модуля."""
@@ -153,6 +168,7 @@ class ModuleContext:
         *,
         target: str | None = "main",
         reply_to: str | None = None,
+        parts: Iterable[InputPart] = (),
     ) -> Event:
         event = Event(
             type=type,
@@ -160,6 +176,7 @@ class ModuleContext:
             source=f"module:{self.module_name}",
             target=target,
             reply_to=reply_to,
+            parts=tuple(parts),
         )
         self.emit_event(event)
         return event
@@ -185,6 +202,7 @@ class ActionContext:
         target: str | None = "main",
         reply_to: str | None = None,
         source: str | None = None,
+        parts: Iterable[InputPart] = (),
     ) -> Event:
         event = Event(
             type=type,
@@ -192,6 +210,7 @@ class ActionContext:
             source=source or f"action:{type}",
             target=target,
             reply_to=reply_to,
+            parts=tuple(parts),
         )
         self.event_bus.publish(event)
         return event

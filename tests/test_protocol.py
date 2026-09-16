@@ -1,7 +1,14 @@
 import json
 import unittest
 
-from jarvis.protocol import Event, parse_actions, response_format, validate_json
+from jarvis.model_capabilities import ModelCapabilities
+from jarvis.protocol import (
+    Event,
+    InputPart,
+    parse_actions,
+    response_format,
+    validate_json,
+)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -11,6 +18,21 @@ class ProtocolTests(unittest.TestCase):
             json.loads(event.model_content()),
             {"type": "speech", "data": {"text": "Привет"}},
         )
+
+    def test_multimodal_event_is_one_message_and_filters_unsupported_parts(self):
+        event = Event(
+            type="telegram.message",
+            data={"text": "Что на фото?"},
+            parts=(InputPart("image", "image/jpeg", "aGVsbG8="),),
+        )
+        image_message = event.model_message(
+            ModelCapabilities("test", ("text", "image"))
+        )
+        self.assertEqual(image_message["role"], "user")
+        self.assertEqual(len(image_message["content"]), 2)
+        self.assertEqual(image_message["content"][1]["type"], "image_url")
+        text_message = event.model_message(ModelCapabilities("test", ("text",)))
+        self.assertIsInstance(text_message["content"], str)
 
     def test_no_action_cannot_be_combined(self):
         with self.assertRaises(ValueError):
