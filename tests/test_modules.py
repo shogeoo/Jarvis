@@ -14,8 +14,8 @@ class ModuleTests(unittest.TestCase):
     def test_module_may_contain_only_actions(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            module_path = root / "example"
-            module_path.mkdir()
+            module_path = root / "main" / "example"
+            module_path.mkdir(parents=True)
             (module_path / "actions").mkdir()
             (module_path / "handlers").mkdir()
             (module_path / "module.json").write_text(
@@ -75,7 +75,7 @@ def create_module():
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             for scope in ("main", "developer"):
-                path = root / "example" if scope == "main" else root / scope / "example"
+                path = root / scope / "example"
                 path.mkdir(parents=True)
                 (path / "actions").mkdir()
                 (path / "handlers").mkdir()

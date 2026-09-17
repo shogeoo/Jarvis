@@ -68,7 +68,7 @@ class ModuleManager:
 
     def scope_path(self, scope: str) -> Path:
         self.validate_scope(scope)
-        return self.modules_dir if scope == MAIN_SCOPE else self.modules_dir / scope
+        return self.modules_dir / scope
 
     def module_path(self, module_name: str, scope: str = MAIN_SCOPE) -> Path:
         self.validate_name(module_name)
