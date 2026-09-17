@@ -269,8 +269,8 @@ class Speaker:
     def _run(self) -> None:
         while not (self._stop.is_set() and self._queue.empty()):
             try:
+                request = self._queue.get(timeout=0.1)
                 with self._lock:
-                    request = self._queue.get(timeout=0.1)
                     self._current = request
             except queue.Empty:
                 continue
