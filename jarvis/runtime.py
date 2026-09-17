@@ -32,7 +32,7 @@ from .registry import ActionRegistry, EventRegistry
 
 
 PRESETS_PATH = ROOT / ".assistant" / "agents" / "presets.json"
-META_AGENT_ACTIONS = frozenset(
+MODULE_MANAGER_ACTIONS = frozenset(
     {
         "workspace.list",
         "workspace.read",
@@ -97,8 +97,8 @@ class Agent:
         *,
         model: str,
         client: Any,
-        base_prompt: str,
-        agent_type: str,
+        system_prompt: str,
+        preset: str | None,
         allowed_actions: set[str] | None = None,
         parent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -109,8 +109,8 @@ class Agent:
         self.manager = manager
         self.model = model
         self.client = client
-        self.purpose = base_prompt
-        self.agent_type = agent_type
+        self.system_prompt = system_prompt
+        self.preset = preset
         self.allowed_actions = allowed_actions
         self.parent_id = parent_id
         self.metadata = metadata or {}
@@ -120,7 +120,7 @@ class Agent:
             {
                 "role": "system",
                 "content": agent_system_prompt(
-                    self.purpose,
+                    self.system_prompt,
                     initial_specs,
                     capabilities=self.capabilities,
                 ),
@@ -150,8 +150,8 @@ class Agent:
         self.manager.debug.state(self.agent_id, state, **extra)
 
     def available_actions(self):
-        if self.agent_type == "main":
-            names = set(self.manager.actions.all()) - META_AGENT_ACTIONS
+        if self.agent_id == "main":
+            names = set(self.manager.actions.all()) - MODULE_MANAGER_ACTIONS
             return self.manager.actions.for_agent(names)
         return self.manager.actions.for_agent(self.allowed_actions)
 
@@ -378,7 +378,7 @@ class Agent:
 class AgentPreset:
     name: str
     description: str
-    purpose: str
+    system_prompt: str
     allowed_actions: frozenset[str] | None = None
 
 
@@ -434,12 +434,12 @@ class AgentManager:
             if not isinstance(raw, dict):
                 continue
             try:
-                if raw["name"] == "module_builder":
+                if raw["name"] == "module_manager":
                     continue
                 self.presets[raw["name"]] = AgentPreset(
                     name=raw["name"],
                     description=raw.get("description", ""),
-                    purpose=raw["purpose"],
+                    system_prompt=raw["system_prompt"],
                     allowed_actions=frozenset(raw.get("actions", [])) or None,
                 )
             except (KeyError, TypeError):
@@ -451,11 +451,11 @@ class AgentManager:
             {
                 "name": preset.name,
                 "description": preset.description,
-                "purpose": preset.purpose,
+                "system_prompt": preset.system_prompt,
                 "actions": sorted(preset.allowed_actions or []),
             }
             for preset in sorted(self.presets.values(), key=lambda item: item.name)
-            if preset.name != "module_builder"
+            if preset.name != "module_manager"
         ]
         PRESETS_PATH.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -467,10 +467,10 @@ class AgentManager:
         *,
         name: str,
         description: str,
-        purpose: str,
+        system_prompt: str,
         allowed_actions: list[str],
     ) -> dict[str, Any]:
-        if not name or name == "module_builder":
+        if not name or name == "module_manager":
             raise ValueError("Недопустимое имя пресета")
         unknown = sorted(name for name in allowed_actions if self.actions.get(name) is None)
         if unknown:
@@ -479,15 +479,15 @@ class AgentManager:
             AgentPreset(
                 name=name,
                 description=description,
-                purpose=purpose,
+                system_prompt=system_prompt,
                 allowed_actions=frozenset(allowed_actions) or None,
             )
         )
         return self.describe_preset(name)
 
     def delete_preset(self, name: str) -> dict[str, Any]:
-        if name == "module_builder":
-            raise ValueError("Встроенный пресет module_builder нельзя удалить")
+        if name == "module_manager":
+            raise ValueError("Встроенный пресет module_manager нельзя удалить")
         if self.presets.pop(name, None) is None:
             raise ValueError(f"Пресет не найден: {name}")
         self._save_presets()
@@ -503,7 +503,7 @@ class AgentManager:
         return {
             "name": preset.name,
             "description": preset.description,
-            "purpose": preset.purpose,
+            "system_prompt": preset.system_prompt,
             "actions": sorted(preset.allowed_actions or []),
         }
 
@@ -517,8 +517,8 @@ class AgentManager:
                 self,
                 model=self.model,
                 client=self.client,
-                base_prompt=person_prompt,
-                agent_type="main",
+                system_prompt=person_prompt,
+                preset=None,
                 capabilities=self.capabilities,
             )
             self.agents[agent.agent_id] = agent
@@ -529,35 +529,20 @@ class AgentManager:
         self,
         *,
         parent_id: str,
-        agent_type: str | None = None,
-        task: str,
-        name: str | None = None,
-        purpose: str | None = None,
-        allowed_actions: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        preset: str,
     ) -> dict[str, Any]:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
-        agent_type = agent_type or "custom"
-        selected = self.presets.get(agent_type)
-        if selected is not None:
-            base_prompt = selected.purpose
-            allowed = set(selected.allowed_actions) if selected.allowed_actions else None
-        else:
-            if agent_type != "custom" or not purpose:
-                raise ValueError(f"Тип агента не найден: {agent_type}")
-            base_prompt = purpose
-            allowed = set(allowed_actions or []) or None
-        if allowed_actions:
-            allowed = set(allowed_actions)
+        selected = self.presets.get(preset)
+        if selected is None:
+            raise ValueError(f"Пресет агента не найден: {preset}")
+        allowed = set(selected.allowed_actions) if selected.allowed_actions else None
         if allowed is not None:
-            unknown = sorted(name for name in allowed if self.actions.get(name) is None)
+            unknown = sorted(action_name for action_name in allowed if self.actions.get(action_name) is None)
             if unknown:
                 raise ValueError(f"Неизвестные действия субагента: {unknown}")
-        agent_metadata = dict(metadata or {})
-        agent_metadata.setdefault("agent_type", agent_type)
         with self._lock:
             if self.stopping.is_set():
                 raise RuntimeError("runtime_stopping")
@@ -565,40 +550,30 @@ class AgentManager:
             agent_id = f"agent-{self._counter:04d}"
             agent = Agent(
                 agent_id,
-                name or agent_id,
+                agent_id,
                 self,
                 model=self.model,
                 client=self.client,
-                base_prompt=base_prompt,
-                agent_type=agent_type,
+                system_prompt=selected.system_prompt,
+                preset=preset,
                 allowed_actions=allowed,
                 parent_id=parent_id,
-                metadata=agent_metadata,
                 capabilities=self.capabilities,
             )
             self.agents[agent_id] = agent
             self.bus.bind(agent)
             agent.start()
-        self.bus.publish(
-            Event(
-                type="message",
-                data={"from": parent_id, "text": task},
-                source=f"agent:{parent_id}",
-                target=agent_id,
-            )
-        )
         self.debug.log(
             "agent_spawned",
             agent_id=agent_id,
             parent_id=parent_id,
-            agent_type=agent_type,
-            task=task,
+            preset=preset,
             allowed_actions=sorted(agent.available_actions()),
         )
         return {
             "agent_id": agent_id,
             "name": agent.name,
-            "agent_type": agent_type,
+            "preset": preset,
             "parent_id": parent_id,
             "state": agent.state,
         }
@@ -661,7 +636,7 @@ class AgentManager:
                     "name": agent.name,
                     "parent_id": agent.parent_id,
                     "state": agent.state,
-                    "agent_type": agent.metadata.get("agent_type", agent.agent_type),
+                    "preset": agent.preset,
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]
