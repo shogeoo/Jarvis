@@ -11,10 +11,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 from .module_api import ActionSpec, EventDefinition
+from .lifecycle import terminate_process
 from .prompts import MODULE_BUILDER_INSTRUCTIONS
 from .protocol import JSONSchema, empty_object_schema, object_schema
 from .registry import ActionRegistry, EventRegistry
@@ -158,7 +160,8 @@ def register_builtin_actions(
         ),
         ActionSpec(
             type="speech",
-            description="Озвучить текст. В text можно использовать теги Fish Audio.",
+            description="Произнести прямую речь из text. Допустимы [теги] интонации. "
+                        "Без Markdown, списков, двоеточий, табуляции и служебных пояснений.",
             data_schema=_schema(text=STRING),
             handler=_speech(printer, speaker),
             audiences=frozenset({"main", "subagent"}),
@@ -449,11 +452,14 @@ def _module_request(manager: AgentManager, operation: str):
             raise RuntimeError("Менеджер модулей не инициализирован")
         manager.module_manager.validate_name(module_name)
         modules_root = manager.module_manager.modules_dir
+        modules_root.mkdir(parents=True, exist_ok=True)
         workspace = manager.module_manager.module_path(module_name, scope)
         task = (
             f"Операция: {operation}. Модуль: {module_name}. Область: {scope}.\n"
             f"Целевая папка модуля: {workspace}.\n"
-            f"Рабочая папка метасубагента: {modules_root}.\n"
+            f"Рабочая папка разработчика: {modules_root}.\n"
+            f"Python окружения Jarvis: {sys.executable}.\n"
+            f"Публичный контракт (можно читать): {Path(__file__).with_name('module_api.py')}.\n"
             f"Требования родителя:\n{data['request']}\n"
             "Ты можешь работать с любыми модулями и областями внутри рабочей "
             "папки modules. Сообщай вопросы родителю."
@@ -516,28 +522,33 @@ def _workspace_delete(data: dict[str, Any], context: Any) -> dict[str, Any]:
 def _process_run(data: dict[str, Any], context: Any) -> dict[str, Any]:
     cwd_value = data["cwd"]
     cwd = str(_path_arg(context, cwd_value)) if cwd_value else str(_workspace(context))
+    proc = context.agent_manager.processes.start(
+        data["command"],
+        shell=True,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        result = subprocess.run(
-            data["command"],
-            shell=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=data["timeout_seconds"],
-        )
+        stdout, stderr = proc.communicate(timeout=data["timeout_seconds"])
         return {
-            "returncode": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "returncode": proc.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
             "timed_out": False,
         }
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
+        terminate_process(proc, group=True)
+        stdout, stderr = proc.communicate(timeout=2)
         return {
             "returncode": None,
-            "stdout": exc.stdout or "",
-            "stderr": exc.stderr or "",
+            "stdout": stdout,
+            "stderr": stderr,
             "timed_out": True,
         }
+    finally:
+        context.agent_manager.processes.finish(proc)
 
 
 def _module_complete(manager: AgentManager):

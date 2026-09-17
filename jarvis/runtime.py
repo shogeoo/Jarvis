@@ -5,16 +5,21 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 import traceback
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, wait, FIRST_COMPLETED
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from .debug import Debugger
+from .lifecycle import ActionPool, ProcessManager
 from .config import ROOT
 from .module_api import ActionContext
 from .model_capabilities import ModelCapabilities
-from .prompts import agent_system_prompt
+from .prompts import (
+    agent_system_prompt, MAIN_AGENT_INSTRUCTIONS,
+    MODULE_BUILDER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS,
+)
 from .protocol import (
     ActionRequest,
     Event,
@@ -39,17 +44,27 @@ class EventBus:
         self.events = events
         self.debug = debug or Debugger(enabled=False)
         self._agents: dict[str, Agent] = {}
+        self._closed = False
         self._lock = threading.RLock()
 
     def bind(self, agent: "Agent") -> None:
         with self._lock:
+            if self._closed:
+                raise RuntimeError("runtime_stopping")
             self._agents[agent.agent_id] = agent
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._agents.clear()
 
     def unbind(self, agent_id: str) -> None:
         with self._lock:
             self._agents.pop(agent_id, None)
 
     def publish(self, event: Event) -> bool:
+        if self._closed:
+            return False
         try:
             self.events.validate(event.type, event.data)
         except ValueError as exc:
@@ -103,12 +118,21 @@ class Agent:
         self.metadata = metadata or {}
         self.capabilities = capabilities
         initial_specs = self.available_actions()
+        if audience == "main":
+            role_instructions = (
+                "Справка о роли разработчика. Следующий блок описывает другого агента.\n"
+                "<module_builder_reference>\n" + MODULE_BUILDER_INSTRUCTIONS
+                + "\n</module_builder_reference>\n\n" + MAIN_AGENT_INSTRUCTIONS
+            )
+        else:
+            role_instructions = SUBAGENT_INSTRUCTIONS if audience != "module_builder" else ""
         self.history: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": agent_system_prompt(
                     self.base_prompt,
                     initial_specs,
+                    extra=role_instructions,
                     capabilities=self.capabilities,
                 ),
             }
@@ -216,6 +240,8 @@ class Agent:
             self._turn(batch)
 
     def _turn(self, events: list[Event]) -> None:
+        if self._stop.is_set():
+            return
         self._set_state("thinking", event_count=len(events))
         for event in events:
             message = event.model_message(self.capabilities)
@@ -229,6 +255,8 @@ class Agent:
                 messages=self.history,
                 response_format=response_format(schema),
             )
+            if self._stop.is_set():
+                return
             message = response.choices[0].message
             refusal = getattr(message, "refusal", None)
             content = message.content or ""
@@ -247,6 +275,8 @@ class Agent:
                 if action.type not in specs:
                     raise ValueError(f"Действие недоступно этому агенту: {action.type}")
         except Exception as exc:  # noqa: BLE001
+            if self._stop.is_set():
+                return
             self._model_failure(exc)
             return
 
@@ -284,33 +314,37 @@ class Agent:
     def _execute_actions(self, actions: list[ActionRequest]) -> None:
         futures: list[Future] = []
         for action in actions:
-            future = self.manager.action_pool.submit(self._execute_action, action)
+            if self._stop.is_set() or self.manager.stopping.is_set():
+                break
+            try:
+                future = self.manager.action_pool.submit(self._execute_action, action)
+            except RuntimeError:
+                if self.manager.stopping.is_set():
+                    break
+                raise
             futures.append(future)
         with self._future_lock:
             self._active_futures.update(futures)
         try:
-            for future in as_completed(futures):
-                try:
-                    result_event = future.result()
-                except Exception as exc:  # noqa: BLE001
-                    result_event = Event(
-                        type="action_result",
-                        data={
-                            "action_id": "unknown",
-                            "action_type": "unknown",
-                            "status": "error",
-                            "result": None,
-                            "error": str(exc),
-                        },
-                        source="runtime",
-                        target=self.agent_id,
-                    )
-                self.manager.bus.publish(result_event)
+            pending = set(futures)
+            while pending and not self._stop.is_set():
+                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    if not future.cancelled() and not self._stop.is_set():
+                        try:
+                            result = future.result()
+                        except Exception as exc:
+                            self._model_failure(exc)
+                        else:
+                            self.manager.bus.publish(result)
         finally:
             with self._future_lock:
                 self._active_futures.difference_update(futures)
 
     def _execute_action(self, action: ActionRequest) -> Event:
+        if self._stop.is_set() or self.manager.stopping.is_set():
+            return action_result_event(action, status="error", error="runtime_stopping",
+                                       target=self.agent_id)
         self.manager.debug.action("start", self.agent_id, action)
         spec = self.manager.actions.get(action.type)
         if spec is None:
@@ -332,6 +366,7 @@ class Agent:
                 module_manager=self.manager.module_manager,
                 config=self.manager.config,
                 metadata=self.metadata,
+                stop_event=self._stop,
             )
             value = spec.handler(action.data, context)
             json.dumps(value, ensure_ascii=False)
@@ -387,10 +422,9 @@ class AgentManager:
         self.config = config
         self.capabilities = capabilities
         self.debug = debug or Debugger(enabled=False)
-        self.action_pool = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="jarvis-action",
-        )
+        self.stopping = threading.Event()
+        self.processes = ProcessManager()
+        self.action_pool = ActionPool(max_workers)
         self.agents: dict[str, Agent] = {}
         self.presets: dict[str, AgentPreset] = {}
         self._lock = threading.RLock()
@@ -518,6 +552,8 @@ class AgentManager:
         allowed_actions: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self.stopping.is_set():
+            raise RuntimeError("runtime_stopping")
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
         selected = self.presets.get(preset)
@@ -545,6 +581,8 @@ class AgentManager:
         if self.module_manager is not None:
             self.module_manager.load_scope(audience, start_handlers=True)
         with self._lock:
+            if self.stopping.is_set():
+                raise RuntimeError("runtime_stopping")
             self._counter += 1
             agent_id = f"agent-{self._counter:04d}"
             agent = Agent(
@@ -691,9 +729,19 @@ class AgentManager:
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]
 
-    def shutdown(self) -> None:
+    def begin_shutdown(self) -> None:
+        self.stopping.set()
+        self.bus.close()
         with self._lock:
             agents = list(self.agents.values())
         for agent in agents:
-            agent.stop(wait=True)
-        self.action_pool.shutdown(wait=True, cancel_futures=True)
+            agent.stop(wait=False)
+
+    def shutdown(self) -> None:
+        self.begin_shutdown()
+        self.processes.stop()
+        self.action_pool.shutdown(timeout=2)
+        deadline = time.monotonic() + 2
+        for agent in list(self.agents.values()):
+            if agent._thread is not None:
+                agent._thread.join(max(0, deadline - time.monotonic()))

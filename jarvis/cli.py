@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import signal
 import subprocess
 import threading
+from types import SimpleNamespace
 
 from .audio import FRAME_SIZE, MicStream
 from .builtin import register_builtin_actions, register_builtin_events
@@ -97,11 +99,9 @@ def publish_stt_event(event_bus, text: str) -> None:
             target="main",
         )
     )
-def main(argv=None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.list_devices:
-        return _list_devices(args)
 
+
+def _run(args, resources) -> int:
     ensure_model()
     printer = Printer()
     config = load_config(args.env_file, args.system_prompt)
@@ -111,9 +111,13 @@ def main(argv=None) -> int:
         from .tts import Speaker
 
         try:
-            speaker = Speaker(config).start()
+            speaker = Speaker(config)
+            resources.speaker = speaker
+            speaker.start()
         except RuntimeError as exc:
             print(exc, file=os.sys.stderr)
+            if speaker is not None:
+                speaker.stop()
             speaker = None
 
     agent_manager = None
@@ -133,6 +137,7 @@ def main(argv=None) -> int:
             config=config,
             debug=debug,
         )
+        resources.modules = module_manager
         capabilities = discover_model_capabilities(
             config.model,
             config.base_url,
@@ -143,6 +148,7 @@ def main(argv=None) -> int:
             api_key=config.api_key or None,
             timeout=60.0,
         )
+        resources.client = client
         agent_manager = AgentManager(
             model=config.model,
             client=client,
@@ -154,6 +160,7 @@ def main(argv=None) -> int:
             debug=debug,
             capabilities=capabilities,
         )
+        resources.agents = agent_manager
         register_builtin_actions(
             action_registry,
             agent_manager,
@@ -169,8 +176,11 @@ def main(argv=None) -> int:
         vad, out_dir=args.out_dir, pre_roll=args.pre_roll,
         chunk_silence=args.chunk_silence, keep_audio=args.keep_audio,
     )
+    resources.segmenter = segmenter
     out_queue: "queue.Queue[dict]" = queue.Queue()
-    stop = threading.Event()
+    resources.out_queue = out_queue
+    stop = resources.stop
+    failed = threading.Event()
 
     def worker():
         tr = Transcriber(
@@ -181,54 +191,134 @@ def main(argv=None) -> int:
             tr.load()
         except RuntimeError as exc:
             print(exc, file=os.sys.stderr)
+            failed.set()
             stop.set()
             return
-        while True:
+        while not stop.is_set():
             item = out_queue.get()
             if item is None:
                 break
-            text = tr.transcribe_file(item["path"])
-            if not item["keep"]:
-                try:
-                    os.remove(item["path"])
-                except OSError:
-                    pass
+            if stop.is_set():
+                _discard_segment(item)
+                break
+            try:
+                text = tr.transcribe_file(item["path"])
+            except Exception as exc:
+                if not stop.is_set():
+                    print(f"STT: {exc}", file=os.sys.stderr)
+                    failed.set()
+                    stop.set()
+                break
+            finally:
+                _discard_segment(item)
+            if stop.is_set():
+                break
             if event_bus is not None:
                 publish_stt_event(event_bus, text)
             else:
                 printer.print_segment(text)
 
     thread = threading.Thread(target=worker, daemon=True)
+    resources.worker = thread
     thread.start()
 
     mic = MicStream(args.sample_rate, FRAME_SIZE, args.input_device)
-    try:
-        mic.start()
-        print("Говорите. Ctrl+C — выход.", flush=True)
-        while not stop.is_set():
+    resources.mic = mic
+    mic.start()
+    print("Говорите. Ctrl+C — выход.", flush=True)
+    while not stop.is_set():
+        try:
+            frame = mic.frames.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        result = segmenter.feed(frame)
+        if segmenter.consume_speech_started() and speaker is not None:
+            if speaker.has_pending() and agent_manager is not None:
+                agent_manager.hold(agent_id="main", until_event="speech")
+            speaker.interrupt()
+        if result:
+            out_queue.put(result)
+    return 1 if failed.is_set() else 0
+
+
+def _discard_segment(item):
+    if item is not None and not item["keep"]:
+        try:
+            os.remove(item["path"])
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"Не удалось удалить временный сегмент {item['path']}: {exc}",
+                  file=os.sys.stderr)
+
+
+def _cleanup(resources):
+    resources.stop.set()
+
+    def close(name, callback, timeout):
+        def run():
             try:
-                frame = mic.frames.get(timeout=0.1)
+                callback()
+            except Exception as exc:
+                print(f"Завершение {name}: {exc}", file=os.sys.stderr)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(timeout)
+        if thread.is_alive():
+            print(f"Завершение {name}: истекло время ожидания.", file=os.sys.stderr)
+
+    if resources.agents is not None:
+        close("агентов", resources.agents.begin_shutdown, 1)
+    if resources.speaker is not None:
+        close("озвучки", resources.speaker.stop, 12)
+    if resources.mic is not None:
+        close("микрофона", resources.mic.stop, 5)
+    if resources.segmenter is not None:
+        close("записи сегмента", lambda: _discard_segment(resources.segmenter.flush()), 1)
+    if resources.out_queue is not None:
+        while True:
+            try:
+                _discard_segment(resources.out_queue.get_nowait())
             except queue.Empty:
-                continue
-            result = segmenter.feed(frame)
-            if segmenter.consume_speech_started() and speaker is not None:
-                if speaker.has_pending() and agent_manager is not None:
-                    agent_manager.hold(agent_id="main", until_event="speech")
-                speaker.interrupt()
-            if result:
-                out_queue.put(result)
+                break
+        resources.out_queue.put(None)
+    if resources.modules is not None:
+        close("обработчиков", resources.modules.shutdown, 4)
+    if resources.client is not None:
+        close("соединений модели", resources.client.close, 2)
+    if resources.agents is not None:
+        close("действий", resources.agents.shutdown, 10)
+    if resources.worker is not None and resources.worker.ident is not None:
+        resources.worker.join(timeout=1)
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.list_devices:
+        return _list_devices(args)
+    resources = SimpleNamespace(
+        stop=threading.Event(), speaker=None, agents=None, modules=None,
+        client=None, mic=None, segmenter=None, out_queue=None, worker=None,
+    )
+    received_signal = None
+
+    def interrupt(signum, frame):
+        nonlocal received_signal
+        if received_signal is None:
+            received_signal = signum
+            raise KeyboardInterrupt
+
+    previous = {sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        return _run(args, resources)
     except KeyboardInterrupt:
-        pass
+        print("\nJarvis: завершение работы…", flush=True)
+        return 128 + (received_signal or signal.SIGINT)
     finally:
-        stop.set()
-        mic.stop()
-        final = segmenter.flush()
-        if final:
-            out_queue.put(final)
-        out_queue.put(None)
-        thread.join(timeout=60)
-        if agent_manager is not None:
-            agent_manager.shutdown()
-        if speaker is not None:
-            speaker.stop()
-    return 0
+        for sig in previous:
+            signal.signal(sig, signal.SIG_IGN)
+        try:
+            _cleanup(resources)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)

@@ -8,6 +8,8 @@ import re
 import shutil
 import sys
 import threading
+import time
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
@@ -56,6 +58,7 @@ class ModuleManager:
         self.debug = debug or Debugger(enabled=False)
         self._lock = threading.RLock()
         self._loaded: dict[tuple[str, str], LoadedModule] = {}
+        self._closing = threading.Event()
 
     @staticmethod
     def validate_name(name: str) -> None:
@@ -159,14 +162,15 @@ class ModuleManager:
             raise ValueError(f"В модуле {manifest['name']} нет файла {source.name}")
         safe_scope = re.sub(r"[^A-Za-z0-9_]", "_", scope)
         safe_name = re.sub(r"[^A-Za-z0-9_]", "_", manifest["name"])
-        import_name = f"jarvis_module_{safe_scope}_{safe_name}_{id(source)}"
-        spec = importlib.util.spec_from_file_location(import_name, source)
+        import_name = f"jarvis_module_{safe_scope}_{safe_name}_{uuid.uuid4().hex}"
+        spec = importlib.util.spec_from_file_location(
+            import_name, source, submodule_search_locations=[str(path.resolve())]
+        )
         if spec is None or spec.loader is None:
             raise ValueError(f"Не удалось импортировать модуль: {source}")
         python_module = importlib.util.module_from_spec(spec)
         sys.modules[import_name] = python_module
         try:
-            sys.path.insert(0, str(path))
             spec.loader.exec_module(python_module)
             factory = getattr(python_module, manifest["factory"], None)
             if not callable(factory):
@@ -175,19 +179,16 @@ class ModuleManager:
                 )
             definition = factory()
         except Exception:
-            sys.modules.pop(import_name, None)
+            ModuleManager._forget_import(import_name)
             raise
-        finally:
-            if sys.path and sys.path[0] == str(path):
-                sys.path.pop(0)
         if not isinstance(definition, Module):
-            sys.modules.pop(import_name, None)
+            ModuleManager._forget_import(import_name)
             raise ValueError("factory модуля должна вернуть Module")
         if definition.name != manifest["name"]:
-            sys.modules.pop(import_name, None)
+            ModuleManager._forget_import(import_name)
             raise ValueError("Имя Module не совпадает с module.json")
         if definition.version != manifest["version"]:
-            sys.modules.pop(import_name, None)
+            ModuleManager._forget_import(import_name)
             raise ValueError("Версия Module не совпадает с module.json")
         return definition, python_module
 
@@ -230,7 +231,7 @@ class ModuleManager:
         try:
             self._check_definition(definition)
         finally:
-            sys.modules.pop(python_module.__name__, None)
+            self._forget_import(python_module.__name__)
         return self._summary(definition, module_path, scope)
 
     def load(
@@ -240,12 +241,16 @@ class ModuleManager:
         scope: str = MAIN_SCOPE,
         start_handlers: bool = True,
     ) -> dict[str, Any]:
+        if self._closing.is_set():
+            raise RuntimeError("runtime_stopping")
         module_path = self.module_path(module_name, scope)
         manifest = self._manifest(module_path)
         definition, python_module = self._import_module(module_path, manifest, scope)
         try:
             self._check_definition(definition)
             with self._lock:
+                if self._closing.is_set():
+                    raise RuntimeError("runtime_stopping")
                 key = (scope, module_name)
                 if key in self._loaded:
                     self._unload_locked(scope, module_name)
@@ -268,7 +273,7 @@ class ModuleManager:
                 if start_handlers:
                     self._start_handlers_locked(runtime)
         except Exception:
-            sys.modules.pop(python_module.__name__, None)
+            self._forget_import(python_module.__name__)
             raise
         summary = self._summary(definition, module_path, scope)
         self.debug.log("module_loaded", **summary)
@@ -276,6 +281,8 @@ class ModuleManager:
 
     def start_all(self, scope: str | None = None) -> None:
         with self._lock:
+            if self._closing.is_set():
+                return
             for runtime in self._loaded.values():
                 if scope is not None and runtime.scope != scope:
                     continue
@@ -324,6 +331,42 @@ class ModuleManager:
         with self._lock:
             self._unload_locked(scope, module_name)
 
+    @staticmethod
+    def _forget_import(name: str) -> None:
+        for key in tuple(sys.modules):
+            if key == name or key.startswith(name + "."):
+                sys.modules.pop(key, None)
+
+    def shutdown(self, timeout: float = 3.0) -> None:
+        self._closing.set()
+        with self._lock:
+            runtimes = list(self._loaded.values())
+            self._loaded.clear()
+        threads = []
+        for runtime in runtimes:
+            for context in runtime.contexts:
+                context.stop_event.set()
+        for runtime in runtimes:
+            for context, handler in zip(runtime.contexts, runtime.definition.handlers):
+                if handler.stop is not None:
+                    def stop_handler(handler=handler, context=context):
+                        try:
+                            handler.stop(context)
+                        except Exception as exc:
+                            self.debug.log("handler_stop_error", error=str(exc))
+                    thread = threading.Thread(target=stop_handler, daemon=True)
+                    thread.start()
+                    threads.append(thread)
+            threads.extend(runtime.threads)
+            owner = self._owner(runtime.scope, runtime.definition.name)
+            self.actions.unregister_owner(owner)
+            self.events.unregister_owner(owner)
+        deadline = time.monotonic() + timeout
+        for thread in threads:
+            thread.join(max(0, deadline - time.monotonic()))
+        for runtime in runtimes:
+            self._forget_import(runtime.python_module.__name__)
+
     def _unload_locked(self, scope: str, module_name: str) -> None:
         runtime = self._loaded.pop((scope, module_name), None)
         if runtime is None:
@@ -346,7 +389,7 @@ class ModuleManager:
         owner = self._owner(scope, module_name)
         self.actions.unregister_owner(owner)
         self.events.unregister_owner(owner)
-        sys.modules.pop(runtime.python_module.__name__, None)
+        self._forget_import(runtime.python_module.__name__)
 
     def apply(
         self,
