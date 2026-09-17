@@ -3,14 +3,15 @@ import threading
 import time
 import unittest
 from concurrent.futures import Future
+from unittest.mock import patch
 
+from jarvis.builtin import register_builtin_actions, register_builtin_events
 from jarvis.debug import Debugger
 from jarvis.module_manager import ModuleManager
 from jarvis.module_api import ActionSpec
 from jarvis.protocol import Event, empty_object_schema, object_schema
 from jarvis.registry import ActionRegistry, EventRegistry
-from jarvis.builtin import register_builtin_events
-from jarvis.runtime import AgentManager, EventBus
+from jarvis.runtime import Agent, AgentManager, EventBus
 
 
 class _Message:
@@ -53,6 +54,33 @@ class _DeferredSpeaker:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_spawn_uses_immutable_preset_and_does_not_send_a_task(self):
+        events = EventRegistry()
+        register_builtin_events(events)
+        actions = ActionRegistry()
+        bus = EventBus(events, debug=Debugger(enabled=False))
+        modules = ModuleManager(bus, actions, events, debug=Debugger(enabled=False))
+        manager = AgentManager(
+            model="test",
+            client=_Client('{"actions":[{"type":"no_action","data":{}}]}'),
+            actions=actions,
+            events=events,
+            bus=bus,
+            module_manager=modules,
+            debug=Debugger(enabled=False),
+        )
+        register_builtin_actions(actions, manager)
+        with patch.object(Agent, "start", lambda self: self):
+            manager.create_main("main")
+            result = manager.spawn(parent_id="main", preset="module_manager")
+            agent = manager.agents[result["agent_id"]]
+            self.assertEqual(result["preset"], "module_manager")
+            self.assertTrue(agent._events.empty())
+            self.assertIn("workspace.delete", agent.available_actions())
+            self.assertIn("module.complete", agent.available_actions())
+            self.assertNotIn("module.create", actions.all())
+        manager.shutdown()
+
     def test_actions_run_in_parallel_and_results_are_individual_events(self):
         events = EventRegistry()
         register_builtin_events(events)
