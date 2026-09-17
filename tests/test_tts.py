@@ -32,6 +32,7 @@ class TtsTests(unittest.TestCase):
         speaker._lock = threading.RLock()
         speaker._response = None
         request = _SpeechRequest("текст", Future(), threading.Event())
+        speaker._stop = threading.Event()
         request.interrupted.set()
         stderr = io.StringIO()
 

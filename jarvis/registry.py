@@ -124,7 +124,7 @@ class ActionRegistry:
         def visible(spec: ActionSpec) -> bool:
             if spec.audiences is None or audience in spec.audiences:
                 return True
-            return "subagent" in spec.audiences and audience not in {"main"}
+            return "subagent" in spec.audiences and audience not in {"main", "module_builder"}
 
         with self._lock:
             return {

@@ -11,18 +11,15 @@
 
 ``module.py`` возвращает :class:`Module`; код конкретных действий и
 обработчиков размещается в соответствующих каталогах и импортируется
-фабрикой. Модули внутри ``modules/main/`` доступны main, а модули внутри
+фабрикой через относительные импорты (например, ``from .actions.send import send``).
+Модули внутри ``modules/main/`` доступны main, а модули внутри
 ``modules/<agent_type>/`` — только этому типу субагентов.
 
 Минимальный пример ``module.py``::
 
     from jarvis.module_api import Module, action, event_handler, event
-
-    def send(data, ctx):
-        return {"sent": True, "text": data["text"]}
-
-    def poll(ctx):
-        ctx.emit("example.message", {"text": "..."})
+    from .actions.send import send
+    from .handlers.poll import poll
 
     def create_module():
         return Module(
@@ -184,7 +181,7 @@ class ModuleContext:
 
 @dataclass(slots=True)
 class ActionContext:
-    """Контекст одного вызова действия."""
+    """Контекст вызова; длительные действия завершаются по stop_event."""
 
     agent_id: str
     action_id: str
@@ -193,6 +190,7 @@ class ActionContext:
     module_manager: Any
     config: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    stop_event: threading.Event = field(default_factory=threading.Event)
 
     def emit(
         self,
