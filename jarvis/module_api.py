@@ -1,19 +1,25 @@
 """Публичный контракт пользовательских модулей.
 
-Модуль — это каталог в ``.jarvis/modules`` с ``module.json`` и Python
-файлом, который возвращает :class:`Module`. В модуле можно объявить любое
-количество действий и обработчиков, включая ноль действий или ноль
-обработчиков.
+Модуль — комплект обработчиков событий и действий (или только одного из
+них) для одной области агентов. Каталог модуля обязан иметь структуру::
+
+    module/
+      module.json
+      module.py
+      actions/
+      handlers/
+
+``module.py`` возвращает :class:`Module`; код конкретных действий и
+обработчиков размещается в соответствующих каталогах и импортируется
+фабрикой через относительные импорты (например, ``from .actions.send import send``).
+Модули внутри ``.jarvis/modules/main/`` доступны main, а модули внутри
+``.jarvis/modules/<agent_type>/`` — только этому типу субагентов.
 
 Минимальный пример ``module.py``::
 
     from jarvis.module_api import Module, action, event_handler, event
-
-    def send(data, ctx):
-        return {"sent": True, "text": data["text"]}
-
-    def poll(ctx):
-        ctx.emit("example.message", {"text": "..."})
+    from .actions.send import send
+    from .handlers.poll import poll
 
     def create_module():
         return Module(
@@ -45,7 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .protocol import Event, JSONSchema
+from .protocol import Event, InputPart, JSONSchema
 
 
 ActionHandler = Callable[[dict[str, Any], "ActionContext"], Any]
@@ -136,6 +142,12 @@ def event_handler(
     )
 
 
+def input_part(type: str, mime_type: str, base64_data: str) -> InputPart:
+    """Создать мультимодальную часть, подготовленную самим модулем."""
+
+    return InputPart(type=type, mime_type=mime_type, data=base64_data)
+
+
 @dataclass(slots=True)
 class ModuleContext:
     """Контекст фонового обработчика модуля."""
@@ -153,6 +165,7 @@ class ModuleContext:
         *,
         target: str | None = "main",
         reply_to: str | None = None,
+        parts: Iterable[InputPart] = (),
     ) -> Event:
         event = Event(
             type=type,
@@ -160,6 +173,7 @@ class ModuleContext:
             source=f"module:{self.module_name}",
             target=target,
             reply_to=reply_to,
+            parts=tuple(parts),
         )
         self.emit_event(event)
         return event
@@ -167,7 +181,7 @@ class ModuleContext:
 
 @dataclass(slots=True)
 class ActionContext:
-    """Контекст одного вызова действия."""
+    """Контекст вызова; длительные действия завершаются по stop_event."""
 
     agent_id: str
     action_id: str
@@ -176,6 +190,7 @@ class ActionContext:
     module_manager: Any
     config: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    stop_event: threading.Event = field(default_factory=threading.Event)
 
     def emit(
         self,
@@ -185,6 +200,7 @@ class ActionContext:
         target: str | None = "main",
         reply_to: str | None = None,
         source: str | None = None,
+        parts: Iterable[InputPart] = (),
     ) -> Event:
         event = Event(
             type=type,
@@ -192,6 +208,7 @@ class ActionContext:
             source=source or f"action:{type}",
             target=target,
             reply_to=reply_to,
+            parts=tuple(parts),
         )
         self.event_bus.publish(event)
         return event
