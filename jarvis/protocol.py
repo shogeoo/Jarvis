@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject
 
 JSON = Any
 JSONSchema = dict[str, Any]
+INPUT_MODALITIES = ("text", "image", "audio", "video")
 
 
 def make_id(prefix: str) -> str:
@@ -267,6 +268,37 @@ def _is_type(value: Any, expected: str | None) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
+class InputPart:
+    """Мультимодальная часть, уже подготовленная модулем.
+
+    Ядро не разбирает файлы: ``data`` должен быть base64 без data-url
+    префикса, а модуль обязан сам определить MIME и выполнить конвертацию.
+    """
+
+    type: str
+    mime_type: str
+    data: str
+
+    def __post_init__(self) -> None:
+        if self.type not in INPUT_MODALITIES or self.type == "text":
+            raise ValueError(f"Неподдерживаемый тип input part: {self.type}")
+        if not self.mime_type or not isinstance(self.data, str):
+            raise ValueError("InputPart требует mime_type и base64 data")
+
+    def api_value(self) -> dict[str, Any]:
+        url = f"data:{self.mime_type};base64,{self.data}"
+        if self.type == "image":
+            return {"type": "image_url", "image_url": {"url": url}}
+        if self.type == "audio":
+            audio_format = self.mime_type.split("/", 1)[-1].split(";", 1)[0]
+            return {
+                "type": "input_audio",
+                "input_audio": {"data": self.data, "format": audio_format},
+            }
+        return {"type": "video_url", "video_url": {"url": url}}
+
+
+@dataclass(frozen=True, slots=True)
 class Event:
     """Внутренний конверт одного события, поступающего агенту."""
 
@@ -275,6 +307,7 @@ class Event:
     source: str = "system"
     target: str | None = "main"
     reply_to: str | None = None
+    parts: tuple[InputPart, ...] = ()
     id: str = field(default_factory=lambda: make_id("evt"))
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -287,6 +320,21 @@ class Event:
 
     def model_content(self) -> str:
         return json_text(self.model_value())
+
+    def model_message(self, capabilities: Any = None) -> dict[str, Any]:
+        """Собрать одно OpenAI user message для этого события."""
+
+        supported = getattr(capabilities, "supports", lambda modality: True)
+        visible_parts = [part for part in self.parts if supported(part.type)]
+        if not visible_parts:
+            content: Any = self.model_content()
+        else:
+            content = [{"type": "text", "text": self.model_content()}]
+            content.extend(part.api_value() for part in visible_parts)
+        return {"role": "user", "content": content}
+
+    def model_visible_content(self, capabilities: Any = None) -> Any:
+        return self.model_message(capabilities)["content"]
 
     def debug_value(self) -> dict[str, Any]:
         """Полное представление для консольного журнала."""

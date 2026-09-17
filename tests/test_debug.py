@@ -1,4 +1,5 @@
 import io
+import json
 import unittest
 
 from jarvis.debug import Debugger
@@ -19,7 +20,12 @@ class DebugTests(unittest.TestCase):
 
         self.assertEqual(
             output.getvalue(),
-            event.model_content() + "\n" + assistant_output + "\n",
+            json.dumps(event.model_value(), ensure_ascii=False, indent=2)
+            + "\n"
+            + json.dumps(
+                json.loads(assistant_output), ensure_ascii=False, indent=2
+            )
+            + "\n",
         )
 
 

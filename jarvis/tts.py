@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import signal
 import socket
 import subprocess
 import threading
@@ -24,6 +23,7 @@ from urllib.parse import urlparse
 import requests
 
 from .config import ROOT, Config
+from .lifecycle import terminate_process
 
 RUNTIME_DIR = ROOT / ".jarvis"
 SERVER_LOG = RUNTIME_DIR / "tts-server.log"
@@ -57,9 +57,11 @@ class Speaker:
         self.cfg = config
         self._queue: "queue.Queue[_SpeechRequest]" = queue.Queue()
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._server: subprocess.Popen | None = None
+        self._bootstrap: subprocess.Popen | None = None
         self._current: _SpeechRequest | None = None
         self._response: requests.Response | None = None
         self._player: subprocess.Popen | None = None
@@ -71,20 +73,39 @@ class Speaker:
         return parsed.hostname or "127.0.0.1", parsed.port or 80
 
     def start(self) -> "Speaker":
+        print(
+            f"TTS Fish Audio: подключение к {self.cfg.tts_url} "
+            f"(голос: {self.cfg.tts_voice})...",
+            flush=True,
+        )
         server_running = self._port_open()
+        if server_running:
+            print("TTS Fish Audio: сервер уже запущен.", flush=True)
         self._ensure_voice(gpu=not server_running)
         if not server_running:
             self._start_server()
+        else:
+            self._wait_server()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
         return self
 
-    def stop(self, timeout: float = 20.0) -> None:
-        self.interrupt()
+    def stop(self, timeout: float = 2.0) -> None:
+        if self._stop.is_set():
+            return
+        print("TTS Fish Audio: остановка.", flush=True)
         self._stop.set()
+        self._ready.set()
+        self.interrupt()
+        with self._lock:
+            player = self._player
+        if player is not None:
+            terminate_process(player)
+        if self._bootstrap is not None:
+            terminate_process(self._bootstrap, group=True)
+        self._stop_server()
         if self._thread is not None:
             self._thread.join(timeout=timeout)
-        self._stop_server()
 
     def submit(self, text: str) -> Future:
         text = (text or "").strip()
@@ -103,6 +124,7 @@ class Speaker:
                     interrupted=threading.Event(),
                 )
             )
+            self._ready.set()
         return future
 
     def interrupt(self) -> int:
@@ -127,11 +149,27 @@ class Speaker:
                 request.interrupted.set()
                 if not request.future.done():
                     request.future.set_exception(SpeechInterrupted("interrupted"))
-        if response is not None:
-            response.close()
         if player is not None and player.poll() is None:
-            player.terminate()
+            try:
+                player.terminate()
+            except ProcessLookupError:
+                pass
+        if response is not None:
+            # close() can wait for a concurrent socket read. Never block VAD
+            # or the main shutdown path on that read.
+            def close_stream():
+                try:
+                    response.close()
+                except Exception:
+                    pass
+            threading.Thread(target=close_stream, daemon=True).start()
         return len(requests)
+
+    def has_pending(self) -> bool:
+        """Есть ли текущая или ожидающая реплика, которую можно перебить."""
+
+        with self._lock:
+            return self._current is not None or not self._queue.empty()
 
     # --- server ------------------------------------------------------
     def _base_cmd(self) -> list[str]:
@@ -147,10 +185,17 @@ class Speaker:
         except OSError:
             return False
 
+    def _http_ready(self) -> bool:
+        try:
+            response = requests.get(self.cfg.tts_url, timeout=0.5)
+            return response.status_code < 500
+        except requests.RequestException:
+            return False
+
     def _start_server(self) -> None:
         if not self.cfg.tts_autostart:
             raise RuntimeError(
-                f"TTS-сервер недоступен: {self.cfg.tts_url}. "
+                f"TTS Fish Audio недоступен: {self.cfg.tts_url}. "
                 "Запусти s2.cpp вручную или включи TTS_AUTOSTART."
             )
         if not self.cfg.tts_server_bin.exists():
@@ -161,12 +206,14 @@ class Speaker:
         cmd += ["--server", "--host", self._host, "--port", str(self._port)]
         cmd += self.cfg.tts_server_args
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-        print(f"Запуск TTS-сервера: {' '.join(cmd)}", flush=True)
-        log = open(SERVER_LOG, "ab")
-        self._server = subprocess.Popen(
-            cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+        print(
+            f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
+            flush=True,
         )
-        log.close()
+        with open(SERVER_LOG, "ab") as log:
+            self._server = subprocess.Popen(
+                cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
+            )
         try:
             self._wait_server()
         except Exception:
@@ -181,34 +228,24 @@ class Speaker:
         self._server = None
         if proc.poll() is not None:
             return
-        print("Остановка TTS-сервера...", flush=True)
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
+        print("TTS Fish Audio: остановка сервера...", flush=True)
+        terminate_process(proc, group=True)
 
     def _wait_server(self) -> None:
         deadline = time.time() + SERVER_START_TIMEOUT
         while time.time() < deadline:
-            if self._port_open():
-                print("TTS-сервер готов.", flush=True)
+            if self._http_ready():
+                print("TTS Fish Audio: веб-сервер готов.", flush=True)
                 return
             if self._server is not None and self._server.poll() is not None:
                 raise RuntimeError(
-                    f"TTS-сервер завершился (код {self._server.returncode}); "
+                    f"TTS Fish Audio завершился (код {self._server.returncode}); "
                     f"лог: {SERVER_LOG}"
                 )
             time.sleep(0.5)
         raise RuntimeError(
-            f"TTS-сервер не поднялся за {SERVER_START_TIMEOUT:.0f} с; лог: {SERVER_LOG}"
+            f"TTS Fish Audio не поднялся за {SERVER_START_TIMEOUT:.0f} с; "
+            f"лог: {SERVER_LOG}"
         )
 
     # --- voice profile ----------------------------------------------
@@ -241,19 +278,25 @@ class Speaker:
             "--output", str(output),
         ]
         print(f"Создание профиля голоса «{self.cfg.tts_voice}»...", flush=True)
-        result = subprocess.run(cmd)
+        self._bootstrap = subprocess.Popen(cmd, start_new_session=True)
+        self._bootstrap.wait()
         output.unlink(missing_ok=True)
-        if result.returncode != 0 or not self._profile_path().exists():
+        if self._bootstrap.returncode != 0 or not self._profile_path().exists():
             raise RuntimeError("Не удалось создать профиль голоса (см. вывод s2.cpp).")
+        self._bootstrap = None
 
     # --- worker ------------------------------------------------------
     def _run(self) -> None:
-        while not (self._stop.is_set() and self._queue.empty()):
-            try:
-                with self._lock:
-                    request = self._queue.get(timeout=0.1)
+        while not self._stop.is_set():
+            with self._lock:
+                try:
+                    request = self._queue.get_nowait()
                     self._current = request
-            except queue.Empty:
+                except queue.Empty:
+                    request = None
+                    self._ready.clear()
+            if request is None:
+                self._ready.wait(timeout=0.1)
                 continue
             try:
                 self._speak(request)
@@ -261,14 +304,17 @@ class Speaker:
                     if not request.future.done():
                         request.future.set_result({"spoken": True})
             except Exception as exc:  # noqa: BLE001
-                if not request.future.done():
-                    request.future.set_exception(exc)
+                with self._lock:
+                    if not request.future.done():
+                        request.future.set_exception(exc)
             finally:
                 with self._lock:
                     if self._current is request:
                         self._current = None
 
     def _speak(self, request: _SpeechRequest) -> None:
+        if self._stop.is_set() or request.interrupted.is_set():
+            raise SpeechInterrupted("interrupted")
         form = {
             "text": (None, request.text),
             "voice": (None, self.cfg.tts_voice),
@@ -287,6 +333,8 @@ class Speaker:
                 rate = int(resp.headers.get("X-Audio-Sample-Rate", "44100"))
                 self._play(resp.iter_content(chunk_size=8192), rate, request)
         except Exception as exc:  # noqa: BLE001
+            if request.interrupted.is_set():
+                raise SpeechInterrupted("interrupted") from None
             if isinstance(exc, SpeechInterrupted):
                 raise
             print(f"Ошибка синтеза речи: {exc}", file=os.sys.stderr, flush=True)
@@ -301,15 +349,17 @@ class Speaker:
             "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
         ]
         try:
-            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            with self._lock:
+                if self._stop.is_set() or request.interrupted.is_set():
+                    raise SpeechInterrupted("interrupted")
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True)
+                self._player = proc
         except FileNotFoundError:
             print(
                 "ffplay не найден (пакет ffmpeg). Установи ffmpeg для озвучки.",
                 file=os.sys.stderr, flush=True,
             )
             raise RuntimeError("ffplay_not_found")
-        with self._lock:
-            self._player = proc
         try:
             for chunk in chunks:
                 if request.interrupted.is_set():
@@ -320,7 +370,7 @@ class Speaker:
                     break
         finally:
             if request.interrupted.is_set() and proc.poll() is None:
-                proc.terminate()
+                terminate_process(proc)
             try:
                 proc.stdin.close()  # type: ignore[union-attr]
             except (BrokenPipeError, OSError):

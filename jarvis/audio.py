@@ -13,6 +13,7 @@ import subprocess
 import threading
 
 import numpy as np
+from .lifecycle import terminate_process
 
 SAMPLE_RATE = 16000
 FRAME_SIZE = 512
@@ -29,6 +30,7 @@ class MicStream:
         self.frames: "queue.Queue[np.ndarray]" = queue.Queue()
         self._proc: subprocess.Popen | None = None
         self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
 
     def start(self) -> "MicStream":
         cmd = [
@@ -41,16 +43,19 @@ class MicStream:
         if self.device:
             cmd.append(f"--device={self.device}")
         self._proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-        threading.Thread(target=self._read_loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._thread.start()
         return self
 
     def _read_loop(self):
         nbytes = self.frame_size * 2
-        while not self._stop.is_set() and self._proc is not None \
-                and self._proc.poll() is None:
-            raw = self._proc.stdout.read(nbytes)
+        proc = self._proc
+        while not self._stop.is_set() and proc is not None \
+                and proc.poll() is None:
+            raw = proc.stdout.read(nbytes)
             if len(raw) < nbytes:
                 if raw:
                     self.frames.put(np.frombuffer(raw, dtype=np.int16))
@@ -62,9 +67,8 @@ class MicStream:
     def stop(self):
         self._stop.set()
         if self._proc is not None:
-            try:
-                self._proc.terminate()
-                self._proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
+            terminate_process(self._proc)
+            if self._thread is not None:
+                self._thread.join(timeout=1)
+            self._proc.stdout.close()
             self._proc = None

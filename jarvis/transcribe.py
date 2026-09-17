@@ -26,7 +26,7 @@ class Transcriber:
 
     def load(self):
         print(
-            f"Загрузка модели {self.model_name} на {self.device} "
+            f"STT Whisper: загрузка модели {self.model_name} на {self.device} "
             f"({self.compute_type})...",
             flush=True,
         )
@@ -42,7 +42,7 @@ class Transcriber:
                 "  pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
                 "или переустанови пакет с extra: pip install -e '.[cuda]'."
             ) from exc
-        print("Модель загружена", flush=True)
+        print(f"STT Whisper: модель {self.model_name} готова.", flush=True)
 
     def _transcribe(self, path: str, language: str | None) -> tuple[str, str]:
         segments, info = self.model.transcribe(
