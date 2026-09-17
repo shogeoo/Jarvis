@@ -10,5 +10,4 @@ models/silero_vad.onnx
 build/
 dist/
 .jarvis/
-modules/
 *.s2voice

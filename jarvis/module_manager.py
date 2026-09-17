@@ -22,7 +22,7 @@ from .protocol import Event, validate_strict_schema
 from .registry import ActionRegistry, EventRegistry
 
 
-DEFAULT_MODULES_DIR = ROOT / "modules"
+DEFAULT_MODULES_DIR = ROOT / ".jarvis" / "modules"
 MAIN_SCOPE = "main"
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
@@ -38,7 +38,7 @@ class LoadedModule:
 
 
 class ModuleManager:
-    """Сканирует ``modules`` и регистрирует модули по областям агентов."""
+    """Сканирует ``.jarvis/modules`` и регистрирует модули по областям агентов."""
 
     def __init__(
         self,

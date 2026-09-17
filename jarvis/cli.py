@@ -181,6 +181,7 @@ def _run(args, resources) -> int:
     resources.out_queue = out_queue
     stop = resources.stop
     failed = threading.Event()
+    transcriber_ready = threading.Event()
 
     def worker():
         tr = Transcriber(
@@ -193,7 +194,9 @@ def _run(args, resources) -> int:
             print(exc, file=os.sys.stderr)
             failed.set()
             stop.set()
+            transcriber_ready.set()
             return
+        transcriber_ready.set()
         while not stop.is_set():
             item = out_queue.get()
             if item is None:
@@ -222,10 +225,16 @@ def _run(args, resources) -> int:
     resources.worker = thread
     thread.start()
 
+    while not transcriber_ready.wait(timeout=0.1):
+        if stop.is_set():
+            return 1
+    if failed.is_set():
+        return 1
+
     mic = MicStream(args.sample_rate, FRAME_SIZE, args.input_device)
     resources.mic = mic
     mic.start()
-    print("Говорите. Ctrl+C — выход.", flush=True)
+    print("Jarvis: ассистент готов. Говорите. Ctrl+C — выход.", flush=True)
     while not stop.is_set():
         try:
             frame = mic.frames.get(timeout=0.1)

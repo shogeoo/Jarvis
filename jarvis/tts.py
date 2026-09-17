@@ -84,9 +84,10 @@ class Speaker:
         self._ensure_voice(gpu=not server_running)
         if not server_running:
             self._start_server()
+        else:
+            self._wait_server()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        print("TTS Fish Audio: готов.", flush=True)
         return self
 
     def stop(self, timeout: float = 2.0) -> None:
@@ -184,6 +185,13 @@ class Speaker:
         except OSError:
             return False
 
+    def _http_ready(self) -> bool:
+        try:
+            response = requests.get(self.cfg.tts_url, timeout=0.5)
+            return response.status_code < 500
+        except requests.RequestException:
+            return False
+
     def _start_server(self) -> None:
         if not self.cfg.tts_autostart:
             raise RuntimeError(
@@ -226,8 +234,8 @@ class Speaker:
     def _wait_server(self) -> None:
         deadline = time.time() + SERVER_START_TIMEOUT
         while time.time() < deadline:
-            if self._port_open():
-                print("TTS Fish Audio: сервер готов.", flush=True)
+            if self._http_ready():
+                print("TTS Fish Audio: веб-сервер готов.", flush=True)
                 return
             if self._server is not None and self._server.poll() is not None:
                 raise RuntimeError(
