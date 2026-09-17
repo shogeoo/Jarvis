@@ -10,37 +10,13 @@ from jarvis.registry import ActionRegistry, EventRegistry
 from jarvis.runtime import EventBus
 
 
-class ModuleTests(unittest.TestCase):
-    def test_module_may_contain_only_actions(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            module_path = root / "main" / "example"
-            module_path.mkdir(parents=True)
-            (module_path / "actions").mkdir()
-            (module_path / "handlers").mkdir()
-            (module_path / "module.json").write_text(
-                json.dumps(
-                    {
-                        "name": "example",
-                        "version": "1.0.0",
-                        "description": "test",
-                        "entrypoint": "module.py",
-                        "factory": "create_module",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (module_path / "module.py").write_text(
-                """
+MODULE_CODE = """
 from jarvis.module_api import Module, action
-
-def run(data, ctx):
-    return {"value": data["value"]}
+from .actions.run import run
 
 def create_module():
     return Module(
         name="example",
-        version="1.0.0",
         description="test",
         actions=(action("example.run", "run", {
             "type": "object",
@@ -49,9 +25,37 @@ def create_module():
             "additionalProperties": False,
         }, run),),
     )
-""",
-                encoding="utf-8",
-            )
+"""
+
+
+class ModuleTests(unittest.TestCase):
+    def _create_module(self, root: Path) -> None:
+        module_path = root / "example"
+        (module_path / "actions").mkdir(parents=True)
+        (module_path / "handlers").mkdir()
+        (module_path / "actions" / "__init__.py").write_text("", encoding="utf-8")
+        (module_path / "handlers" / "__init__.py").write_text("", encoding="utf-8")
+        (module_path / "actions" / "run.py").write_text(
+            "def run(data, ctx):\n    return {'value': data['value']}\n",
+            encoding="utf-8",
+        )
+        (module_path / "module.json").write_text(
+            json.dumps(
+                {
+                    "name": "example",
+                    "description": "test",
+                    "entrypoint": "module.py",
+                    "factory": "create_module",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (module_path / "module.py").write_text(MODULE_CODE, encoding="utf-8")
+
+    def test_module_may_contain_only_actions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._create_module(root)
             event_registry = EventRegistry()
             action_registry = ActionRegistry()
             bus = EventBus(event_registry, debug=Debugger(enabled=False))
@@ -71,48 +75,10 @@ def create_module():
             self.assertEqual(result, {"value": "ok"})
             manager.unload("example")
 
-    def test_module_is_visible_only_in_its_scope(self):
+    def test_module_is_global_and_agent_lists_control_access(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for scope in ("main", "developer"):
-                path = root / scope / "example"
-                path.mkdir(parents=True)
-                (path / "actions").mkdir()
-                (path / "handlers").mkdir()
-                (path / "module.json").write_text(
-                    json.dumps(
-                        {
-                            "name": "example",
-                            "version": "1.0.0",
-                            "description": "test",
-                            "entrypoint": "module.py",
-                            "factory": "create_module",
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                (path / "module.py").write_text(
-                    """
-from jarvis.module_api import Module, action
-
-def run(data, ctx):
-    return {"scope": data["scope"]}
-
-def create_module():
-    return Module(
-        name="example",
-        version="1.0.0",
-        description="test",
-        actions=(action("example.run", "run", {
-            "type": "object",
-            "properties": {"scope": {"type": "string"}},
-            "required": ["scope"],
-            "additionalProperties": False,
-        }, run),),
-    )
-""",
-                    encoding="utf-8",
-                )
+            self._create_module(root)
             event_registry = EventRegistry()
             action_registry = ActionRegistry()
             bus = EventBus(event_registry, debug=Debugger(enabled=False))
@@ -123,22 +89,11 @@ def create_module():
                 modules_dir=root,
                 debug=Debugger(enabled=False),
             )
-            manager.load("example", scope="main", start_handlers=False)
-            manager.load("example", scope="developer", start_handlers=False)
-            self.assertIn("example.run", action_registry.for_agent("main"))
-            self.assertIn("example.run", action_registry.for_agent("developer"))
-            self.assertNotIn("example.run", action_registry.for_agent("other"))
-            copied = manager.copy(
-                "example",
-                source_scope="developer",
-                target_scope="other",
-            )
-            self.assertEqual(copied["target_scope"], "other")
-            self.assertIn("example.run", action_registry.for_agent("other"))
-            manager.unload("example", scope="main")
-            self.assertIn("example.run", action_registry.for_agent("developer"))
-            manager.unload("example", scope="developer")
-            manager.unload("example", scope="other")
+            manager.load("example", start_handlers=False)
+            self.assertIn("example.run", action_registry.for_agent())
+            self.assertIn("example.run", action_registry.for_agent({"example.run"}))
+            self.assertNotIn("example.run", action_registry.for_agent(set()))
+            manager.unload("example")
 
 
 if __name__ == "__main__":

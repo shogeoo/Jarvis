@@ -79,8 +79,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Список источников PulseAudio и выход")
     p.add_argument("--env-file", default=None,
                    help="Файл с параметрами API (по умолчанию .env в корне проекта)")
-    p.add_argument("--system-prompt", default=None,
-                   help="Файл мастер-промпта (по умолчанию system_prompt.txt)")
+    p.add_argument("--person-prompt", default=None,
+                   help="Файл person prompt (по умолчанию person_prompt.txt)")
     p.add_argument("--no-llm", action="store_true",
                    help="Отключить нейросеть, только расшифровка")
     p.add_argument("--no-tts", action="store_true",
@@ -104,7 +104,7 @@ def publish_stt_event(event_bus, text: str) -> None:
 def _run(args, resources) -> int:
     ensure_model()
     printer = Printer()
-    config = load_config(args.env_file, args.system_prompt)
+    config = load_config(args.env_file, args.person_prompt)
 
     speaker = None
     if not args.no_tts and config.tts_enabled and config.tts_url:
@@ -168,7 +168,7 @@ def _run(args, resources) -> int:
             speaker=speaker,
         )
         module_manager.load_all()
-        agent_manager.create_main(config.system)
+        agent_manager.create_main(config.person_prompt)
         module_manager.start_all()
 
     vad = SileroVAD(threshold=args.threshold)

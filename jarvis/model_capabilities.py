@@ -26,15 +26,12 @@ class ModelCapabilities:
             name for name in SUPPORTED_INPUT_MODALITIES
             if name not in self.input_modalities
         ]
-        lines = [
-            "Входные модальности текущей модели:",
-            f"- поддерживаются: {supported}",
-        ]
+        lines = [f"Текущие поддерживаемые модальности: {supported}."]
         if unsupported:
             lines.extend(
                 [
-                    f"- не поддерживаются: {', '.join(unsupported)}",
-                    "Не пытайся самостоятельно воспринимать неподдерживаемые "
+                    f"Нативно не поддерживаются: {', '.join(unsupported)}.",
+                    "Не пытайся воспринимать неподдерживаемые "
                     "модальности. Если задача требует их, сообщи об ограничении "
                     "через доступное действие.",
                 ]
