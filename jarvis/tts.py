@@ -25,9 +25,10 @@ import requests
 from .config import ROOT, Config
 from .lifecycle import terminate_process
 
-RUNTIME_DIR = ROOT / ".jarvis"
+RUNTIME_DIR = ROOT / ".assistant"
 SERVER_LOG = RUNTIME_DIR / "tts-server.log"
 SERVER_START_TIMEOUT = 240.0
+START_BUFFER_SECONDS = 0.35
 VOICE_BOOTSTRAP_TEXT = "Инициализация завершена."
 STREAM_PARAMS = {
     "stream": True,
@@ -344,6 +345,20 @@ class Speaker:
                 self._response = None
 
     def _play(self, chunks, rate: int, request: _SpeechRequest) -> None:
+        chunks = iter(chunks)
+        buffer = bytearray()
+        target_bytes = max(1, int(rate * 2 * START_BUFFER_SECONDS))
+        while len(buffer) < target_bytes:
+            if request.interrupted.is_set():
+                raise SpeechInterrupted("interrupted")
+            try:
+                chunk = next(chunks)
+            except StopIteration:
+                break
+            if chunk:
+                buffer.extend(chunk)
+        if not buffer:
+            return
         cmd = [
             "ffplay", "-autoexit", "-nodisp", "-loglevel", "error", "-infbuf",
             "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
@@ -361,6 +376,10 @@ class Speaker:
             )
             raise RuntimeError("ffplay_not_found")
         try:
+            try:
+                proc.stdin.write(buffer)  # type: ignore[union-attr]
+            except (BrokenPipeError, OSError):
+                return
             for chunk in chunks:
                 if request.interrupted.is_set():
                     raise SpeechInterrupted("interrupted")

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_PATH = ROOT / ".env"
-DEFAULT_PROMPT_PATH = ROOT / "system_prompt.txt"
+DEFAULT_PROMPT_PATH = ROOT / "person_prompt.txt"
 DEFAULT_SYSTEM = (
     "Ты — Jarvis, роботизированный голосовой ассистент. "
     "Отвечай кратко и по делу."
@@ -43,7 +43,7 @@ class Config:
     model: str | None
     base_url: str | None
     api_key: str | None
-    system: str
+    person_prompt: str
 
     # TTS (Fish Audio S2 Pro через s2.cpp)
     tts_enabled: bool
@@ -63,8 +63,8 @@ class Config:
         return bool(self.model)
 
 
-def read_system_prompt(path: str | os.PathLike | None = None) -> str:
-    """Прочитать мастер-промпт; при отсутствии файла — запасной текст."""
+def read_person_prompt(path: str | os.PathLike | None = None) -> str:
+    """Прочитать person prompt; при отсутствии файла — запасной текст."""
     prompt_path = Path(path) if path else DEFAULT_PROMPT_PATH
     try:
         text = prompt_path.read_text(encoding="utf-8").strip()
@@ -82,7 +82,7 @@ def load_config(
         model=os.environ.get("LLM_MODEL"),
         base_url=os.environ.get("LLM_BASE_URL"),
         api_key=os.environ.get("LLM_API_KEY"),
-        system=read_system_prompt(prompt_path),
+        person_prompt=read_person_prompt(prompt_path),
         tts_enabled=_env_bool("TTS_ENABLED", True),
         tts_url=os.environ.get("TTS_URL", "http://127.0.0.1:3030/generate"),
         tts_voice=os.environ.get("TTS_VOICE", "jarvis"),

@@ -1,9 +1,4 @@
-"""Встроенные события и действия ядра Jarvis.
-
-Эти компоненты находятся в исходниках и никогда не загружаются из
-``.jarvis/modules/``. Пользовательские модули получают тот же протокол через
-публичный ``jarvis.module_api``.
-"""
+"""Захардкоженные базовые события и действия системы."""
 
 from __future__ import annotations
 
@@ -15,8 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .module_api import ActionSpec, EventDefinition
 from .lifecycle import terminate_process
+from .module_api import ActionSpec, EventDefinition
 from .prompts import MODULE_BUILDER_INSTRUCTIONS
 from .protocol import JSONSchema, empty_object_schema, object_schema
 from .registry import ActionRegistry, EventRegistry
@@ -55,60 +50,13 @@ def builtin_event_definitions() -> list[EventDefinition]:
             ),
         ),
         EventDefinition(
-            "agent.task",
-            "Задание, с которым родитель запустил субагента.",
-            _schema(
-                agent_id=STRING,
-                parent_id=STRING,
-                preset=STRING,
-                name=STRING,
-                agent_type=STRING,
-                task=STRING,
-            ),
-        ),
-        EventDefinition(
-            "agent.message",
-            "Структурированное текстовое сообщение между родителем и ребёнком.",
-            _schema(from_agent=STRING, text=STRING),
-        ),
-        EventDefinition(
-            "agent.completed",
-            "Субагент закончил работу.",
-            _schema(agent_id=STRING, summary=STRING),
-        ),
-        EventDefinition(
-            "agent.failed",
-            "Субагент не смог обработать событие или запрос модели.",
-            _schema(agent_id=STRING, error=STRING),
-        ),
-        EventDefinition(
-            "agent.interrupted",
-            "Субагент был прерван.",
-            _schema(agent_id=STRING, reason=STRING),
-        ),
-        EventDefinition(
-            "agent.deleted",
-            "Субагент был удалён.",
-            _schema(agent_id=STRING, reason=STRING),
-        ),
-        EventDefinition(
-            "module.completed",
-            "Модуль подключён, обновлён или удалён.",
-            _schema(
-                agent_id=STRING,
-                module=STRING,
-                scope=STRING,
-                operation={"type": "string", "enum": ["create", "update", "delete"]},
-                version=NULLABLE_STRING,
-                summary=STRING,
-                actions={"type": "array", "items": STRING},
-                events={"type": "array", "items": STRING},
-                handlers={"type": "array", "items": STRING},
-            ),
+            "message",
+            "Обычное сообщение от одного агента другому.",
+            object_schema({"from": STRING, "text": STRING}),
         ),
         EventDefinition(
             "handler_error",
-            "Фоновый обработчик модуля завершился с ошибкой.",
+            "Ошибка фонового обработчика пользовательского модуля.",
             _schema(module=STRING, handler=STRING, error=STRING),
         ),
     ]
@@ -138,14 +86,24 @@ def register_builtin_actions(
     printer: Any = None,
     speaker: Any = None,
 ) -> None:
-    """Зарегистрировать базовые действия для главного и рабочих агентов."""
-
     manager.add_preset(
         AgentPreset(
             name="module_builder",
             description="Создаёт, изменяет и удаляет пользовательские модули.",
-            system_prompt=MODULE_BUILDER_INSTRUCTIONS,
-            audience="module_builder",
+            purpose=MODULE_BUILDER_INSTRUCTIONS,
+            allowed_actions=frozenset(
+                {
+                    "no_action",
+                    "agent.message",
+                    "workspace.list",
+                    "workspace.read",
+                    "workspace.write",
+                    "workspace.delete",
+                    "process.run",
+                    "module.validate",
+                    "module.complete",
+                }
+            ),
         ),
         persist=False,
     )
@@ -155,162 +113,138 @@ def register_builtin_actions(
             description="Закончить текущий цикл и ждать следующего события.",
             data_schema=empty_object_schema(),
             handler=lambda data, context: None,
-            audiences=None,
             owner="builtin",
         ),
         ActionSpec(
             type="speech",
-            description="Произнести прямую речь из text. Допустимы [теги] интонации. "
-                        "Без Markdown, списков, двоеточий, табуляции и служебных пояснений.",
+            description=(
+                "Произнести прямую речь из text. Допустимы [теги] интонации. "
+                "text не содержит Markdown, списков, двоеточий, табуляции, "
+                "переносов строк или служебных пояснений."
+            ),
             data_schema=_schema(text=STRING),
             handler=_speech(printer, speaker),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.spawn",
-            description="Запустить субагента параллельно с заданием.",
+            description="Создать агента с отдельными контекстом, очередью и потоком.",
             data_schema=_schema(
-                preset=STRING,
+                agent_type=STRING,
                 name=STRING,
                 task=STRING,
-                system_prompt=NULLABLE_STRING,
+                purpose=NULLABLE_STRING,
                 actions={"type": "array", "items": STRING},
             ),
             handler=_spawn(manager),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.message",
-            description="Передать структурированное текстовое сообщение родителю или ребёнку.",
+            description="Отправить обычное событие message любому агенту.",
             data_schema=_schema(agent_id=STRING, text=STRING),
             handler=_message(manager),
-            audiences=frozenset({"main", "subagent", "module_builder"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.interrupt",
-            description="Прервать работающего субагента.",
+            description="Остановить агент, если это разрешено текущей конфигурацией.",
             data_schema=_schema(agent_id=STRING, reason=STRING),
             handler=_interrupt(manager),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.delete",
-            description="Остановить и удалить субагента.",
+            description="Остановить и удалить агент, если это разрешено конфигурацией.",
             data_schema=_schema(agent_id=STRING, reason=STRING),
             handler=_delete(manager),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.list",
-            description="Получить состояния всех запущенных агентов.",
+            description="Получить список экземпляров агентов и их состояний.",
             data_schema=empty_object_schema(),
             handler=lambda data, context: {"agents": manager.list_agents()},
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.preset_create",
-            description="Сохранить или обновить пресет субагента.",
+            description="Сохранить переиспользуемый тип агента.",
             data_schema=_schema(
                 name=STRING,
                 description=STRING,
-                system_prompt=STRING,
+                purpose=STRING,
                 actions={"type": "array", "items": STRING},
             ),
             handler=lambda data, context: context.agent_manager.create_preset(
                 name=data["name"],
                 description=data["description"],
-                system_prompt=data["system_prompt"],
+                purpose=data["purpose"],
                 allowed_actions=data["actions"],
             ),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.preset_delete",
-            description="Удалить сохранённый пресет субагента.",
+            description="Удалить сохранённый тип агента.",
             data_schema=_schema(name=STRING),
             handler=lambda data, context: context.agent_manager.delete_preset(data["name"]),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="agent.preset_list",
-            description="Получить сохранённые пресеты субагентов.",
+            description="Получить сохранённые типы агентов.",
             data_schema=empty_object_schema(),
             handler=lambda data, context: {"presets": context.agent_manager.list_presets()},
-            audiences=frozenset({"main", "subagent"}),
-            owner="builtin",
-        ),
-        ActionSpec(
-            type="agent.complete",
-            description="Сообщить родителю о завершении своей задачи.",
-            data_schema=_schema(summary=STRING),
-            handler=_complete(manager),
-            audiences=frozenset({"subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="module.create",
-            description="Запустить разработчика для создания модуля.",
-            data_schema=_schema(module=STRING, scope=STRING, request=STRING),
+            description="Запустить метасубагента для создания модуля.",
+            data_schema=_schema(module=STRING, request=STRING),
             handler=_module_request(manager, "create"),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="module.update",
-            description="Запустить разработчика для изменения модуля.",
-            data_schema=_schema(module=STRING, scope=STRING, request=STRING),
+            description="Запустить метасубагента для изменения модуля.",
+            data_schema=_schema(module=STRING, request=STRING),
             handler=_module_request(manager, "update"),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="module.delete",
-            description="Запустить разработчика для удаления модуля.",
-            data_schema=_schema(module=STRING, scope=STRING, request=STRING),
+            description="Запустить метасубагента для удаления модуля.",
+            data_schema=_schema(module=STRING, request=STRING),
             handler=_module_request(manager, "delete"),
-            audiences=frozenset({"main", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="module.list",
             description="Получить список подключённых модулей.",
-            data_schema=_schema(scope=STRING),
-            handler=lambda data, context: {"modules": manager.module_manager.list_modules(data["scope"])},
-            audiences=frozenset({"main", "subagent"}),
+            data_schema=empty_object_schema(),
+            handler=lambda data, context: {"modules": manager.module_manager.list_modules()},
             owner="builtin",
         ),
         ActionSpec(
             type="module.describe",
-            description="Получить полное описание подключённого модуля.",
-            data_schema=_schema(module=STRING, scope=STRING),
-            handler=lambda data, context: manager.module_manager.describe(
-                data["module"], scope=data["scope"]
-            ),
-            audiences=frozenset({"main", "subagent"}),
+            description="Получить описание действий и событий модуля.",
+            data_schema=_schema(module=STRING),
+            handler=lambda data, context: manager.module_manager.describe(data["module"]),
             owner="builtin",
         ),
         ActionSpec(
             type="workspace.list",
-            description="Список файлов в рабочей папке модуля.",
+            description="Получить список файлов из рабочей папки метасубагента.",
             data_schema=_schema(path=STRING),
             handler=_workspace_list,
-            audiences=frozenset({"module_builder", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="workspace.read",
-            description="Прочитать файл из рабочей папки.",
+            description="Прочитать файл из рабочей папки метасубагента.",
             data_schema=_schema(path=STRING),
             handler=_workspace_read,
-            audiences=frozenset({"module_builder", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
@@ -318,7 +252,6 @@ def register_builtin_actions(
             description="Создать или полностью записать файл.",
             data_schema=_schema(path=STRING, content=STRING),
             handler=_workspace_write,
-            audiences=frozenset({"module_builder", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
@@ -326,7 +259,6 @@ def register_builtin_actions(
             description="Удалить файл или каталог из рабочей папки.",
             data_schema=_schema(path=STRING, recursive=BOOLEAN),
             handler=_workspace_delete,
-            audiences=frozenset({"module_builder", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
@@ -334,41 +266,20 @@ def register_builtin_actions(
             description="Запустить shell-команду и вернуть полный вывод.",
             data_schema=_schema(command=STRING, cwd=NULLABLE_STRING, timeout_seconds=INTEGER),
             handler=_process_run,
-            audiences=frozenset({"module_builder", "subagent"}),
             owner="builtin",
         ),
         ActionSpec(
             type="module.validate",
-            description="Проверить module.json и factory модуля без подключения.",
-            data_schema=_schema(module=STRING, scope=STRING),
-            handler=lambda data, context: context.module_manager.validate(
-                data["module"], scope=data["scope"]
-            ),
-            audiences=frozenset({"module_builder"}),
+            description="Проверить module.json, фабрику, импорты и схемы модуля.",
+            data_schema=_schema(module=STRING),
+            handler=lambda data, context: context.module_manager.validate(data["module"]),
             owner="builtin",
         ),
         ActionSpec(
             type="module.complete",
-            description="Применить готовый модуль и сообщить родителю результат.",
+            description="Применить готовый модуль и сообщить родителю обычным сообщением.",
             data_schema=_schema(summary=STRING),
             handler=_module_complete(manager),
-            audiences=frozenset({"module_builder"}),
-            owner="builtin",
-        ),
-        ActionSpec(
-            type="module.copy",
-            description="Скопировать модуль из main или одной области агента в другую.",
-            data_schema=_schema(
-                module=STRING,
-                source_scope=STRING,
-                target_scope=STRING,
-            ),
-            handler=lambda data, context: context.module_manager.copy(
-                data["module"],
-                source_scope=data["source_scope"],
-                target_scope=data["target_scope"],
-            ),
-            audiences=frozenset({"main", "module_builder"}),
             owner="builtin",
         ),
     ]
@@ -393,12 +304,12 @@ def _spawn(manager: AgentManager):
     def handler(data: dict[str, Any], context: Any) -> dict[str, Any]:
         return manager.spawn(
             parent_id=context.agent_id,
-            preset=data["preset"],
+            agent_type=data["agent_type"],
             name=data["name"],
             task=data["task"],
-            system_prompt=data["system_prompt"],
+            purpose=data["purpose"],
             allowed_actions=data["actions"] or None,
-            metadata={"preset": data["preset"]},
+            metadata={"agent_type": data["agent_type"]},
         )
 
     return handler
@@ -437,42 +348,31 @@ def _delete(manager: AgentManager):
     return handler
 
 
-def _complete(manager: AgentManager):
-    def handler(data: dict[str, Any], context: Any) -> dict[str, Any]:
-        return manager.complete(agent_id=context.agent_id, summary=data["summary"])
-
-    return handler
-
-
 def _module_request(manager: AgentManager, operation: str):
     def handler(data: dict[str, Any], context: Any) -> dict[str, Any]:
         module_name = data["module"]
-        scope = data["scope"]
         if manager.module_manager is None:
             raise RuntimeError("Менеджер модулей не инициализирован")
         manager.module_manager.validate_name(module_name)
         modules_root = manager.module_manager.modules_dir
         modules_root.mkdir(parents=True, exist_ok=True)
-        workspace = manager.module_manager.module_path(module_name, scope)
+        workspace = manager.module_manager.module_path(module_name)
         task = (
-            f"Операция: {operation}. Модуль: {module_name}. Область: {scope}.\n"
+            f"Операция: {operation}. Модуль: {module_name}.\n"
             f"Целевая папка модуля: {workspace}.\n"
             f"Рабочая папка разработчика: {modules_root}.\n"
             f"Python окружения Jarvis: {sys.executable}.\n"
-            f"Публичный контракт (можно читать): {Path(__file__).with_name('module_api.py')}.\n"
+            f"Публичный контракт: {Path(__file__).with_name('module_api.py')}.\n"
             f"Требования родителя:\n{data['request']}\n"
-            "Ты можешь работать с любыми модулями и областями внутри рабочей "
-            "папки modules. Сообщай вопросы родителю."
+            "Работай с любыми модулями внутри рабочей папки и сообщай вопросы родителю."
         )
         result = manager.spawn(
             parent_id=context.agent_id,
-            preset="module_builder",
-            name=f"module-builder-{scope}-{module_name}",
+            agent_type="module_builder",
+            name=f"module-builder-{module_name}",
             task=task,
             metadata={
-                "preset": "module_builder",
                 "module": module_name,
-                "scope": scope,
                 "operation": operation,
                 "workspace": str(modules_root),
             },
@@ -557,24 +457,13 @@ def _module_complete(manager: AgentManager):
         if module_manager is None:
             raise RuntimeError("Менеджер модулей не инициализирован")
         module_name = context.metadata.get("module")
-        scope = context.metadata.get("scope", "main")
         operation = context.metadata.get("operation")
         if not module_name or not operation:
             raise ValueError("У агента нет операции и имени модуля")
-        summary = module_manager.apply(operation, module_name, scope=scope)
-        manager.complete(
+        summary = module_manager.apply(operation, module_name)
+        manager.finish(
             agent_id=context.agent_id,
-            summary=data["summary"],
-            event_type="module.completed",
-            extra={
-                "module": module_name,
-                "scope": scope,
-                "operation": operation,
-                "version": summary.get("version"),
-                "actions": [item["type"] for item in summary.get("actions", [])],
-                "events": [item["type"] for item in summary.get("events", [])],
-                "handlers": [item["name"] for item in summary.get("handlers", [])],
-            },
+            text=f"Закончил работу с модулем {module_name}. {data['summary']}",
         )
         return {"applied": True, **summary}
 

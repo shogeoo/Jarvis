@@ -9,5 +9,5 @@ models/silero_vad.onnx
 *.egg-info/
 build/
 dist/
-.jarvis/
+.assistant/
 *.s2voice

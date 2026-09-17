@@ -81,7 +81,6 @@ class RuntimeTests(unittest.TestCase):
                     description=name,
                     data_schema=action_schema,
                     handler=slow_action,
-                    audiences=frozenset({"main"}),
                     owner="test",
                 )
             )
@@ -154,7 +153,6 @@ class RuntimeTests(unittest.TestCase):
                 description="speech",
                 data_schema=object_schema({"text": {"type": "string"}}),
                 handler=speech_action,
-                audiences=frozenset({"main"}),
                 owner="test",
             )
         )

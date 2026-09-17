@@ -87,18 +87,11 @@ class ActionRegistry:
             return
         values = list(records.values())
         base = values[0]
-        audiences: set[str] = set()
-        unrestricted = False
         for spec in values:
             if spec.data_schema != base.data_schema:
                 raise ValueError(f"Разные схемы для действия {action_type}")
-            if spec.audiences is None:
-                unrestricted = True
-            else:
-                audiences.update(spec.audiences)
         self._actions[action_type] = replace(
             base,
-            audiences=None if unrestricted else frozenset(audiences),
             owner="|".join(sorted(records)),
         )
 
@@ -116,22 +109,12 @@ class ActionRegistry:
         with self._lock:
             return dict(self._actions)
 
-    def for_agent(
-        self,
-        audience: str,
-        allowed: set[str] | None = None,
-    ) -> dict[str, ActionSpec]:
-        def visible(spec: ActionSpec) -> bool:
-            if spec.audiences is None or audience in spec.audiences:
-                return True
-            return "subagent" in spec.audiences and audience not in {"main", "module_builder"}
-
+    def for_agent(self, allowed: set[str] | None = None) -> dict[str, ActionSpec]:
         with self._lock:
             return {
                 name: spec
                 for name, spec in self._actions.items()
                 if (allowed is None or name in allowed)
-                and visible(spec)
             }
 
     def validate(self, action_type: str, data: dict[str, Any]) -> ActionSpec:

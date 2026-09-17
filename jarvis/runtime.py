@@ -16,10 +16,7 @@ from .lifecycle import ActionPool, ProcessManager
 from .config import ROOT
 from .module_api import ActionContext
 from .model_capabilities import ModelCapabilities
-from .prompts import (
-    agent_system_prompt, MAIN_AGENT_INSTRUCTIONS,
-    MODULE_BUILDER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS,
-)
+from .prompts import agent_system_prompt
 from .protocol import (
     ActionRequest,
     Event,
@@ -34,7 +31,18 @@ from .protocol import (
 from .registry import ActionRegistry, EventRegistry
 
 
-PRESETS_PATH = ROOT / ".jarvis" / "agents" / "presets.json"
+PRESETS_PATH = ROOT / ".assistant" / "agents" / "presets.json"
+META_AGENT_ACTIONS = frozenset(
+    {
+        "workspace.list",
+        "workspace.read",
+        "workspace.write",
+        "workspace.delete",
+        "process.run",
+        "module.validate",
+        "module.complete",
+    }
+)
 
 
 class EventBus:
@@ -90,7 +98,7 @@ class Agent:
         model: str,
         client: Any,
         base_prompt: str,
-        audience: str,
+        agent_type: str,
         allowed_actions: set[str] | None = None,
         parent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -101,28 +109,19 @@ class Agent:
         self.manager = manager
         self.model = model
         self.client = client
-        self.base_prompt = base_prompt
-        self.audience = audience
+        self.purpose = base_prompt
+        self.agent_type = agent_type
         self.allowed_actions = allowed_actions
         self.parent_id = parent_id
         self.metadata = metadata or {}
         self.capabilities = capabilities
         initial_specs = self.available_actions()
-        if audience == "main":
-            role_instructions = (
-                "Справка о роли разработчика. Следующий блок описывает другого агента.\n"
-                "<module_builder_reference>\n" + MODULE_BUILDER_INSTRUCTIONS
-                + "\n</module_builder_reference>\n\n" + MAIN_AGENT_INSTRUCTIONS
-            )
-        else:
-            role_instructions = SUBAGENT_INSTRUCTIONS if audience != "module_builder" else ""
         self.history: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": agent_system_prompt(
-                    self.base_prompt,
+                    self.purpose,
                     initial_specs,
-                    extra=role_instructions,
                     capabilities=self.capabilities,
                 ),
             }
@@ -151,10 +150,10 @@ class Agent:
         self.manager.debug.state(self.agent_id, state, **extra)
 
     def available_actions(self):
-        return self.manager.actions.for_agent(
-            self.audience,
-            self.allowed_actions,
-        )
+        if self.agent_type == "main":
+            names = set(self.manager.actions.all()) - META_AGENT_ACTIONS
+            return self.manager.actions.for_agent(names)
+        return self.manager.actions.for_agent(self.allowed_actions)
 
     def start(self) -> "Agent":
         if self._thread is not None:
@@ -292,16 +291,10 @@ class Agent:
             traceback=traceback.format_exc(),
         )
         if self.parent_id:
-            self.manager.bus.publish(
-                Event(
-                    type="agent.failed",
-                    data={
-                        "agent_id": self.agent_id,
-                        "error": str(exc),
-                    },
-                    source=f"agent:{self.agent_id}",
-                    target=self.parent_id,
-                )
+            self.manager.send_message(
+                sender_id=self.agent_id,
+                agent_id=self.parent_id,
+                text=f"Не удалось обработать событие: {exc}",
             )
         self._set_state("waiting")
 
@@ -385,8 +378,7 @@ class Agent:
 class AgentPreset:
     name: str
     description: str
-    system_prompt: str
-    audience: str = "subagent"
+    purpose: str
     allowed_actions: frozenset[str] | None = None
 
 
@@ -447,8 +439,7 @@ class AgentManager:
                 self.presets[raw["name"]] = AgentPreset(
                     name=raw["name"],
                     description=raw.get("description", ""),
-                    system_prompt=raw["system_prompt"],
-                    audience=raw.get("agent_type", raw["name"]),
+                    purpose=raw["purpose"],
                     allowed_actions=frozenset(raw.get("actions", [])) or None,
                 )
             except (KeyError, TypeError):
@@ -460,8 +451,7 @@ class AgentManager:
             {
                 "name": preset.name,
                 "description": preset.description,
-                "system_prompt": preset.system_prompt,
-                "agent_type": preset.audience,
+                "purpose": preset.purpose,
                 "actions": sorted(preset.allowed_actions or []),
             }
             for preset in sorted(self.presets.values(), key=lambda item: item.name)
@@ -477,7 +467,7 @@ class AgentManager:
         *,
         name: str,
         description: str,
-        system_prompt: str,
+        purpose: str,
         allowed_actions: list[str],
     ) -> dict[str, Any]:
         if not name or name == "module_builder":
@@ -489,8 +479,7 @@ class AgentManager:
             AgentPreset(
                 name=name,
                 description=description,
-                system_prompt=system_prompt,
-                audience=name,
+                purpose=purpose,
                 allowed_actions=frozenset(allowed_actions) or None,
             )
         )
@@ -514,10 +503,11 @@ class AgentManager:
         return {
             "name": preset.name,
             "description": preset.description,
+            "purpose": preset.purpose,
             "actions": sorted(preset.allowed_actions or []),
         }
 
-    def create_main(self, system_prompt: str) -> Agent:
+    def create_main(self, person_prompt: str) -> Agent:
         with self._lock:
             if "main" in self.agents:
                 return self.agents["main"]
@@ -527,8 +517,8 @@ class AgentManager:
                 self,
                 model=self.model,
                 client=self.client,
-                base_prompt=system_prompt,
-                audience="main",
+                base_prompt=person_prompt,
+                agent_type="main",
                 capabilities=self.capabilities,
             )
             self.agents[agent.agent_id] = agent
@@ -539,10 +529,10 @@ class AgentManager:
         self,
         *,
         parent_id: str,
-        preset: str,
+        agent_type: str | None = None,
         task: str,
         name: str | None = None,
-        system_prompt: str | None = None,
+        purpose: str | None = None,
         allowed_actions: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -550,18 +540,15 @@ class AgentManager:
             raise RuntimeError("runtime_stopping")
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
-        selected = self.presets.get(preset)
+        agent_type = agent_type or "custom"
+        selected = self.presets.get(agent_type)
         if selected is not None:
-            if preset == "module_builder" and allowed_actions:
-                raise ValueError("Пресет module_builder нельзя расширить действиями")
-            base_prompt = selected.system_prompt
-            audience = selected.audience
+            base_prompt = selected.purpose
             allowed = set(selected.allowed_actions) if selected.allowed_actions else None
         else:
-            if preset != "custom" or not system_prompt:
-                raise ValueError(f"Пресет агента не найден: {preset}")
-            base_prompt = system_prompt
-            audience = "custom"
+            if agent_type != "custom" or not purpose:
+                raise ValueError(f"Тип агента не найден: {agent_type}")
+            base_prompt = purpose
             allowed = set(allowed_actions or []) or None
         if allowed_actions:
             allowed = set(allowed_actions)
@@ -570,10 +557,7 @@ class AgentManager:
             if unknown:
                 raise ValueError(f"Неизвестные действия субагента: {unknown}")
         agent_metadata = dict(metadata or {})
-        agent_metadata.setdefault("preset", preset)
-        agent_metadata.setdefault("agent_type", audience)
-        if self.module_manager is not None:
-            self.module_manager.load_scope(audience, start_handlers=True)
+        agent_metadata.setdefault("agent_type", agent_type)
         with self._lock:
             if self.stopping.is_set():
                 raise RuntimeError("runtime_stopping")
@@ -586,7 +570,7 @@ class AgentManager:
                 model=self.model,
                 client=self.client,
                 base_prompt=base_prompt,
-                audience=audience,
+                agent_type=agent_type,
                 allowed_actions=allowed,
                 parent_id=parent_id,
                 metadata=agent_metadata,
@@ -597,15 +581,8 @@ class AgentManager:
             agent.start()
         self.bus.publish(
             Event(
-                type="agent.task",
-                data={
-                    "agent_id": agent_id,
-                    "parent_id": parent_id,
-                    "preset": preset,
-                    "name": agent.name,
-                    "agent_type": audience,
-                    "task": task,
-                },
+                type="message",
+                data={"from": parent_id, "text": task},
                 source=f"agent:{parent_id}",
                 target=agent_id,
             )
@@ -614,16 +591,15 @@ class AgentManager:
             "agent_spawned",
             agent_id=agent_id,
             parent_id=parent_id,
-            preset=preset,
+            agent_type=agent_type,
             task=task,
             allowed_actions=sorted(agent.available_actions()),
         )
         return {
             "agent_id": agent_id,
             "name": agent.name,
-            "agent_type": audience,
+            "agent_type": agent_type,
             "parent_id": parent_id,
-            "preset": preset,
             "state": agent.state,
         }
 
@@ -632,12 +608,10 @@ class AgentManager:
         target = self.agents.get(agent_id)
         if sender is None or target is None:
             raise ValueError("Отправитель или получатель не найден")
-        if sender_id != "main" and agent_id != sender.parent_id:
-            raise ValueError("Субагент может отправлять сообщения только родителю")
         self.bus.publish(
             Event(
-                type="agent.message",
-                data={"from_agent": sender_id, "text": text},
+                type="message",
+                data={"from": sender_id, "text": text},
                 source=f"agent:{sender_id}",
                 target=agent_id,
             )
@@ -645,17 +619,10 @@ class AgentManager:
         return {"delivered": True, "agent_id": agent_id}
 
     def interrupt(self, *, requester_id: str, agent_id: str, reason: str) -> dict[str, Any]:
-        if agent_id == "main":
-            raise ValueError("Главный агент нельзя прервать этим действием")
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
         agent.stop(wait=False)
-        self._notify_parent(
-            agent,
-            "agent.interrupted",
-            {"agent_id": agent_id, "reason": reason},
-        )
         return {"agent_id": agent_id, "state": "stopped", "reason": reason}
 
     def hold(self, *, agent_id: str, until_event: str) -> None:
@@ -665,49 +632,26 @@ class AgentManager:
         agent.hold_until(until_event)
 
     def delete(self, *, requester_id: str, agent_id: str, reason: str) -> dict[str, Any]:
-        if agent_id == "main":
-            raise ValueError("Главный агент нельзя удалить этим действием")
         with self._lock:
             agent = self.agents.pop(agent_id, None)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
         agent.stop(wait=False)
         self.bus.unbind(agent_id)
-        self._notify_parent(
-            agent,
-            "agent.deleted",
-            {"agent_id": agent_id, "reason": reason},
-        )
         return {"agent_id": agent_id, "deleted": True}
 
-    def complete(
-        self,
-        *,
-        agent_id: str,
-        summary: str,
-        event_type: str = "agent.completed",
-        extra: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    def finish(self, *, agent_id: str, text: str) -> dict[str, Any]:
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
         agent.request_close()
-        data = {"agent_id": agent_id, "summary": summary}
-        if extra:
-            data.update(extra)
-        self._notify_parent(agent, event_type, data)
-        return {"agent_id": agent_id, "accepted": True}
-
-    def _notify_parent(self, agent: Agent, event_type: str, data: dict[str, Any]) -> None:
         if agent.parent_id:
-            self.bus.publish(
-                Event(
-                    type=event_type,
-                    data=data,
-                    source=f"agent:{agent.agent_id}",
-                    target=agent.parent_id,
-                )
+            self.send_message(
+                sender_id=agent_id,
+                agent_id=agent.parent_id,
+                text=text,
             )
+        return {"agent_id": agent_id, "accepted": True}
 
     def list_agents(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -717,8 +661,7 @@ class AgentManager:
                     "name": agent.name,
                     "parent_id": agent.parent_id,
                     "state": agent.state,
-                    "preset": agent.metadata.get("preset"),
-                    "agent_type": agent.metadata.get("agent_type", agent.audience),
+                    "agent_type": agent.metadata.get("agent_type", agent.agent_type),
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]
