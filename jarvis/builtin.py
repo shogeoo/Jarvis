@@ -448,11 +448,15 @@ def _module_request(manager: AgentManager, operation: str):
         if manager.module_manager is None:
             raise RuntimeError("Менеджер модулей не инициализирован")
         manager.module_manager.validate_name(module_name)
+        modules_root = manager.module_manager.modules_dir
         workspace = manager.module_manager.module_path(module_name, scope)
         task = (
-            f"Операция: {operation}. Модуль: {module_name}. Рабочая папка: {workspace}.\n"
+            f"Операция: {operation}. Модуль: {module_name}. Область: {scope}.\n"
+            f"Целевая папка модуля: {workspace}.\n"
+            f"Рабочая папка метасубагента: {modules_root}.\n"
             f"Требования родителя:\n{data['request']}\n"
-            "Работай только с этим модулем и сообщай вопросы родителю."
+            "Ты можешь работать с любыми модулями и областями внутри рабочей "
+            "папки modules. Сообщай вопросы родителю."
         )
         result = manager.spawn(
             parent_id=context.agent_id,
@@ -464,7 +468,7 @@ def _module_request(manager: AgentManager, operation: str):
                 "module": module_name,
                 "scope": scope,
                 "operation": operation,
-                "workspace": str(workspace),
+                "workspace": str(modules_root),
             },
         )
         result.update({"module": module_name, "operation": operation})
