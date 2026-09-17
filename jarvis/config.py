@@ -51,7 +51,7 @@ class Config:
     tts_voice: str
     tts_voice_dir: Path
     tts_autostart: bool
-    tts_server_bin: Path
+    tts_server_bin: str
     tts_model: Path
     tts_tokenizer: Path
     tts_server_args: list[str]
@@ -88,7 +88,7 @@ def load_config(
         tts_voice=os.environ.get("TTS_VOICE", "jarvis"),
         tts_voice_dir=_path(os.environ.get("TTS_VOICE_DIR"), "assets/voices"),
         tts_autostart=_env_bool("TTS_AUTOSTART", True),
-        tts_server_bin=_path(os.environ.get("TTS_SERVER_BIN"), "~/s2.cpp/build/s2"),
+        tts_server_bin=os.environ.get("TTS_SERVER_BIN", "s2").strip(),
         tts_model=_path(
             os.environ.get("TTS_MODEL"),
             "~/.models/s2-pro/s2-pro-q4_k_m.gguf",

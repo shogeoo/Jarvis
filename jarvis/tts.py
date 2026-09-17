@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import threading
@@ -174,10 +175,22 @@ class Speaker:
 
     # --- server ------------------------------------------------------
     def _base_cmd(self) -> list[str]:
-        cmd = [str(self.cfg.tts_server_bin), "--model", str(self.cfg.tts_model)]
+        cmd = [self._resolve_binary(), "--model", str(self.cfg.tts_model)]
         if self.cfg.tts_tokenizer.exists():
             cmd += ["--tokenizer", str(self.cfg.tts_tokenizer)]
         return cmd
+
+    def _resolve_binary(self) -> str:
+        configured = str(self.cfg.tts_server_bin).strip()
+        expanded = Path(configured).expanduser()
+        if expanded.is_absolute() or "/" in configured:
+            if not expanded.is_file():
+                raise RuntimeError(f"Не найден бинарь s2.cpp: {expanded}")
+            return str(expanded)
+        resolved = shutil.which(configured)
+        if resolved is None:
+            raise RuntimeError(f"Не найдена команда синтеза речи в PATH: {configured}")
+        return resolved
 
     def _port_open(self) -> bool:
         try:
@@ -199,8 +212,7 @@ class Speaker:
                 f"TTS Fish Audio недоступен: {self.cfg.tts_url}. "
                 "Запусти s2.cpp вручную или включи TTS_AUTOSTART."
             )
-        if not self.cfg.tts_server_bin.exists():
-            raise RuntimeError(f"Не найден бинарь s2.cpp: {self.cfg.tts_server_bin}")
+        self._resolve_binary()
         if not self.cfg.tts_model.exists():
             raise RuntimeError(f"Не найдена модель TTS: {self.cfg.tts_model}")
         cmd = self._base_cmd()
