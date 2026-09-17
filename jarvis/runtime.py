@@ -44,27 +44,17 @@ class EventBus:
         self.events = events
         self.debug = debug or Debugger(enabled=False)
         self._agents: dict[str, Agent] = {}
-        self._closed = False
         self._lock = threading.RLock()
 
     def bind(self, agent: "Agent") -> None:
         with self._lock:
-            if self._closed:
-                raise RuntimeError("runtime_stopping")
             self._agents[agent.agent_id] = agent
-
-    def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            self._agents.clear()
 
     def unbind(self, agent_id: str) -> None:
         with self._lock:
             self._agents.pop(agent_id, None)
 
     def publish(self, event: Event) -> bool:
-        if self._closed:
-            return False
         try:
             self.events.validate(event.type, event.data)
         except ValueError as exc:
@@ -255,8 +245,6 @@ class Agent:
                 messages=self.history,
                 response_format=response_format(schema),
             )
-            if self._stop.is_set():
-                return
             message = response.choices[0].message
             refusal = getattr(message, "refusal", None)
             content = message.content or ""
@@ -265,6 +253,14 @@ class Agent:
             if refusal:
                 raise RuntimeError(f"Модель отказалась выполнить запрос: {refusal}")
             value = json.loads(content)
+            raw_actions = value.get("actions") if isinstance(value, dict) else None
+            if isinstance(raw_actions, list) and len(raw_actions) > 1:
+                # Some local structured-output backends append no_action to a
+                # useful action. It is redundant in a non-empty response.
+                value["actions"] = [
+                    item for item in raw_actions
+                    if item.get("type") != "no_action"
+                ]
             validate_json(
                 value,
                 actions_response_schema(schema),
@@ -275,8 +271,6 @@ class Agent:
                 if action.type not in specs:
                     raise ValueError(f"Действие недоступно этому агенту: {action.type}")
         except Exception as exc:  # noqa: BLE001
-            if self._stop.is_set():
-                return
             self._model_failure(exc)
             return
 
@@ -731,7 +725,6 @@ class AgentManager:
 
     def begin_shutdown(self) -> None:
         self.stopping.set()
-        self.bus.close()
         with self._lock:
             agents = list(self.agents.values())
         for agent in agents:
