@@ -1,7 +1,7 @@
 """Публичный контракт пользовательских модулей.
 
 Модуль — комплект обработчиков событий и действий (или только одного из
-них) для одной области агентов. Каталог модуля обязан иметь структуру::
+них). Каталог модуля обязан иметь структуру::
 
     module/
       module.json
@@ -12,8 +12,8 @@
 ``module.py`` возвращает :class:`Module`; код конкретных действий и
 обработчиков размещается в соответствующих каталогах и импортируется
 фабрикой через относительные импорты (например, ``from .actions.send import send``).
-Модули внутри ``.jarvis/modules/main/`` доступны main, а модули внутри
-``.jarvis/modules/<agent_type>/`` — только этому типу субагентов.
+Все модули находятся непосредственно в ``.assistant/modules/<module_id>/``.
+Доступ конкретного агента задаётся его списком actions.
 
 Минимальный пример ``module.py``::
 
@@ -24,7 +24,6 @@
     def create_module():
         return Module(
             name="example",
-            version="1.0.0",
             description="Пример",
             actions=(action("example.send", "Отправить текст", {
                 "type": "object",
@@ -72,7 +71,6 @@ class ActionSpec:
     description: str
     data_schema: JSONSchema
     handler: ActionHandler
-    audiences: frozenset[str] | None = None
     owner: str = "module"
 
 
@@ -88,7 +86,6 @@ class HandlerSpec:
 @dataclass(frozen=True, slots=True)
 class Module:
     name: str
-    version: str
     description: str
     actions: tuple[ActionSpec, ...] = field(default_factory=tuple)
     handlers: tuple[HandlerSpec, ...] = field(default_factory=tuple)
@@ -105,8 +102,6 @@ def action(
     description: str,
     data_schema: JSONSchema,
     handler: ActionHandler,
-    *,
-    audiences: Iterable[str] | None = None,
 ) -> ActionSpec:
     """Объявить действие модуля."""
 
@@ -115,11 +110,6 @@ def action(
         description=description,
         data_schema=data_schema,
         handler=handler,
-        audiences=(
-            frozenset({"main", "subagent"})
-            if audiences is None
-            else frozenset(audiences)
-        ),
     )
 
 

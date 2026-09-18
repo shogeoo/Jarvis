@@ -40,8 +40,8 @@ class ModelCapabilitiesTests(unittest.TestCase):
 
         prompt = ModelCapabilities("model", ("text", "image")).prompt_block()
 
-        self.assertIn("поддерживаются: text, image", prompt)
-        self.assertIn("audio, video", prompt)
+        self.assertIn("Текущие поддерживаемые модальности: text, image", prompt)
+        self.assertIn("Нативно не поддерживаются: audio, video", prompt)
 
 
 if __name__ == "__main__":

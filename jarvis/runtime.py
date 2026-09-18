@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 import traceback
-from concurrent.futures import Future, wait, FIRST_COMPLETED
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -16,10 +16,7 @@ from .lifecycle import ActionPool, ProcessManager
 from .config import ROOT
 from .module_api import ActionContext
 from .model_capabilities import ModelCapabilities
-from .prompts import (
-    agent_system_prompt, MAIN_AGENT_INSTRUCTIONS,
-    MODULE_BUILDER_INSTRUCTIONS, SUBAGENT_INSTRUCTIONS,
-)
+from .prompts import agent_system_prompt
 from .protocol import (
     ActionRequest,
     Event,
@@ -34,7 +31,18 @@ from .protocol import (
 from .registry import ActionRegistry, EventRegistry
 
 
-PRESETS_PATH = ROOT / ".jarvis" / "agents" / "presets.json"
+PRESETS_PATH = ROOT / ".assistant" / "agents" / "presets.json"
+MODULE_MANAGER_ACTIONS = frozenset(
+    {
+        "workspace.list",
+        "workspace.read",
+        "workspace.write",
+        "workspace.delete",
+        "process.run",
+        "module.validate",
+        "module.complete",
+    }
+)
 
 
 class EventBus:
@@ -79,7 +87,7 @@ class EventBus:
 
 
 class Agent:
-    """Один последовательный модельный цикл с параллельными действиями."""
+    """Один последовательный модельный цикл с последовательными actions."""
 
     def __init__(
         self,
@@ -89,8 +97,8 @@ class Agent:
         *,
         model: str,
         client: Any,
-        base_prompt: str,
-        audience: str,
+        system_prompt: str,
+        preset: str | None,
         allowed_actions: set[str] | None = None,
         parent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -101,28 +109,19 @@ class Agent:
         self.manager = manager
         self.model = model
         self.client = client
-        self.base_prompt = base_prompt
-        self.audience = audience
+        self.system_prompt = system_prompt
+        self.preset = preset
         self.allowed_actions = allowed_actions
         self.parent_id = parent_id
         self.metadata = metadata or {}
         self.capabilities = capabilities
         initial_specs = self.available_actions()
-        if audience == "main":
-            role_instructions = (
-                "Справка о роли разработчика. Следующий блок описывает другого агента.\n"
-                "<module_builder_reference>\n" + MODULE_BUILDER_INSTRUCTIONS
-                + "\n</module_builder_reference>\n\n" + MAIN_AGENT_INSTRUCTIONS
-            )
-        else:
-            role_instructions = SUBAGENT_INSTRUCTIONS if audience != "module_builder" else ""
         self.history: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": agent_system_prompt(
-                    self.base_prompt,
+                    self.system_prompt,
                     initial_specs,
-                    extra=role_instructions,
                     capabilities=self.capabilities,
                 ),
             }
@@ -151,10 +150,10 @@ class Agent:
         self.manager.debug.state(self.agent_id, state, **extra)
 
     def available_actions(self):
-        return self.manager.actions.for_agent(
-            self.audience,
-            self.allowed_actions,
-        )
+        if self.agent_id == "main":
+            names = set(self.manager.actions.all()) - MODULE_MANAGER_ACTIONS
+            return self.manager.actions.for_agent(names)
+        return self.manager.actions.for_agent(self.allowed_actions)
 
     def start(self) -> "Agent":
         if self._thread is not None:
@@ -245,22 +244,35 @@ class Agent:
                 messages=self.history,
                 response_format=response_format(schema),
             )
-            message = response.choices[0].message
-            refusal = getattr(message, "refusal", None)
-            content = message.content or ""
-            self.history.append({"role": "assistant", "content": content})
-            self.manager.debug.model(self.agent_id, content)
-            if refusal:
-                raise RuntimeError(f"Модель отказалась выполнить запрос: {refusal}")
+        except Exception as exc:  # noqa: BLE001
+            self._model_failure(exc)
+            return
+
+        message = response.choices[0].message
+        refusal = getattr(message, "refusal", None)
+        content = message.content or ""
+        self.history.append({"role": "assistant", "content": content})
+        self.manager.debug.model(self.agent_id, content)
+        if refusal:
+            self._model_failure(RuntimeError(f"Модель отказалась выполнить запрос: {refusal}"))
+            return
+
+        try:
             value = json.loads(content)
-            raw_actions = value.get("actions") if isinstance(value, dict) else None
-            if isinstance(raw_actions, list) and len(raw_actions) > 1:
-                # Some local structured-output backends append no_action to a
-                # useful action. It is redundant in a non-empty response.
-                value["actions"] = [
-                    item for item in raw_actions
-                    if item.get("type") != "no_action"
-                ]
+        except (TypeError, json.JSONDecodeError) as exc:
+            self._model_error("invalid_json", exc, content)
+            return
+
+        raw_actions = value.get("actions") if isinstance(value, dict) else None
+        if isinstance(raw_actions, list) and len(raw_actions) > 1:
+            # Some local structured-output backends append no_action to a
+            # useful action. It is redundant in a non-empty response.
+            value["actions"] = [
+                item
+                for item in raw_actions
+                if not isinstance(item, dict) or item.get("type") != "no_action"
+            ]
+        try:
             validate_json(
                 value,
                 actions_response_schema(schema),
@@ -270,8 +282,8 @@ class Agent:
             for action in actions:
                 if action.type not in specs:
                     raise ValueError(f"Действие недоступно этому агенту: {action.type}")
-        except Exception as exc:  # noqa: BLE001
-            self._model_failure(exc)
+        except (TypeError, ValueError) as exc:
+            self._model_error("invalid_action_schema", exc, content)
             return
 
         if len(actions) == 1 and actions[0].type == "no_action":
@@ -284,6 +296,27 @@ class Agent:
         elif not self._stop.is_set():
             self._set_state("waiting")
 
+    def _model_error(self, code: str, error: Exception, response: str) -> None:
+        """Вернуть ошибку формата модели ей самой следующим событием."""
+
+        event = Event(
+            type="model_error",
+            data={
+                "code": code,
+                "message": str(error),
+                "response": response,
+            },
+            source="runtime",
+            target=self.agent_id,
+        )
+        if not self.manager.bus.publish(event):
+            self.manager.debug.log(
+                "model_error_dropped",
+                agent_id=self.agent_id,
+                error=str(error),
+            )
+        self._set_state("waiting")
+
     def _model_failure(self, exc: Exception) -> None:
         self.manager.debug.log(
             "model_error",
@@ -292,48 +325,53 @@ class Agent:
             traceback=traceback.format_exc(),
         )
         if self.parent_id:
-            self.manager.bus.publish(
-                Event(
-                    type="agent.failed",
-                    data={
-                        "agent_id": self.agent_id,
-                        "error": str(exc),
-                    },
-                    source=f"agent:{self.agent_id}",
-                    target=self.parent_id,
+            try:
+                self.manager.send_message(
+                    sender_id=self.agent_id,
+                    agent_id=self.parent_id,
+                    text=f"Не удалось обработать событие: {exc}",
                 )
-            )
+            except ValueError as delivery_error:
+                # The parent may delete this agent while its model request is
+                # still unwinding. Reporting that race must not kill the thread.
+                self.manager.debug.log(
+                    "model_error_delivery_failed",
+                    agent_id=self.agent_id,
+                    error=str(delivery_error),
+                )
         self._set_state("waiting")
 
     def _execute_actions(self, actions: list[ActionRequest]) -> None:
-        futures: list[Future] = []
+        """Выполнить actions последовательно, сохраняя их порядок."""
+
         for action in actions:
             if self._stop.is_set() or self.manager.stopping.is_set():
                 break
             try:
                 future = self.manager.action_pool.submit(self._execute_action, action)
-            except RuntimeError:
-                if self.manager.stopping.is_set():
-                    break
-                raise
-            futures.append(future)
-        with self._future_lock:
-            self._active_futures.update(futures)
-        try:
-            pending = set(futures)
-            while pending and not self._stop.is_set():
-                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
-                for future in done:
-                    if not future.cancelled() and not self._stop.is_set():
-                        try:
-                            result = future.result()
-                        except Exception as exc:
-                            self._model_failure(exc)
-                        else:
-                            self.manager.bus.publish(result)
-        finally:
-            with self._future_lock:
-                self._active_futures.difference_update(futures)
+            except Exception as exc:  # noqa: BLE001
+                result = action_result_event(
+                    action,
+                    status="error",
+                    error=str(exc),
+                    target=self.agent_id,
+                )
+            else:
+                with self._future_lock:
+                    self._active_futures.add(future)
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    result = action_result_event(
+                        action,
+                        status="error",
+                        error=str(exc),
+                        target=self.agent_id,
+                    )
+                finally:
+                    with self._future_lock:
+                        self._active_futures.discard(future)
+            self.manager.bus.publish(result)
 
     def _execute_action(self, action: ActionRequest) -> Event:
         if self._stop.is_set() or self.manager.stopping.is_set():
@@ -386,7 +424,6 @@ class AgentPreset:
     name: str
     description: str
     system_prompt: str
-    audience: str = "subagent"
     allowed_actions: frozenset[str] | None = None
 
 
@@ -442,13 +479,12 @@ class AgentManager:
             if not isinstance(raw, dict):
                 continue
             try:
-                if raw["name"] == "module_builder":
+                if raw["name"] == "module_manager":
                     continue
                 self.presets[raw["name"]] = AgentPreset(
                     name=raw["name"],
                     description=raw.get("description", ""),
                     system_prompt=raw["system_prompt"],
-                    audience=raw.get("agent_type", raw["name"]),
                     allowed_actions=frozenset(raw.get("actions", [])) or None,
                 )
             except (KeyError, TypeError):
@@ -461,11 +497,10 @@ class AgentManager:
                 "name": preset.name,
                 "description": preset.description,
                 "system_prompt": preset.system_prompt,
-                "agent_type": preset.audience,
                 "actions": sorted(preset.allowed_actions or []),
             }
             for preset in sorted(self.presets.values(), key=lambda item: item.name)
-            if preset.name != "module_builder"
+            if preset.name != "module_manager"
         ]
         PRESETS_PATH.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -480,7 +515,7 @@ class AgentManager:
         system_prompt: str,
         allowed_actions: list[str],
     ) -> dict[str, Any]:
-        if not name or name == "module_builder":
+        if not name or name == "module_manager":
             raise ValueError("Недопустимое имя пресета")
         unknown = sorted(name for name in allowed_actions if self.actions.get(name) is None)
         if unknown:
@@ -490,15 +525,14 @@ class AgentManager:
                 name=name,
                 description=description,
                 system_prompt=system_prompt,
-                audience=name,
                 allowed_actions=frozenset(allowed_actions) or None,
             )
         )
         return self.describe_preset(name)
 
     def delete_preset(self, name: str) -> dict[str, Any]:
-        if name == "module_builder":
-            raise ValueError("Встроенный пресет module_builder нельзя удалить")
+        if name == "module_manager":
+            raise ValueError("Встроенный пресет module_manager нельзя удалить")
         if self.presets.pop(name, None) is None:
             raise ValueError(f"Пресет не найден: {name}")
         self._save_presets()
@@ -514,10 +548,11 @@ class AgentManager:
         return {
             "name": preset.name,
             "description": preset.description,
+            "system_prompt": preset.system_prompt,
             "actions": sorted(preset.allowed_actions or []),
         }
 
-    def create_main(self, system_prompt: str) -> Agent:
+    def create_main(self, person_prompt: str) -> Agent:
         with self._lock:
             if "main" in self.agents:
                 return self.agents["main"]
@@ -527,8 +562,8 @@ class AgentManager:
                 self,
                 model=self.model,
                 client=self.client,
-                base_prompt=system_prompt,
-                audience="main",
+                system_prompt=person_prompt,
+                preset=None,
                 capabilities=self.capabilities,
             )
             self.agents[agent.agent_id] = agent
@@ -540,40 +575,19 @@ class AgentManager:
         *,
         parent_id: str,
         preset: str,
-        task: str,
-        name: str | None = None,
-        system_prompt: str | None = None,
-        allowed_actions: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
         selected = self.presets.get(preset)
-        if selected is not None:
-            if preset == "module_builder" and allowed_actions:
-                raise ValueError("Пресет module_builder нельзя расширить действиями")
-            base_prompt = selected.system_prompt
-            audience = selected.audience
-            allowed = set(selected.allowed_actions) if selected.allowed_actions else None
-        else:
-            if preset != "custom" or not system_prompt:
-                raise ValueError(f"Пресет агента не найден: {preset}")
-            base_prompt = system_prompt
-            audience = "custom"
-            allowed = set(allowed_actions or []) or None
-        if allowed_actions:
-            allowed = set(allowed_actions)
+        if selected is None:
+            raise ValueError(f"Пресет агента не найден: {preset}")
+        allowed = set(selected.allowed_actions) if selected.allowed_actions else None
         if allowed is not None:
-            unknown = sorted(name for name in allowed if self.actions.get(name) is None)
+            unknown = sorted(action_name for action_name in allowed if self.actions.get(action_name) is None)
             if unknown:
                 raise ValueError(f"Неизвестные действия субагента: {unknown}")
-        agent_metadata = dict(metadata or {})
-        agent_metadata.setdefault("preset", preset)
-        agent_metadata.setdefault("agent_type", audience)
-        if self.module_manager is not None:
-            self.module_manager.load_scope(audience, start_handlers=True)
         with self._lock:
             if self.stopping.is_set():
                 raise RuntimeError("runtime_stopping")
@@ -581,49 +595,31 @@ class AgentManager:
             agent_id = f"agent-{self._counter:04d}"
             agent = Agent(
                 agent_id,
-                name or agent_id,
+                agent_id,
                 self,
                 model=self.model,
                 client=self.client,
-                base_prompt=base_prompt,
-                audience=audience,
+                system_prompt=selected.system_prompt,
+                preset=preset,
                 allowed_actions=allowed,
                 parent_id=parent_id,
-                metadata=agent_metadata,
                 capabilities=self.capabilities,
             )
             self.agents[agent_id] = agent
             self.bus.bind(agent)
             agent.start()
-        self.bus.publish(
-            Event(
-                type="agent.task",
-                data={
-                    "agent_id": agent_id,
-                    "parent_id": parent_id,
-                    "preset": preset,
-                    "name": agent.name,
-                    "agent_type": audience,
-                    "task": task,
-                },
-                source=f"agent:{parent_id}",
-                target=agent_id,
-            )
-        )
         self.debug.log(
             "agent_spawned",
             agent_id=agent_id,
             parent_id=parent_id,
             preset=preset,
-            task=task,
             allowed_actions=sorted(agent.available_actions()),
         )
         return {
             "agent_id": agent_id,
             "name": agent.name,
-            "agent_type": audience,
-            "parent_id": parent_id,
             "preset": preset,
+            "parent_id": parent_id,
             "state": agent.state,
         }
 
@@ -632,12 +628,10 @@ class AgentManager:
         target = self.agents.get(agent_id)
         if sender is None or target is None:
             raise ValueError("Отправитель или получатель не найден")
-        if sender_id != "main" and agent_id != sender.parent_id:
-            raise ValueError("Субагент может отправлять сообщения только родителю")
         self.bus.publish(
             Event(
-                type="agent.message",
-                data={"from_agent": sender_id, "text": text},
+                type="message",
+                data={"from": sender_id, "text": text},
                 source=f"agent:{sender_id}",
                 target=agent_id,
             )
@@ -645,17 +639,10 @@ class AgentManager:
         return {"delivered": True, "agent_id": agent_id}
 
     def interrupt(self, *, requester_id: str, agent_id: str, reason: str) -> dict[str, Any]:
-        if agent_id == "main":
-            raise ValueError("Главный агент нельзя прервать этим действием")
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
         agent.stop(wait=False)
-        self._notify_parent(
-            agent,
-            "agent.interrupted",
-            {"agent_id": agent_id, "reason": reason},
-        )
         return {"agent_id": agent_id, "state": "stopped", "reason": reason}
 
     def hold(self, *, agent_id: str, until_event: str) -> None:
@@ -665,49 +652,26 @@ class AgentManager:
         agent.hold_until(until_event)
 
     def delete(self, *, requester_id: str, agent_id: str, reason: str) -> dict[str, Any]:
-        if agent_id == "main":
-            raise ValueError("Главный агент нельзя удалить этим действием")
         with self._lock:
             agent = self.agents.pop(agent_id, None)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
         agent.stop(wait=False)
         self.bus.unbind(agent_id)
-        self._notify_parent(
-            agent,
-            "agent.deleted",
-            {"agent_id": agent_id, "reason": reason},
-        )
         return {"agent_id": agent_id, "deleted": True}
 
-    def complete(
-        self,
-        *,
-        agent_id: str,
-        summary: str,
-        event_type: str = "agent.completed",
-        extra: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    def finish(self, *, agent_id: str, text: str) -> dict[str, Any]:
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
         agent.request_close()
-        data = {"agent_id": agent_id, "summary": summary}
-        if extra:
-            data.update(extra)
-        self._notify_parent(agent, event_type, data)
-        return {"agent_id": agent_id, "accepted": True}
-
-    def _notify_parent(self, agent: Agent, event_type: str, data: dict[str, Any]) -> None:
         if agent.parent_id:
-            self.bus.publish(
-                Event(
-                    type=event_type,
-                    data=data,
-                    source=f"agent:{agent.agent_id}",
-                    target=agent.parent_id,
-                )
+            self.send_message(
+                sender_id=agent_id,
+                agent_id=agent.parent_id,
+                text=text,
             )
+        return {"agent_id": agent_id, "accepted": True}
 
     def list_agents(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -717,8 +681,7 @@ class AgentManager:
                     "name": agent.name,
                     "parent_id": agent.parent_id,
                     "state": agent.state,
-                    "preset": agent.metadata.get("preset"),
-                    "agent_type": agent.metadata.get("agent_type", agent.audience),
+                    "preset": agent.preset,
                 }
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]

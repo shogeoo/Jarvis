@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import threading
@@ -25,9 +26,10 @@ import requests
 from .config import ROOT, Config
 from .lifecycle import terminate_process
 
-RUNTIME_DIR = ROOT / ".jarvis"
+RUNTIME_DIR = ROOT / ".assistant"
 SERVER_LOG = RUNTIME_DIR / "tts-server.log"
 SERVER_START_TIMEOUT = 240.0
+START_BUFFER_SECONDS = 0.35
 VOICE_BOOTSTRAP_TEXT = "Инициализация завершена."
 STREAM_PARAMS = {
     "stream": True,
@@ -173,10 +175,22 @@ class Speaker:
 
     # --- server ------------------------------------------------------
     def _base_cmd(self) -> list[str]:
-        cmd = [str(self.cfg.tts_server_bin), "--model", str(self.cfg.tts_model)]
+        cmd = [self._resolve_binary(), "--model", str(self.cfg.tts_model)]
         if self.cfg.tts_tokenizer.exists():
             cmd += ["--tokenizer", str(self.cfg.tts_tokenizer)]
         return cmd
+
+    def _resolve_binary(self) -> str:
+        configured = str(self.cfg.tts_server_bin).strip()
+        expanded = Path(configured).expanduser()
+        if expanded.is_absolute() or "/" in configured:
+            if not expanded.is_file():
+                raise RuntimeError(f"Не найден бинарь s2.cpp: {expanded}")
+            return str(expanded)
+        resolved = shutil.which(configured)
+        if resolved is None:
+            raise RuntimeError(f"Не найдена команда синтеза речи в PATH: {configured}")
+        return resolved
 
     def _port_open(self) -> bool:
         try:
@@ -198,8 +212,7 @@ class Speaker:
                 f"TTS Fish Audio недоступен: {self.cfg.tts_url}. "
                 "Запусти s2.cpp вручную или включи TTS_AUTOSTART."
             )
-        if not self.cfg.tts_server_bin.exists():
-            raise RuntimeError(f"Не найден бинарь s2.cpp: {self.cfg.tts_server_bin}")
+        self._resolve_binary()
         if not self.cfg.tts_model.exists():
             raise RuntimeError(f"Не найдена модель TTS: {self.cfg.tts_model}")
         cmd = self._base_cmd()
@@ -344,6 +357,20 @@ class Speaker:
                 self._response = None
 
     def _play(self, chunks, rate: int, request: _SpeechRequest) -> None:
+        chunks = iter(chunks)
+        buffer = bytearray()
+        target_bytes = max(1, int(rate * 2 * START_BUFFER_SECONDS))
+        while len(buffer) < target_bytes:
+            if request.interrupted.is_set():
+                raise SpeechInterrupted("interrupted")
+            try:
+                chunk = next(chunks)
+            except StopIteration:
+                break
+            if chunk:
+                buffer.extend(chunk)
+        if not buffer:
+            return
         cmd = [
             "ffplay", "-autoexit", "-nodisp", "-loglevel", "error", "-infbuf",
             "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
@@ -361,6 +388,10 @@ class Speaker:
             )
             raise RuntimeError("ffplay_not_found")
         try:
+            try:
+                proc.stdin.write(buffer)  # type: ignore[union-attr]
+            except (BrokenPipeError, OSError):
+                return
             for chunk in chunks:
                 if request.interrupted.is_set():
                     raise SpeechInterrupted("interrupted")
