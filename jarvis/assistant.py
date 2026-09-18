@@ -24,16 +24,16 @@ class Assistant:
         model: str,
         base_url: str | None = None,
         api_key: str | None = None,
-        system: str = "",
+        system_prompt: str = "",
         on_reply: Callable[[str], None] | None = None,
         timeout: float = 60.0,
     ):
         self.model = model
-        self.system = system
+        self.system_prompt = system_prompt
         self.on_reply = on_reply
         self.messages: list[dict] = []
-        if system:
-            self.messages.append({"role": "system", "content": system})
+        if system_prompt:
+            self.messages.append({"role": "system", "content": system_prompt})
         self.client = OpenAI(
             base_url=base_url or None,
             api_key=api_key or None,
