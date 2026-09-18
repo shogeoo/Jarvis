@@ -48,6 +48,11 @@ def builtin_event_definitions() -> list[EventDefinition]:
             ),
         ),
         EventDefinition(
+            "model_error",
+            "Ответ модели не удалось разобрать или проверить по JSON Schema.",
+            _schema(code=STRING, message=STRING, response=STRING),
+        ),
+        EventDefinition(
             "message",
             "Обычное сообщение от одного агента другому.",
             object_schema({"from": STRING, "text": STRING}),

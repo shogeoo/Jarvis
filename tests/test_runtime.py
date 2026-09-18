@@ -81,24 +81,16 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn("module.create", actions.all())
         manager.shutdown()
 
-    def test_actions_run_in_parallel_and_results_are_individual_events(self):
+    def test_actions_run_in_order_and_results_are_individual_events(self):
         events = EventRegistry()
         register_builtin_events(events)
         actions = ActionRegistry()
         bus = EventBus(events, debug=Debugger(enabled=False))
         modules = ModuleManager(bus, actions, events, debug=Debugger(enabled=False))
-        started = 0
-        started_lock = threading.Lock()
-        both_started = threading.Event()
-        release = threading.Event()
+        execution_order = []
 
-        def slow_action(data, context):
-            nonlocal started
-            with started_lock:
-                started += 1
-                if started == 2:
-                    both_started.set()
-            release.wait(timeout=2)
+        def ordered_action(data, context):
+            execution_order.append(data["name"])
             return {"name": data["name"]}
 
         action_schema = object_schema({"name": {"type": "string"}})
@@ -108,7 +100,7 @@ class RuntimeTests(unittest.TestCase):
                     type=name,
                     description=name,
                     data_schema=action_schema,
-                    handler=slow_action,
+                    handler=ordered_action,
                     owner="test",
                 )
             )
@@ -136,32 +128,125 @@ class RuntimeTests(unittest.TestCase):
             module_manager=modules,
             debug=Debugger(enabled=False),
         )
-        agent = manager.create_main("test")
-        bus.publish(Event(type="speech", data={"text": "start"}))
-        self.assertTrue(both_started.wait(timeout=2))
-        bus.publish(Event(type="speech", data={"text": "while busy"}))
-        release.set()
-        deadline = time.time() + 2
-        while len(client.chat.completions.calls) < 2 and time.time() < deadline:
-            time.sleep(0.01)
-        self.assertEqual(len(client.chat.completions.calls), 2)
-        second_messages = client.chat.completions.calls[1]["messages"]
-        event_messages = [
-            message
-            for message in second_messages
-            if message["role"] == "user"
-        ]
-        self.assertGreaterEqual(len(event_messages), 3)
-        values = [json.loads(message["content"]) for message in event_messages]
-        self.assertEqual(
-            sum(value["type"] == "action_result" for value in values),
-            2,
+        try:
+            manager.create_main("test")
+            bus.publish(Event(type="speech", data={"text": "start"}))
+            deadline = time.time() + 2
+            while len(client.chat.completions.calls) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(execution_order, ["one", "two"])
+            self.assertEqual(len(client.chat.completions.calls), 2)
+            event_messages = [
+                message
+                for message in client.chat.completions.calls[1]["messages"]
+                if message["role"] == "user"
+            ]
+            values = [json.loads(message["content"]) for message in event_messages]
+            results = [value for value in values if value["type"] == "action_result"]
+            self.assertEqual(len(results), 2)
+            self.assertEqual(
+                [result["data"]["action_type"] for result in results],
+                ["test.one", "test.two"],
+            )
+        finally:
+            manager.shutdown()
+
+    def test_action_error_does_not_stop_following_actions(self):
+        events = EventRegistry()
+        register_builtin_events(events)
+        actions = ActionRegistry()
+        bus = EventBus(events, debug=Debugger(enabled=False))
+        modules = ModuleManager(bus, actions, events, debug=Debugger(enabled=False))
+        execution_order = []
+
+        def fail_action(data, context):
+            execution_order.append("fail")
+            raise RuntimeError("ожидаемая ошибка")
+
+        def next_action(data, context):
+            execution_order.append("next")
+            return {"continued": True}
+
+        schema = empty_object_schema()
+        actions.register(ActionSpec("test.fail", "fail", schema, fail_action, owner="test"))
+        actions.register(ActionSpec("test.next", "next", schema, next_action, owner="test"))
+        actions.register(
+            ActionSpec("no_action", "wait", schema, lambda data, context: None, owner="builtin")
         )
-        self.assertIn(
-            {"type": "speech", "data": {"text": "while busy"}},
-            values,
+        client = _Client(
+            '{"actions":['
+            '{"type":"test.fail","data":{}},'
+            '{"type":"test.next","data":{}}'
+            ']}'
         )
-        manager.shutdown()
+        manager = AgentManager(
+            model="test",
+            client=client,
+            actions=actions,
+            events=events,
+            bus=bus,
+            module_manager=modules,
+            debug=Debugger(enabled=False),
+        )
+        try:
+            manager.create_main("test")
+            bus.publish(Event(type="speech", data={"text": "start"}))
+            deadline = time.time() + 2
+            while len(client.chat.completions.calls) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(execution_order, ["fail", "next"])
+            values = [
+                json.loads(message["content"])
+                for message in client.chat.completions.calls[1]["messages"]
+                if message["role"] == "user"
+            ]
+            results = [value for value in values if value["type"] == "action_result"]
+            self.assertEqual([result["data"]["status"] for result in results], ["error", "success"])
+        finally:
+            manager.shutdown()
+
+    def test_invalid_model_json_becomes_model_error_event(self):
+        events = EventRegistry()
+        register_builtin_events(events)
+        actions = ActionRegistry()
+        bus = EventBus(events, debug=Debugger(enabled=False))
+        modules = ModuleManager(bus, actions, events, debug=Debugger(enabled=False))
+        actions.register(
+            ActionSpec(
+                "no_action",
+                "wait",
+                empty_object_schema(),
+                lambda data, context: None,
+                owner="builtin",
+            )
+        )
+        client = _Client("not json")
+        manager = AgentManager(
+            model="test",
+            client=client,
+            actions=actions,
+            events=events,
+            bus=bus,
+            module_manager=modules,
+            debug=Debugger(enabled=False),
+        )
+        try:
+            manager.create_main("test")
+            bus.publish(Event(type="speech", data={"text": "start"}))
+            deadline = time.time() + 2
+            while len(client.chat.completions.calls) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(len(client.chat.completions.calls), 2)
+            values = [
+                json.loads(message["content"])
+                for message in client.chat.completions.calls[1]["messages"]
+                if message["role"] == "user"
+            ]
+            errors = [value for value in values if value["type"] == "model_error"]
+            self.assertEqual(len(errors), 1)
+            self.assertEqual(errors[0]["data"]["code"], "invalid_json")
+        finally:
+            manager.shutdown()
 
     def test_speech_keeps_agent_busy_until_playback_finishes(self):
         events = EventRegistry()

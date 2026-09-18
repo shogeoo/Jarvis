@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 import traceback
-from concurrent.futures import Future, wait, FIRST_COMPLETED
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -87,7 +87,7 @@ class EventBus:
 
 
 class Agent:
-    """Один последовательный модельный цикл с параллельными действиями."""
+    """Один последовательный модельный цикл с последовательными actions."""
 
     def __init__(
         self,
@@ -244,22 +244,35 @@ class Agent:
                 messages=self.history,
                 response_format=response_format(schema),
             )
-            message = response.choices[0].message
-            refusal = getattr(message, "refusal", None)
-            content = message.content or ""
-            self.history.append({"role": "assistant", "content": content})
-            self.manager.debug.model(self.agent_id, content)
-            if refusal:
-                raise RuntimeError(f"Модель отказалась выполнить запрос: {refusal}")
+        except Exception as exc:  # noqa: BLE001
+            self._model_failure(exc)
+            return
+
+        message = response.choices[0].message
+        refusal = getattr(message, "refusal", None)
+        content = message.content or ""
+        self.history.append({"role": "assistant", "content": content})
+        self.manager.debug.model(self.agent_id, content)
+        if refusal:
+            self._model_failure(RuntimeError(f"Модель отказалась выполнить запрос: {refusal}"))
+            return
+
+        try:
             value = json.loads(content)
-            raw_actions = value.get("actions") if isinstance(value, dict) else None
-            if isinstance(raw_actions, list) and len(raw_actions) > 1:
-                # Some local structured-output backends append no_action to a
-                # useful action. It is redundant in a non-empty response.
-                value["actions"] = [
-                    item for item in raw_actions
-                    if item.get("type") != "no_action"
-                ]
+        except (TypeError, json.JSONDecodeError) as exc:
+            self._model_error("invalid_json", exc, content)
+            return
+
+        raw_actions = value.get("actions") if isinstance(value, dict) else None
+        if isinstance(raw_actions, list) and len(raw_actions) > 1:
+            # Some local structured-output backends append no_action to a
+            # useful action. It is redundant in a non-empty response.
+            value["actions"] = [
+                item
+                for item in raw_actions
+                if not isinstance(item, dict) or item.get("type") != "no_action"
+            ]
+        try:
             validate_json(
                 value,
                 actions_response_schema(schema),
@@ -269,8 +282,8 @@ class Agent:
             for action in actions:
                 if action.type not in specs:
                     raise ValueError(f"Действие недоступно этому агенту: {action.type}")
-        except Exception as exc:  # noqa: BLE001
-            self._model_failure(exc)
+        except (TypeError, ValueError) as exc:
+            self._model_error("invalid_action_schema", exc, content)
             return
 
         if len(actions) == 1 and actions[0].type == "no_action":
@@ -283,6 +296,27 @@ class Agent:
         elif not self._stop.is_set():
             self._set_state("waiting")
 
+    def _model_error(self, code: str, error: Exception, response: str) -> None:
+        """Вернуть ошибку формата модели ей самой следующим событием."""
+
+        event = Event(
+            type="model_error",
+            data={
+                "code": code,
+                "message": str(error),
+                "response": response,
+            },
+            source="runtime",
+            target=self.agent_id,
+        )
+        if not self.manager.bus.publish(event):
+            self.manager.debug.log(
+                "model_error_dropped",
+                agent_id=self.agent_id,
+                error=str(error),
+            )
+        self._set_state("waiting")
+
     def _model_failure(self, exc: Exception) -> None:
         self.manager.debug.log(
             "model_error",
@@ -291,42 +325,53 @@ class Agent:
             traceback=traceback.format_exc(),
         )
         if self.parent_id:
-            self.manager.send_message(
-                sender_id=self.agent_id,
-                agent_id=self.parent_id,
-                text=f"Не удалось обработать событие: {exc}",
-            )
+            try:
+                self.manager.send_message(
+                    sender_id=self.agent_id,
+                    agent_id=self.parent_id,
+                    text=f"Не удалось обработать событие: {exc}",
+                )
+            except ValueError as delivery_error:
+                # The parent may delete this agent while its model request is
+                # still unwinding. Reporting that race must not kill the thread.
+                self.manager.debug.log(
+                    "model_error_delivery_failed",
+                    agent_id=self.agent_id,
+                    error=str(delivery_error),
+                )
         self._set_state("waiting")
 
     def _execute_actions(self, actions: list[ActionRequest]) -> None:
-        futures: list[Future] = []
+        """Выполнить actions последовательно, сохраняя их порядок."""
+
         for action in actions:
             if self._stop.is_set() or self.manager.stopping.is_set():
                 break
             try:
                 future = self.manager.action_pool.submit(self._execute_action, action)
-            except RuntimeError:
-                if self.manager.stopping.is_set():
-                    break
-                raise
-            futures.append(future)
-        with self._future_lock:
-            self._active_futures.update(futures)
-        try:
-            pending = set(futures)
-            while pending and not self._stop.is_set():
-                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
-                for future in done:
-                    if not future.cancelled() and not self._stop.is_set():
-                        try:
-                            result = future.result()
-                        except Exception as exc:
-                            self._model_failure(exc)
-                        else:
-                            self.manager.bus.publish(result)
-        finally:
-            with self._future_lock:
-                self._active_futures.difference_update(futures)
+            except Exception as exc:  # noqa: BLE001
+                result = action_result_event(
+                    action,
+                    status="error",
+                    error=str(exc),
+                    target=self.agent_id,
+                )
+            else:
+                with self._future_lock:
+                    self._active_futures.add(future)
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    result = action_result_event(
+                        action,
+                        status="error",
+                        error=str(exc),
+                        target=self.agent_id,
+                    )
+                finally:
+                    with self._future_lock:
+                        self._active_futures.discard(future)
+            self.manager.bus.publish(result)
 
     def _execute_action(self, action: ActionRequest) -> Event:
         if self._stop.is_set() or self.manager.stopping.is_set():
