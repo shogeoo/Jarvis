@@ -2,8 +2,8 @@ import io
 import json
 import unittest
 
-from jarvis.debug import Debugger
-from jarvis.protocol import Event
+from jarvis.infrastructure.debug import Debugger
+from jarvis.core.protocol import Event
 
 
 class DebugTests(unittest.TestCase):

@@ -1,11 +1,11 @@
 import unittest
 from unittest.mock import Mock, patch
 
-from jarvis.model_capabilities import discover_model_capabilities
+from jarvis.infrastructure.model_capabilities import discover_model_capabilities
 
 
 class ModelCapabilitiesTests(unittest.TestCase):
-    @patch("jarvis.model_capabilities.requests.get")
+    @patch("jarvis.infrastructure.model_capabilities.requests.get")
     def test_reads_modalities_from_openrouter_model_catalog(self, get):
         response = Mock()
         response.json.return_value = {
@@ -27,7 +27,7 @@ class ModelCapabilitiesTests(unittest.TestCase):
         self.assertEqual(capabilities.input_modalities, ("text", "image", "audio"))
         get.assert_called_once()
 
-    @patch("jarvis.model_capabilities.requests.get", side_effect=OSError("offline"))
+    @patch("jarvis.infrastructure.model_capabilities.requests.get", side_effect=OSError("offline"))
     def test_uses_safe_text_only_fallback(self, get):
         capabilities = discover_model_capabilities(
             "provider/model", "https://openrouter.ai/api/v1", "secret"
@@ -36,7 +36,7 @@ class ModelCapabilitiesTests(unittest.TestCase):
         self.assertIn("offline", capabilities.discovery_error)
 
     def test_prompt_explains_unsupported_native_modalities(self):
-        from jarvis.model_capabilities import ModelCapabilities
+        from jarvis.infrastructure.model_capabilities import ModelCapabilities
 
         prompt = ModelCapabilities("model", ("text", "image")).prompt_block()
 
