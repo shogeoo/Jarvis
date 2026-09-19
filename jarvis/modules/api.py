@@ -169,10 +169,6 @@ class ModuleContext:
         reply_to: str | None = None,
         parts: Iterable[InputPart] = (),
     ) -> Event:
-        if not type.startswith(f"{self.module_id}."):
-            raise ValueError(
-                f"Модуль {self.module_id} не может публиковать событие {type}"
-            )
         event = Event(
             type=type,
             data=data,

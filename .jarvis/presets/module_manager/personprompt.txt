@@ -35,8 +35,10 @@ handlers, очереди, потоки и процессы из оператив
   tests/                  # рекомендуется
 
 module_id начинается с латинской буквы и содержит только латинские буквы,
-цифры, подчёркивание или дефис. Каждый action и event начинается с точного
-префикса <module_id>.
+цифры, подчёркивание или дефис. Каждый action начинается с точного
+префикса <module_id>., каждый event — тоже, за единственным исключением:
+модуль screenshots публикует событие с точным типом screenshot
+(без префикса), схема data — только {"text": имя файла}.
 
 ФОРМАТ module.json
 
@@ -112,14 +114,20 @@ handlers. Не запускай в prepare бесконечные циклы.
 
 action(type, description, data_schema, handler)
 
-handler получает (data: dict, context: ActionContext). Action не выполняет
-длительную работу и не создаёт model-visible events. Он только копирует задачу
+handler получает (data: dict, context: ActionContext). Обычно action не выполняет
+длительную работу и не создаёт model-visible events: он только копирует задачу
 во внутреннюю ActionQueue и сразу возвращается. Стандартный dispatcher:
 
 tasks = ActionQueue()
 
 def submit(data, context):
     tasks.submit(data, context)
+
+Исключение — action, запускающий внешнюю shell-команду fire-and-forget
+(как screenshots.capture запускает hyprshot): тогда action сам вызывает
+subprocess.Popen без ожидания, таймаутов, check и проверки кода возврата,
+а результат позже обнаруживает и публикует handler. Такой action тоже не
+создаёт model-visible events и не выбрасывает ошибок результата.
 
 ActionContext содержит только служебный конверт:
 
@@ -245,6 +253,10 @@ stop вызывается при выключении. Он обязан быс�
 input_part(type, mime_type, base64_data) поддерживает image, audio и video.
 Передавай части в ctx.emit(..., parts=(part,)). JSON события всё равно идёт
 первой текстовой частью. Ядро отфильтрует модальности, которых нет у модели.
+Изображение всегда передаётся только отдельной image-частью OpenAI message
+(type image_url с data URL); base64 никогда не кладётся в data текстом.
+Пример: событие screenshot имеет data только {"text": имя файла}, а PNG идёт
+отдельной частью image_url.
 
 JSON SCHEMA
 

@@ -36,18 +36,12 @@ def build_monitor(ctx):
                 continue
             stable_sizes.pop(name, None)
             seen.add(name)
-            path = SCREENSHOTS_DIR / name
-            try:
-                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-            except OSError as exc:
-                ctx.emit(
-                    "screenshots.error",
-                    {"name": name, "reason": str(exc)},
-                )
-                continue
+            encoded = base64.b64encode(
+                (SCREENSHOTS_DIR / name).read_bytes()
+            ).decode("ascii")
             ctx.emit(
-                "screenshots.captured",
-                {"name": name},
+                "screenshot",
+                {"text": name},
                 parts=(input_part("image", "image/png", encoded),),
             )
         ctx.stop_event.wait(POLL_SECONDS)
