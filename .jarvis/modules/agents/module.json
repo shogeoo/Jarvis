@@ -1,0 +1,6 @@
+{
+  "module_id": "agents",
+  "description": "Создание агентов, межагентные сообщения и управление пресетами",
+  "entrypoint": "module.py",
+  "factory": "create_module"
+}

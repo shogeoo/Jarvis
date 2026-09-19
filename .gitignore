@@ -10,4 +10,6 @@ models/silero_vad.onnx
 build/
 dist/
 .assistant/
+.jarvis/runtime/
 *.s2voice
+:memory:.ses

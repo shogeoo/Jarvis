@@ -1,0 +1,6 @@
+{
+  "module_id": "module_manager",
+  "description": "Создание, проверка, применение и назначение модулей",
+  "entrypoint": "module.py",
+  "factory": "create_module"
+}
