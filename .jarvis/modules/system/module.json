@@ -1,6 +1,0 @@
-{
-  "module_id": "system",
-  "description": "Управление жизненным циклом Jarvis",
-  "entrypoint": "module.py",
-  "factory": "create_module"
-}

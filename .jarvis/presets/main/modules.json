@@ -1,6 +1,6 @@
 [
   "agents",
+  "modules",
   "speech_input",
-  "speech_output",
-  "system"
+  "speech_output"
 ]

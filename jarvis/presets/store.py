@@ -121,16 +121,6 @@ class PresetStore:
                 raise ValueError(f"В пресете есть неизвестный каталог: {child}")
         path.rmdir()
 
-    def add_module(self, name: str, module_id: str) -> AgentPreset:
-        if not isinstance(module_id, str) or not _NAME.fullmatch(module_id):
-            raise ValueError(f"Некорректный module_id: {module_id!r}")
-        preset = self.load(name)
-        if module_id in preset.modules:
-            return preset
-        modules = [*preset.modules, module_id]
-        self._write_modules(self.path(name), modules)
-        return self.load(name)
-
     @staticmethod
     def _write_modules(path: Path, modules: list[str]) -> None:
         (path / "modules.json").write_text(

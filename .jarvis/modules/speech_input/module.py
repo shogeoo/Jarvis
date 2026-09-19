@@ -9,17 +9,17 @@ def create_module():
     controller = SpeechInput()
     speech = event(
         "speech_input.speech",
-        "Текст завершённой реплики пользователя, распознанной с микрофона.",
+        "Новая завершённая реплика пользователя с микрофона. text содержит распознанную речь; событие рассылается всем экземплярам с speech_input.",
         object_schema({"text": {"type": "string"}}),
     )
     error = event(
         "speech_input.error",
-        "Ошибка захвата или распознавания речи.",
+        "Фоновая ошибка микрофона, VAD или распознавания. message содержит причину, которую следует сообщить пользователю или передать на исправление.",
         object_schema({"message": {"type": "string"}}),
     )
     handler = event_handler(
         "speech_input.microphone",
-        "Непрерывно слушает микрофон и публикует завершённые реплики.",
+        "Непрерывно слушает микрофон, режет речь по VAD и публикует завершённые транскрипции и ошибки.",
         (speech, error),
         controller.start,
         stop=controller.stop,

@@ -87,14 +87,16 @@ class ModuleTests(unittest.TestCase):
             debug=Debugger(enabled=False),
         )
         try:
-            summaries = manager.load_all(start_handlers=False)
-            loaded = {summary["module"] for summary in summaries}
+            existing = manager.existing_names()
             self.assertEqual(
-                loaded,
-                {"agents", "module_manager", "speech_input", "speech_output", "system"},
+                existing,
+                {"agents", "module_manager", "modules", "speech_input", "speech_output"},
             )
+            for module_id in existing:
+                self.assertEqual(manager.validate(module_id)["module"], module_id)
             for preset in PresetStore(Path(".jarvis/presets")).list():
-                self.assertLessEqual(set(preset.modules), loaded)
+                self.assertLessEqual(set(preset.modules), existing)
+            manager.load("agents", start_handlers=False)
             catalog = manager.catalog({"agents"})
             self.assertEqual(catalog[0]["module_id"], "agents")
             self.assertTrue(
@@ -124,6 +126,31 @@ class ModuleTests(unittest.TestCase):
             self.assertIn("example.run", action_registry.for_modules({"example"}))
             self.assertNotIn("example.run", action_registry.for_modules(set()))
             manager.unload("example")
+
+    def test_module_environment_rejects_unpinned_dependencies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._create_module(root)
+            manifest_path = root / "example" / "module.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest.update(
+                {"execution": "isolated", "requirements": "requirements.txt"}
+            )
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "example" / "requirements.txt").write_text(
+                "requests>=2\n", encoding="utf-8"
+            )
+            events = EventRegistry()
+            manager = ModuleManager(
+                EventBus(events, debug=Debugger(enabled=False)),
+                ActionRegistry(),
+                events,
+                modules_dir=root,
+                debug=Debugger(enabled=False),
+            )
+            with self.assertRaisesRegex(ValueError, "закреплены"):
+                manager.create_environment("example")
+            self.assertFalse((root / "example" / ".venv").exists())
 
 
 if __name__ == "__main__":

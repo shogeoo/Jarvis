@@ -1,16 +1,8 @@
 from jarvis.core.protocol import object_schema
-from jarvis.modules import Module, action, event
+from jarvis.modules import ActionQueue, Module, action, event, event_handler
 
-from .actions.control import (
-    delete_agent,
-    interrupt_agent,
-    list_agents,
-    list_presets,
-    create_preset,
-    delete_preset,
-    send_message,
-    spawn_agent,
-)
+from .actions.control import submit
+from .handlers.control import run, stop
 
 
 STRING = {"type": "string"}
@@ -23,79 +15,43 @@ def schema(**properties):
 
 
 def create_module():
+    tasks = ActionQueue()
     operation_result = event(
         "agents.operation_result",
-        "Результат операции управления агентами или пресетами.",
+        "Результат фонового выполнения операции управления агентами.",
         schema(
-            action_id=STRING,
             action_type=STRING,
             status={"type": "string", "enum": ["success", "error"]},
             result=ANY_JSON,
             error=NULLABLE_STRING,
         ),
     )
-    message_event = event(
+    message = event(
         "agents.message",
-        "Обычное адресное сообщение от другого агента.",
+        "Адресное сообщение от другого агента.",
         schema(from_agent_id=STRING, from_name=STRING, text=STRING),
     )
     actions = (
-        action(
-            "agents.spawn",
-            "Создать самостоятельный экземпляр агента с указанными name и preset.",
-            schema(name=STRING, preset=STRING),
-            spawn_agent,
-        ),
-        action(
-            "agents.message",
-            "Отправить обычное событие message агенту по agent_id.",
-            schema(agent_id=STRING, text=STRING),
-            send_message,
-        ),
-        action(
-            "agents.interrupt",
-            "Остановить работающий экземпляр агента.",
-            schema(agent_id=STRING, reason=STRING),
-            interrupt_agent,
-        ),
-        action(
-            "agents.delete",
-            "Удалить остановленный или работающий экземпляр агента.",
-            schema(agent_id=STRING, reason=STRING),
-            delete_agent,
-        ),
-        action(
-            "agents.list",
-            "Получить список активных экземпляров агентов.",
-            object_schema({}),
-            list_agents,
-        ),
-        action(
-            "agents.preset_create",
-            "Создать или заменить пресет, кроме защищённого preset main.",
-            schema(
-                name=STRING,
-                person_prompt=STRING,
-                modules={"type": "array", "items": STRING},
-            ),
-            create_preset,
-        ),
-        action(
-            "agents.preset_delete",
-            "Удалить пресет, кроме защищённого preset main.",
-            schema(name=STRING),
-            delete_preset,
-        ),
-        action(
-            "agents.preset_list",
-            "Получить список файловых пресетов.",
-            object_schema({}),
-            list_presets,
-        ),
+        action("agents.spawn", "Создать независимый живой экземпляр с указанным читаемым name из существующего preset. Задачу передавай после события успеха отдельным agents.message.", schema(name=STRING, preset=STRING), submit(tasks)),
+        action("agents.message", "Адресно передать text живому экземпляру по agent_id. Получатель увидит обычное событие agents.message в своей FIFO.", schema(agent_id=STRING, text=STRING), submit(tasks)),
+        action("agents.interrupt", "Остановить цикл указанного живого экземпляра. reason сохраняется только в результате операции.", schema(agent_id=STRING, reason=STRING), submit(tasks)),
+        action("agents.delete", "Удалить живой экземпляр из runtime и освободить его экземплярные модули. Файлы preset не удаляются.", schema(agent_id=STRING, reason=STRING), submit(tasks)),
+        action("agents.list", "Получить agent_id, name, preset, parent_id, state и активные модули всех живых экземпляров.", object_schema({}), submit(tasks)),
+        action("agents.preset_list", "Получить сохранённые presets, их стартовые modules и признак protected.", object_schema({}), submit(tasks)),
+    )
+    handler = event_handler(
+        "agents.control",
+        "Выполняет операции с агентами и возвращает адресные результаты.",
+        (operation_result, message),
+        lambda ctx: run(tasks, ctx),
+        stop=lambda ctx: stop(tasks, ctx),
     )
     return Module(
         module_id="agents",
-        description="Создание агентов, межагентные сообщения и управление пресетами",
+        description=(
+            "Управление экземплярами агентов, межагентные сообщения и presets. "
+            "Actions ставят задачи, handler возвращает результаты."
+        ),
         actions=actions,
-        events=(operation_result, message_event),
+        handlers=(handler,),
     )

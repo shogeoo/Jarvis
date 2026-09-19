@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,13 +28,12 @@ class PresetStoreTests(unittest.TestCase):
             self.store.delete("main")
         self.assertEqual(self.store.load("main").person_prompt, "Jarvis")
 
-    def test_module_can_only_be_added_once(self):
-        self.store.add_module("main", "clock")
-        self.store.add_module("main", "clock")
-        modules = json.loads(
-            (self.root / "main" / "modules.json").read_text(encoding="utf-8")
+    def test_duplicate_initial_modules_are_rejected(self):
+        (self.root / "main" / "modules.json").write_text(
+            '["agents", "agents"]\n', encoding="utf-8"
         )
-        self.assertEqual(modules, ["agents", "clock"])
+        with self.assertRaises(ValueError):
+            self.store.load("main")
 
 
 if __name__ == "__main__":
