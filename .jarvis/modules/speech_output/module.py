@@ -8,11 +8,6 @@ from .handlers.server import SpeechOutput
 def create_module():
     tasks = ActionQueue()
     controller = SpeechOutput(tasks)
-    status = event(
-        "speech_output.status",
-        "Широковещательное состояние фонового Fish Audio worker: ready=true означает готовность, ready=false содержит причину запуска.",
-        object_schema({"ready": {"type": "boolean"}, "message": {"type": "string"}}),
-    )
     result = event(
         "speech_output.result",
         "Адресный результат ранее поставленной реплики: success после воспроизведения, error при сбое или прерывании.",
@@ -27,7 +22,7 @@ def create_module():
     handler = event_handler(
         "speech_output.server",
         "Управляет Fish Audio, выполняет очередь речи и возвращает результаты.",
-        (status, result),
+        (result,),
         controller.start,
         stop=controller.stop,
     )
