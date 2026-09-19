@@ -9,7 +9,13 @@ from typing import Any
 
 
 class Debugger:
-    """Печатает только точное содержимое model-visible сообщений.
+    """Печатает только протокольный JSON event-action формата.
+
+    Вход: ровно {"type":..., "data":...} как его задаёт модуль.
+    Выход: сырой content assistant message как его вернула модель.
+    OpenAI-обёртка (списки text/image_url, data URL с base64) и
+    переформатирование JSON намеренно не выводятся: base64 текстом
+    в лог попадать не должен.
 
     Внутренние события доставки, состояния агентов и этапы действий намеренно
     не выводятся: они дублируют сообщения, которые модель уже увидит через
@@ -29,17 +35,12 @@ class Debugger:
         """
 
     def message(self, content: Any) -> None:
-        """Вывести содержимое сообщения как читаемую JSON-структуру."""
+        """Вывести протокольный JSON как есть, без переформатирования."""
 
         if not self.enabled:
             return
-        if isinstance(content, str):
-            try:
-                content = json.loads(content)
-            except json.JSONDecodeError:
-                pass
         rendered = (
-            json.dumps(content, ensure_ascii=False, indent=2)
+            json.dumps(content, ensure_ascii=False, separators=(",", ":"))
             if not isinstance(content, str)
             else content
         )
@@ -49,9 +50,9 @@ class Debugger:
             self.stream.flush()
 
     def input(self, event: Any, capabilities: Any = None) -> None:
-        """Вывести model-visible content входного сообщения."""
+        """Вывести входное событие в протокольном формате type/data."""
 
-        self.message(event.model_visible_content(capabilities))
+        self.message(event.model_value())
 
     def event(self, direction: str, agent_id: str, event: Any) -> None:
         """Старый API: доставка события не является выводом для модели."""
@@ -60,7 +61,7 @@ class Debugger:
         """Старый API: действие уже присутствует в ответе модели."""
 
     def model(self, agent_id: str, output: str, *, actions: Any = None) -> None:
-        """Вывести точный content assistant message."""
+        """Вывести сырой content assistant message как есть."""
 
         self.message(output)
 
