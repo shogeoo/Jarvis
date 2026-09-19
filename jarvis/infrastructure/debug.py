@@ -35,12 +35,17 @@ class Debugger:
         """
 
     def message(self, content: Any) -> None:
-        """Вывести протокольный JSON как есть, без переформатирования."""
+        """Вывести протокольный JSON с форматированием, без OpenAI-обёртки."""
 
         if not self.enabled:
             return
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError:
+                pass
         rendered = (
-            json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+            json.dumps(content, ensure_ascii=False, indent=2)
             if not isinstance(content, str)
             else content
         )

@@ -20,17 +20,12 @@ class SpeechOutput:
             self.speaker = Speaker(load_config())
             self.speaker.start()
             ctx.services["speech_output"] = self.speaker
-            ctx.emit("speech_output.status", {"ready": True, "message": "ready"})
             while not ctx.stop_event.is_set():
                 task = self.tasks.get()
                 if task is not None:
                     self._speak(task, ctx)
         except Exception as exc:
             if not ctx.stop_event.is_set():
-                ctx.emit(
-                    "speech_output.status",
-                    {"ready": False, "message": str(exc)},
-                )
                 self._reject_tasks(ctx, str(exc))
         finally:
             self.stop(ctx)

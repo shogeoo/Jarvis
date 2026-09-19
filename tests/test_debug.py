@@ -26,9 +26,11 @@ class DebugTests(unittest.TestCase):
 
         self.assertEqual(
             output.getvalue(),
-            json.dumps(event.model_value(), ensure_ascii=False, separators=(",", ":"))
+            json.dumps(event.model_value(), ensure_ascii=False, indent=2)
             + "\n"
-            + assistant_output
+            + json.dumps(
+                json.loads(assistant_output), ensure_ascii=False, indent=2
+            )
             + "\n",
         )
         self.assertNotIn("base64", output.getvalue())
