@@ -13,7 +13,7 @@ ANY_JSON = {"type": ["object", "array", "string", "number", "boolean", "null"]}
 def create_module():
     tasks = ActionQueue()
     result = event(
-        "modules.operation_result",
+        "module_control.operation_result",
         "Адресный результат просмотра, включения или выключения модуля.",
         object_schema(
             {
@@ -26,39 +26,39 @@ def create_module():
     )
     actions = (
         action(
-            "modules.list_existing",
+            "module_control.list_existing",
             "Показать все module_id, существующие на диске, их description, глобальное состояние загрузки и доступность текущему экземпляру.",
             object_schema({}),
             submit(tasks),
         ),
         action(
-            "modules.list_active",
+            "module_control.list_active",
             "Показать точный enabled_modules текущего живого экземпляра; preset и другие экземпляры не учитываются.",
             object_schema({}),
             submit(tasks),
         ),
         action(
-            "modules.enable",
-            "Загрузить существующий module_id при необходимости и включить его только текущему экземпляру. Preset на диске не изменяется.",
+            "module_control.enable",
+            "Загрузить существующий module_id при необходимости и включить его текущему экземпляру. Если action вызвал root-agent main, module_id также навсегда добавляется в main/modules.json.",
             object_schema({"module_id": STRING}),
             submit(tasks),
         ),
         action(
-            "modules.disable",
+            "module_control.disable",
             "Убрать module_id только из RAM текущего экземпляра. Если пользователей больше нет, runtime модуля полностью выгружается.",
             object_schema({"module_id": STRING}),
             submit(tasks),
         ),
     )
     handler = event_handler(
-        "modules.control",
+        "module_control.control",
         "Выполняет изменения оперативного набора модулей экземпляра.",
         (result,),
         lambda ctx: run(tasks, ctx),
         stop=lambda ctx: stop(tasks, ctx),
     )
     return Module(
-        module_id="modules",
+        module_id="module_control",
         description="Каталог существующих модулей и управление модулями текущего экземпляра агента.",
         actions=actions,
         handlers=(handler,),

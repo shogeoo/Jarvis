@@ -28,12 +28,12 @@ def create_module():
     )
     message = event(
         "agents.message",
-        "Адресное сообщение от другого агента.",
+        "Адресное сообщение от другого агента. from_agent_id и from_name являются метаданными отправителя; text содержит прямую речь или задачу без префикса «сообщение от агента».",
         schema(from_agent_id=STRING, from_name=STRING, text=STRING),
     )
     actions = (
         action("agents.spawn", "Создать независимый живой экземпляр с указанным читаемым name из существующего preset. Задачу передавай после события успеха отдельным agents.message.", schema(name=STRING, preset=STRING), submit(tasks)),
-        action("agents.message", "Адресно передать text живому экземпляру по agent_id. Получатель увидит обычное событие agents.message в своей FIFO.", schema(agent_id=STRING, text=STRING), submit(tasks)),
+        action("agents.message", "Адресно передать живому экземпляру по agent_id прямой текст text. Пиши в text саму задачу без служебного префикса и без слов «сообщение от агента». Получатель увидит обычное событие agents.message в своей FIFO.", schema(agent_id=STRING, text=STRING), submit(tasks)),
         action("agents.interrupt", "Остановить цикл указанного живого экземпляра. reason сохраняется только в результате операции.", schema(agent_id=STRING, reason=STRING), submit(tasks)),
         action("agents.delete", "Удалить живой экземпляр из runtime и освободить его экземплярные модули. Файлы preset не удаляются.", schema(agent_id=STRING, reason=STRING), submit(tasks)),
         action("agents.list", "Получить agent_id, name, preset, parent_id, state и активные модули всех живых экземпляров.", object_schema({}), submit(tasks)),

@@ -1,0 +1,7 @@
+{
+  "module_id": "screenshots",
+  "description": "Создаёт PNG активного монитора Hyprland через screenshots.capture. Action сохраняет файл с суффиксом _jarvis, а handler обнаруживает новый файл в Images/Screenshots и рассылает его всем агентам с включённым модулем.",
+  "entrypoint": "module.py",
+  "factory": "create_module",
+  "execution": "in_process"
+}

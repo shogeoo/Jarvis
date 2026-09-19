@@ -35,6 +35,11 @@ class PresetStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.load("main")
 
+    def test_module_can_be_added_to_preset_without_duplicates(self):
+        self.store.add_module("main", "clock")
+        self.store.add_module("main", "clock")
+        self.assertEqual(self.store.load("main").modules, ("agents", "clock"))
+
 
 if __name__ == "__main__":
     unittest.main()

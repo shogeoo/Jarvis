@@ -1,5 +1,5 @@
 {
-  "module_id": "modules",
+  "module_id": "module_control",
   "description": "Каталог существующих модулей и управление модулями текущего экземпляра агента.",
   "entrypoint": "module.py",
   "factory": "create_module",
