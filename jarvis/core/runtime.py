@@ -441,7 +441,9 @@ class AgentManager:
         initial_modules = set(selected.modules)
         self.modules.load_many(initial_modules, start_handlers=False)
         with self._lock:
-            agent_id = self._new_id()
+            agent_id = "main" if primary else self._new_id()
+            if agent_id in self.agents:
+                raise ValueError("Экземпляр main уже существует")
             agent = Agent(
                 agent_id,
                 name.strip(),

@@ -55,25 +55,30 @@ class ApplicationTests(unittest.TestCase):
             self.assertNotIn('"module_id": "module_manager"', system_prompt)
             self.assertEqual(
                 app.modules.loaded_names(),
-                {"agents", "modules", "speech_input", "speech_output"},
+                {"agents", "module_control", "speech_input", "speech_output"},
             )
             self.assertNotIn("module_manager", app.modules.loaded_names())
-            other = app.agents.spawn_root(name="other", preset="main")
+            other = app.agents.spawn(
+                parent_id=app.main_agent.agent_id,
+                name="other",
+                preset="main",
+            )
+            other_agent = app.agents.require_agent(other["agent_id"])
             disabled = app.modules.disable_for_edit("speech_output")
             self.assertEqual(
                 set(disabled["disabled_for"]),
-                {app.main_agent.agent_id, other.agent_id},
+                {app.main_agent.agent_id, other_agent.agent_id},
             )
             self.assertNotIn("speech_output", app.main_agent.modules())
-            self.assertNotIn("speech_output", other.modules())
+            self.assertNotIn("speech_output", other_agent.modules())
             self.assertNotIn("speech_output", app.modules.loaded_names())
             restored = app.modules.enable_after_edit("speech_output")
             self.assertEqual(
                 set(restored["restored_for"]),
-                {app.main_agent.agent_id, other.agent_id},
+                {app.main_agent.agent_id, other_agent.agent_id},
             )
             self.assertIn("speech_output", app.main_agent.modules())
-            self.assertIn("speech_output", other.modules())
+            self.assertIn("speech_output", other_agent.modules())
 
             receiver = _Receiver()
             app.bus.bind(receiver)

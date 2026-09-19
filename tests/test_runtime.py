@@ -1,6 +1,5 @@
 import copy
 import json
-import re
 import tempfile
 import threading
 import time
@@ -284,7 +283,8 @@ class RuntimeTests(unittest.TestCase):
         client = _Client(['{"actions":[{"type":"no_action","data":{}}]}'])
         manager = self.manager(client)
         first = manager.spawn_root(name="main", preset="main")
-        second = manager.spawn_root(name="other", preset="main")
+        second_info = manager.spawn(parent_id=first.agent_id, name="other", preset="main")
+        second = manager.require_agent(second_info["agent_id"])
         self.actions.register(
             ActionSpec("clock.now", "time", empty_object_schema(), lambda d, c: None, owner="module:clock")
         )
@@ -293,10 +293,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("clock", second.modules())
         self.assertEqual(self.presets.load("main").modules, ("test",))
 
-    def test_main_uses_random_three_digit_agent_id(self):
+    def test_main_uses_reserved_main_agent_id(self):
         manager = self.manager(_Client(['{"actions":[{"type":"no_action","data":{}}]}']))
         agent = manager.spawn_root(name="main", preset="main")
-        self.assertRegex(agent.agent_id, re.compile(r"^agent-\d{3}$"))
+        self.assertEqual(agent.agent_id, "main")
 
 
 if __name__ == "__main__":

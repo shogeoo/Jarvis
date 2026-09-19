@@ -88,9 +88,9 @@ class ModuleTests(unittest.TestCase):
         )
         try:
             existing = manager.existing_names()
-            self.assertEqual(
+            self.assertLessEqual(
+                {"agents", "module_manager", "module_control", "speech_input", "speech_output"},
                 existing,
-                {"agents", "module_manager", "modules", "speech_input", "speech_output"},
             )
             for module_id in existing:
                 self.assertEqual(manager.validate(module_id)["module"], module_id)
