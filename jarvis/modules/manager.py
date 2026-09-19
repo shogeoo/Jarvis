@@ -366,8 +366,6 @@ class ModuleManager:
             if not handler.name or not callable(handler.start):
                 raise ValueError(f"Некорректный handler {handler.name!r}")
             for event in handler.events:
-                if not event.type.startswith(prefix):
-                    raise ValueError(f"Событие {event.type} должно начинаться с {prefix}")
                 validate_strict_schema(event.data_schema, where=f"схема события {event.type}")
 
     def validate(self, module_id: str) -> dict[str, Any]:

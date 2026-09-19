@@ -55,7 +55,7 @@ class ApplicationTests(unittest.TestCase):
             self.assertNotIn('"module_id": "module_manager"', system_prompt)
             self.assertEqual(
                 app.modules.loaded_names(),
-                {"agents", "module_control", "speech_input", "speech_output"},
+                {"agents", "module_control", "speech_input", "speech_output", "screenshots"},
             )
             self.assertNotIn("module_manager", app.modules.loaded_names())
             other = app.agents.spawn(

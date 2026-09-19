@@ -20,7 +20,7 @@ actions и events приходят из динамически загружен�
 
 ## Цикл агента
 
-Каждый экземпляр имеет случайный `agent-XXX`, name, preset, собственные
+Каждый экземпляр имеет ID (`main` у корневого, случайный `agent-XXX` у остальных), name, preset, собственные
 контекст, FIFO, поток и `enabled_modules` в RAM.
 
 ```text
@@ -55,7 +55,10 @@ assistant message сохраняется. Агент остаётся занят
 
 Action — короткий dispatcher. Ядро передаёт его отдельному модульному потоку,
 который вызывает обработчик `action(data, ActionContext)`. Стандартный action
-использует `ActionQueue.submit` и сразу возвращается.
+использует `ActionQueue.submit` и сразу возвращается. Исключение —
+fire-and-forget запуск внешней shell-команды (`screenshots.capture` запускает
+`hyprshot` через double-fork без ожидания, таймаутов и проверки кода возврата):
+handler позже независимо обнаруживает результат во внешней среде.
 
 `ActionTask` хранит внутренние `agent_id`, `action_id`, `action_type` и `data`.
 Эти поля нужны маршрутизации и не обязаны показываться модели.
@@ -190,7 +193,10 @@ shutdown, затем при необходимости завершает всю
 - `module_control` — просмотр и RAM-доступ текущего экземпляра;
 - `module_manager` — редактирование, тестирование и глобальная выгрузка кода;
 - `speech_input` — входная речь, только handler;
-- `speech_output` — action постановки речи и handler результата.
+- `speech_output` — action постановки речи и handler результата;
+- `screenshots` — action `screenshots.capture` запускает hyprshot fire-and-forget,
+  handler публикует broadcast-событие `screenshot` (`data.text` — имя файла)
+  с отдельной image-частью, base64 в `data` нет.
 
 Отдельного `system` нет. Ctrl+C сейчас напрямую запускает очистку runtime.
 Будущий цикл памяти и штатного завершения находится вне текущего этапа.
