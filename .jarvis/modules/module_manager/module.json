@@ -1,6 +1,7 @@
 {
   "module_id": "module_manager",
-  "description": "Создание, проверка, применение и назначение модулей",
+  "description": "Редактирование, тестирование, выключение и динамическое включение модулей Jarvis.",
   "entrypoint": "module.py",
-  "factory": "create_module"
+  "factory": "create_module",
+  "execution": "in_process"
 }

@@ -6,16 +6,14 @@ import json
 import queue
 import secrets
 import threading
-import time
 import traceback
-from concurrent.futures import Future
 from typing import Any
 
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
-from ..modules.api import ActionContext, ActionSpec, EventDefinition
+from ..modules.api import ActionSpec, EventDefinition
 from ..presets import PresetStore
-from .lifecycle import ActionPool, ProcessManager
+from .lifecycle import ProcessManager
 from .prompts import agent_system_prompt
 from .protocol import (
     ActionRequest,
@@ -31,7 +29,7 @@ from .registry import ActionRegistry, EventRegistry
 
 
 def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> None:
-    """Зарегистрировать два зарезервированных элемента протокола."""
+    """Зарегистрировать зарезервированные элементы протокола."""
 
     actions.register(
         ActionSpec(
@@ -57,6 +55,19 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
                     "code": {"type": "string"},
                     "message": {"type": "string"},
                     "response": {"type": "string"},
+                }
+            ),
+        ),
+        owner="core",
+    )
+    events.register(
+        EventDefinition(
+            type="module_error",
+            description="Необработанная ошибка в коде подключаемого модуля.",
+            data_schema=object_schema(
+                {
+                    "module_id": {"type": "string"},
+                    "error": {"type": "string"},
                 }
             ),
         ),
@@ -124,20 +135,21 @@ class Agent:
         manager: "AgentManager",
         *,
         parent_id: str | None = None,
+        enabled_modules: set[str] | None = None,
     ):
         self.agent_id = agent_id
         self.name = name
         self.preset = preset
         self.parent_id = parent_id
         self.manager = manager
+        self._enabled_modules = set(enabled_modules or ())
+        self._modules_lock = threading.RLock()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": ""}
         ]
         self._events: "queue.Queue[Event | None]" = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._future_lock = threading.Lock()
-        self._active_futures: set[Future] = set()
         self._state = "created"
         self._state_lock = threading.Lock()
 
@@ -152,7 +164,16 @@ class Agent:
         self.manager.debug.state(self.agent_id, state, **extra)
 
     def modules(self) -> set[str]:
-        return set(self.manager.presets.load(self.preset).modules)
+        with self._modules_lock:
+            return set(self._enabled_modules)
+
+    def enable_module(self, module_id: str) -> None:
+        with self._modules_lock:
+            self._enabled_modules.add(module_id)
+
+    def disable_module(self, module_id: str) -> None:
+        with self._modules_lock:
+            self._enabled_modules.discard(module_id)
 
     def accepts_module(self, module_id: str) -> bool:
         try:
@@ -206,9 +227,6 @@ class Agent:
 
     def stop(self, *, wait: bool = True, timeout: float = 10.0) -> None:
         self._stop.set()
-        with self._future_lock:
-            for future in self._active_futures:
-                future.cancel()
         self._events.put(None)
         if wait and self._thread is not None:
             self._thread.join(timeout=timeout)
@@ -240,11 +258,7 @@ class Agent:
         except Exception as exc:  # noqa: BLE001
             self._model_failure(exc)
             return
-        self.manager.begin_agent_turn(self.agent_id, module_ids)
-        try:
-            self._run_turn(events, module_ids)
-        finally:
-            self.manager.end_agent_turn(self.agent_id)
+        self._run_turn(events, module_ids)
 
     def _run_turn(self, events: list[Event], module_ids: set[str]) -> None:
         """Выполнить один цикл на неизменяемом снимке модулей."""
@@ -341,62 +355,14 @@ class Agent:
                 break
             spec = specs[action.type]
             try:
-                future = self.manager.action_pool.submit(
-                    self._execute_action, action, spec
+                self.manager.modules.dispatch(
+                    action=action,
+                    spec=spec,
+                    agent=self,
                 )
             except Exception as exc:  # noqa: BLE001
-                self.manager.debug.log(
-                    "action_error",
-                    agent_id=self.agent_id,
-                    action=action.model_value(),
-                    error=str(exc),
-                )
-                continue
-            with self._future_lock:
-                self._active_futures.add(future)
-            try:
-                future.result()
-            except Exception as exc:  # noqa: BLE001
-                self.manager.debug.log(
-                    "action_error",
-                    agent_id=self.agent_id,
-                    action=action.model_value(),
-                    error=str(exc),
-                )
-            finally:
-                with self._future_lock:
-                    self._active_futures.discard(future)
-
-    def _execute_action(self, action: ActionRequest, spec: ActionSpec) -> None:
-        if self._stop.is_set() or self.manager.stopping.is_set():
-            return
-        validate_json(
-            action.data,
-            spec.data_schema,
-            where=f"аргументы {action.type}",
-        )
-        module_id = (
-            spec.owner.removeprefix("module:")
-            if spec.owner.startswith("module:")
-            else "core"
-        )
-        self.manager.begin_module_action(module_id)
-        try:
-            context = ActionContext(
-                agent_id=self.agent_id,
-                action_id=action.id,
-                event_bus=self.manager.bus,
-                agent_manager=self.manager,
-                modules=self.manager.modules,
-                module_id=module_id,
-                config=self.manager.config,
-                services=self.manager.services,
-                metadata={"preset": self.preset, "agent_name": self.name},
-                stop_event=self._stop,
-            )
-            spec.handler(action.data, context)
-        finally:
-            self.manager.end_module_action(module_id)
+                module_id = spec.owner.removeprefix("module:")
+                self.manager.report_module_error(module_id, exc)
 
 
 class AgentManager:
@@ -416,7 +382,6 @@ class AgentManager:
         config: Any = None,
         services: dict[str, Any] | None = None,
         debug: Debugger | None = None,
-        max_workers: int = 16,
         capabilities: ModelCapabilities | None = None,
     ):
         self.model = model
@@ -434,12 +399,9 @@ class AgentManager:
         self.stopping = threading.Event()
         self.processes = ProcessManager()
         self.services.setdefault("process_manager", self.processes)
-        self.action_pool = ActionPool(max_workers)
         self.agents: dict[str, Agent] = {}
+        self.primary_agent_id: str | None = None
         self._lock = threading.RLock()
-        self._action_condition = threading.Condition()
-        self._active_module_actions: dict[str, int] = {}
-        self._active_agent_turns: dict[str, set[str]] = {}
         bus.manager = self  # type: ignore[attr-defined]
 
     def _new_id(self) -> str:
@@ -455,7 +417,7 @@ class AgentManager:
     def spawn_root(self, *, name: str, preset: str) -> Agent:
         """Создать первый экземпляр без родителя."""
 
-        return self._spawn(name=name, preset=preset, parent_id=None)
+        return self._spawn(name=name, preset=preset, parent_id=None, primary=True)
 
     def spawn(self, *, parent_id: str, name: str, preset: str) -> dict[str, Any]:
         if parent_id not in self.agents:
@@ -463,15 +425,21 @@ class AgentManager:
         agent = self._spawn(name=name, preset=preset, parent_id=parent_id)
         return self.describe(agent)
 
-    def _spawn(self, *, name: str, preset: str, parent_id: str | None) -> Agent:
+    def _spawn(
+        self,
+        *,
+        name: str,
+        preset: str,
+        parent_id: str | None,
+        primary: bool = False,
+    ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Имя агента не должно быть пустым")
         selected = self.presets.load(preset)
-        missing = set(selected.modules) - self.modules.loaded_names()
-        if missing:
-            raise ValueError(f"Не загружены модули пресета {preset}: {sorted(missing)}")
+        initial_modules = set(selected.modules)
+        self.modules.load_many(initial_modules, start_handlers=False)
         with self._lock:
             agent_id = self._new_id()
             agent = Agent(
@@ -480,15 +448,24 @@ class AgentManager:
                 preset,
                 self,
                 parent_id=parent_id,
+                enabled_modules=initial_modules,
             )
             self.agents[agent_id] = agent
             self.bus.bind(agent)
+            if primary and self.primary_agent_id is None:
+                self.primary_agent_id = agent_id
         try:
             agent.start()
+            self.modules.start_many(initial_modules)
         except Exception:
             with self._lock:
                 self.agents.pop(agent_id, None)
+                if self.primary_agent_id == agent_id:
+                    self.primary_agent_id = None
             self.bus.unbind(agent_id)
+            for module_id in initial_modules:
+                if not self.agents_with_module(module_id):
+                    self.modules.unload(module_id)
             raise
         return agent
 
@@ -508,8 +485,14 @@ class AgentManager:
             agent = self.agents.pop(agent_id, None)
         if agent is None:
             raise ValueError(f"Агент не найден: {agent_id}")
+        if agent_id == self.primary_agent_id:
+            self.primary_agent_id = None
+        module_ids = agent.modules()
         agent.stop(wait=False)
         self.bus.unbind(agent_id)
+        for module_id in module_ids:
+            if not self.agents_with_module(module_id):
+                self.modules.unload(module_id)
         return {"agent_id": agent_id, "deleted": True, "reason": reason}
 
     @staticmethod
@@ -530,55 +513,72 @@ class AgentManager:
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]
 
-    def agents_using_preset(self, preset: str) -> list[str]:
+    def agents_with_module(self, module_id: str) -> list[str]:
         with self._lock:
             return sorted(
                 agent.agent_id
                 for agent in self.agents.values()
-                if agent.preset == preset
+                if agent.accepts_module(module_id)
             )
 
-    def begin_module_action(self, module_id: str) -> None:
-        with self._action_condition:
-            self._active_module_actions[module_id] = (
-                self._active_module_actions.get(module_id, 0) + 1
+    def enable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
+        agent = self.require_agent(agent_id)
+        self.modules.load(module_id, start_handlers=False)
+        agent.enable_module(module_id)
+        try:
+            self.modules.start_many({module_id})
+        except Exception:
+            agent.disable_module(module_id)
+            if not self.agents_with_module(module_id):
+                self.modules.unload(module_id)
+            raise
+        return {"agent_id": agent_id, "module_id": module_id, "enabled": True}
+
+    def disable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
+        agent = self.require_agent(agent_id)
+        agent.disable_module(module_id)
+        if not self.agents_with_module(module_id):
+            self.modules.unload(module_id)
+        return {"agent_id": agent_id, "module_id": module_id, "enabled": False}
+
+    def disable_module_everywhere(self, module_id: str) -> list[str]:
+        targets = self.agents_with_module(module_id)
+        for agent_id in targets:
+            self.require_agent(agent_id).disable_module(module_id)
+        self.modules.unload(module_id)
+        return targets
+
+    def restore_module(self, module_id: str, agent_ids: list[str]) -> list[str]:
+        self.modules.load(module_id, start_handlers=False)
+        restored = []
+        for agent_id in agent_ids:
+            agent = self.agents.get(agent_id)
+            if agent is not None:
+                agent.enable_module(module_id)
+                restored.append(agent_id)
+        if restored:
+            try:
+                self.modules.start_many({module_id})
+            except Exception:
+                for agent_id in restored:
+                    self.require_agent(agent_id).disable_module(module_id)
+                self.modules.unload(module_id)
+                raise
+        return restored
+
+    def report_module_error(self, module_id: str, error: Exception | str) -> None:
+        target = self.primary_agent_id
+        if target is None:
+            self.debug.log("module_error", module_id=module_id, error=str(error))
+            return
+        self.bus.publish(
+            Event(
+                type="module_error",
+                data={"module_id": module_id, "error": str(error)},
+                source="core",
+                target=target,
             )
-
-    def end_module_action(self, module_id: str) -> None:
-        with self._action_condition:
-            remaining = self._active_module_actions.get(module_id, 1) - 1
-            if remaining > 0:
-                self._active_module_actions[module_id] = remaining
-            else:
-                self._active_module_actions.pop(module_id, None)
-            self._action_condition.notify_all()
-
-    def begin_agent_turn(self, agent_id: str, module_ids: set[str]) -> None:
-        with self._action_condition:
-            self._active_agent_turns[agent_id] = set(module_ids)
-
-    def end_agent_turn(self, agent_id: str) -> None:
-        with self._action_condition:
-            self._active_agent_turns.pop(agent_id, None)
-            self._action_condition.notify_all()
-
-    def agent_turn_uses(self, agent_id: str, module_id: str) -> bool:
-        with self._action_condition:
-            return module_id in self._active_agent_turns.get(agent_id, set())
-
-    def wait_module_idle(self, module_id: str, timeout: float = 30.0) -> None:
-        deadline = time.monotonic() + timeout
-        with self._action_condition:
-            while self._active_module_actions.get(module_id, 0) or any(
-                module_id in modules
-                for modules in self._active_agent_turns.values()
-            ):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"Модуль {module_id} не освободился для обновления"
-                    )
-                self._action_condition.wait(remaining)
+        )
 
     def begin_shutdown(self) -> None:
         self.stopping.set()
@@ -590,8 +590,6 @@ class AgentManager:
     def shutdown(self) -> None:
         self.begin_shutdown()
         self.processes.stop()
-        self.action_pool.shutdown(timeout=2)
-        deadline = time.monotonic() + 2
         for agent in list(self.agents.values()):
             if agent._thread is not None:
-                agent._thread.join(max(0, deadline - time.monotonic()))
+                agent._thread.join(timeout=2)

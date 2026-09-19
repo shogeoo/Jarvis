@@ -2,7 +2,9 @@
 
 from .api import (
     ActionContext,
+    ActionQueue,
     ActionSpec,
+    ActionTask,
     EventDefinition,
     HandlerSpec,
     Module,
@@ -16,7 +18,9 @@ from .api import (
 
 __all__ = [
     "ActionContext",
+    "ActionQueue",
     "ActionSpec",
+    "ActionTask",
     "EventDefinition",
     "HandlerSpec",
     "Module",

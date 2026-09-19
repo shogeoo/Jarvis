@@ -1,1 +1,1 @@
-"""У модуля module_manager нет фоновых handlers."""
+"""Handlers модуля module_manager."""

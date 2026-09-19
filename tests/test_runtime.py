@@ -15,56 +15,81 @@ from jarvis.modules import ActionSpec, EventDefinition
 from jarvis.presets import PresetStore
 
 
-class _Message:
-    refusal = None
-
-    def __init__(self, content):
-        self.content = content
-
-
 class _Response:
     def __init__(self, content):
-        self.choices = [type("Choice", (), {"message": _Message(content)})()]
+        message = type("Message", (), {"content": content, "refusal": None})()
+        self.choices = [type("Choice", (), {"message": message})()]
 
 
 class _Completions:
-    def __init__(self, outputs, *, block_call=None):
-        self.outputs = list(outputs)
-        self.block_call = block_call
+    def __init__(self, outputs, block=None):
+        self.outputs = outputs
+        self.block = block
         self.calls = []
 
     def create(self, **kwargs):
         self.calls.append(copy.deepcopy(kwargs))
         index = len(self.calls) - 1
-        if self.block_call is not None:
-            self.block_call(index)
+        if self.block:
+            self.block(index)
         output = self.outputs[index] if index < len(self.outputs) else self.outputs[-1]
         return _Response(output)
 
 
 class _Client:
-    def __init__(self, outputs, *, block_call=None):
-        completions = _Completions(outputs, block_call=block_call)
+    def __init__(self, outputs, block=None):
+        completions = _Completions(outputs, block)
         self.chat = type("Chat", (), {"completions": completions})()
 
 
 class _Modules:
-    def __init__(self, names=("test",)):
-        self.names = set(names)
+    def __init__(self, actions):
+        self.actions = actions
+        self.names = {"test"}
+        self.dispatched = []
+        self.fail_types = set()
 
     def loaded_names(self):
         return set(self.names)
 
+    def load_many(self, module_ids, *, start_handlers):
+        self.names.update(module_ids)
+
+    def start_many(self, module_ids):
+        self.names.update(module_ids)
+
+    def load(self, module_id, *, start_handlers=True):
+        self.names.add(module_id)
+
+    def unload(self, module_id):
+        self.names.discard(module_id)
+
+    def dispatch(self, *, action, spec, agent):
+        self.dispatched.append(action)
+        if action.type in self.fail_types:
+            raise RuntimeError("dispatch failed")
+
     def catalog(self, module_ids):
-        return [
-            {
-                "module_id": name,
-                "description": name,
-                "actions": [],
-                "events": [],
-            }
-            for name in sorted(module_ids)
-        ]
+        result = []
+        for module_id in sorted(module_ids):
+            actions = [
+                {
+                    "type": spec.type,
+                    "description": spec.description,
+                    "data_schema": spec.data_schema,
+                }
+                for spec in self.actions.all().values()
+                if spec.owner == f"module:{module_id}"
+            ]
+            result.append(
+                {
+                    "module_id": module_id,
+                    "description": module_id,
+                    "actions": actions,
+                    "events": [],
+                }
+            )
+        return result
 
 
 def _wait(predicate, timeout=2):
@@ -78,48 +103,43 @@ def _wait(predicate, timeout=2):
 
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        root = Path(self.temporary.name)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
         main = root / "main"
-        main.mkdir(parents=True)
+        main.mkdir()
         (main / "personprompt.txt").write_text("main", encoding="utf-8")
         (main / "modules.json").write_text('["test"]\n', encoding="utf-8")
         self.presets = PresetStore(root)
-        self.events = EventRegistry()
         self.actions = ActionRegistry()
+        self.events = EventRegistry()
         register_core_protocol(self.actions, self.events)
-        self.events.register(
-            EventDefinition(
-                "test.input",
-                "input",
-                object_schema({"text": {"type": "string"}}),
-            ),
-            owner="module:test",
-        )
-        self.events.register(
-            EventDefinition(
-                "test.result",
-                "result",
-                object_schema({"name": {"type": "string"}}),
-            ),
-            owner="module:test",
-        )
+        for event_type in ("test.input", "test.result"):
+            field = "text" if event_type.endswith("input") else "name"
+            self.events.register(
+                EventDefinition(
+                    event_type,
+                    event_type,
+                    object_schema({field: {"type": "string"}}),
+                ),
+                owner="module:test",
+            )
         self.bus = EventBus(self.events, debug=Debugger(enabled=False))
         self.managers = []
 
     def tearDown(self):
         for manager in self.managers:
             manager.shutdown()
-        self.temporary.cleanup()
 
     def manager(self, client):
+        modules = _Modules(self.actions)
         manager = AgentManager(
             model="test",
             client=client,
             actions=self.actions,
             events=self.events,
             bus=self.bus,
-            modules=_Modules(),
+            modules=modules,
             presets=self.presets,
             environment_prompt="environment",
             debug=Debugger(enabled=False),
@@ -128,131 +148,114 @@ class RuntimeTests(unittest.TestCase):
         return manager
 
     def publish(self, agent, text):
-        self.assertTrue(
-            self.bus.publish(
-                Event(
-                    type="test.input",
-                    data={"text": text},
-                    target=agent.agent_id,
-                    module_id="test",
-                )
+        self.bus.publish(
+            Event(
+                type="test.input",
+                data={"text": text},
+                target=agent.agent_id,
+                module_id="test",
             )
         )
 
-    def test_actions_are_sequential_and_module_events_form_next_batch(self):
-        order = []
-
-        def run(data, ctx):
-            order.append(data["name"])
-            ctx.emit("test.result", {"name": data["name"]})
-
+    def test_actions_are_dispatched_in_array_order_without_waiting(self):
         self.actions.register(
             ActionSpec(
                 "test.run",
                 "run",
                 object_schema({"name": {"type": "string"}}),
-                run,
+                lambda data, context: None,
                 owner="module:test",
             )
         )
         client = _Client(
             [
-                '{"actions":[{"type":"test.run","data":{"name":"one"}},'
-                '{"type":"test.run","data":{"name":"two"}}]}',
-                '{"actions":[{"type":"no_action","data":{}}]}',
+                '{"actions":['
+                '{"type":"test.run","data":{"name":"one"}},'
+                '{"type":"test.run","data":{"name":"two"}}]}'
             ]
         )
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "start")
+        self.assertTrue(_wait(lambda: agent.state == "waiting" and len(manager.modules.dispatched) == 2))
+        self.assertEqual([item.data["name"] for item in manager.modules.dispatched], ["one", "two"])
+        self.assertEqual(len(client.chat.completions.calls), 1)
 
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        self.assertEqual(order, ["one", "two"])
-        messages = client.chat.completions.calls[1]["messages"]
-        results = [
-            json.loads(message["content"])
-            for message in messages
-            if message["role"] == "user"
-            and json.loads(message["content"])["type"] == "test.result"
-        ]
-        self.assertEqual([item["data"]["name"] for item in results], ["one", "two"])
-
-    def test_action_failure_does_not_stop_later_actions(self):
-        order = []
-
-        def fail(data, ctx):
-            order.append("fail")
-            raise RuntimeError("expected")
-
-        def succeed(data, ctx):
-            order.append("succeed")
-            ctx.emit("test.result", {"name": "succeed"})
-
+    def test_dispatch_error_does_not_stop_later_actions(self):
         schema = empty_object_schema()
-        self.actions.register(ActionSpec("test.fail", "fail", schema, fail, owner="module:test"))
-        self.actions.register(ActionSpec("test.succeed", "succeed", schema, succeed, owner="module:test"))
+        for name in ("test.fail", "test.next"):
+            self.actions.register(
+                ActionSpec(name, name, schema, lambda data, context: None, owner="module:test")
+            )
         client = _Client(
             [
-                '{"actions":[{"type":"test.fail","data":{}},'
-                '{"type":"test.succeed","data":{}}]}',
+                '{"actions":['
+                '{"type":"test.fail","data":{}},'
+                '{"type":"test.next","data":{}}]}',
                 '{"actions":[{"type":"no_action","data":{}}]}',
             ]
         )
         manager = self.manager(client)
+        manager.modules.fail_types.add("test.fail")
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "start")
-
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        self.assertEqual(order, ["fail", "succeed"])
-
-    def test_events_in_next_batch_keep_their_actual_arrival_order(self):
-        action_started = threading.Event()
-        finish_action = threading.Event()
-
-        def delayed_result(data, ctx):
-            action_started.set()
-            finish_action.wait(timeout=2)
-            ctx.emit("test.result", {"name": "action"})
-
-        self.actions.register(
-            ActionSpec(
-                "test.delayed",
-                "delayed",
-                empty_object_schema(),
-                delayed_result,
-                owner="module:test",
-            )
-        )
-        client = _Client(
-            [
-                '{"actions":[{"type":"test.delayed","data":{}}]}',
-                '{"actions":[{"type":"no_action","data":{}}]}',
-            ]
-        )
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        self.publish(agent, "first")
-        self.assertTrue(action_started.wait(timeout=2))
-        self.publish(agent, "arrived-before-result")
-        finish_action.set()
-
+        self.assertTrue(_wait(lambda: len(manager.modules.dispatched) == 2))
+        self.assertEqual([item.type for item in manager.modules.dispatched], ["test.fail", "test.next"])
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         values = [
             json.loads(message["content"])
             for message in client.chat.completions.calls[1]["messages"]
             if message["role"] == "user"
         ]
-        tail = [value["type"] for value in values[-2:]]
-        self.assertEqual(tail, ["test.input", "test.result"])
+        error = next(item for item in values if item["type"] == "module_error")
+        self.assertEqual(
+            set(error["data"]),
+            {"module_id", "error"},
+        )
 
-    def test_structure_correction_holds_external_events_out_of_context(self):
-        correction_started = threading.Event()
-        allow_correction = threading.Event()
+    def test_events_in_busy_batch_keep_arrival_order(self):
+        thinking = threading.Event()
+        release = threading.Event()
+
+        def block(index):
+            if index == 0:
+                thinking.set()
+                release.wait(2)
+
+        client = _Client(
+            ['{"actions":[{"type":"no_action","data":{}}]}'] * 2,
+            block,
+        )
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        self.publish(agent, "first")
+        self.assertTrue(thinking.wait(2))
+        self.publish(agent, "external")
+        self.bus.publish(
+            Event(
+                type="test.result",
+                data={"name": "result"},
+                target=agent.agent_id,
+                module_id="test",
+            )
+        )
+        release.set()
+        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
+        values = [
+            json.loads(message["content"])
+            for message in client.chat.completions.calls[1]["messages"]
+            if message["role"] == "user"
+        ]
+        self.assertEqual([item["type"] for item in values[-2:]], ["test.input", "test.result"])
+
+    def test_structure_error_holds_external_events(self):
+        correction = threading.Event()
+        release = threading.Event()
 
         def block(index):
             if index == 1:
-                correction_started.set()
-                allow_correction.wait(timeout=2)
+                correction.set()
+                release.wait(2)
 
         client = _Client(
             [
@@ -260,86 +263,40 @@ class RuntimeTests(unittest.TestCase):
                 '{"actions":[{"type":"no_action","data":{}}]}',
                 '{"actions":[{"type":"no_action","data":{}}]}',
             ],
-            block_call=block,
+            block,
         )
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "first")
-        self.assertTrue(correction_started.wait(timeout=2))
+        self.assertTrue(correction.wait(2))
         self.publish(agent, "second")
-        allow_correction.set()
-
+        release.set()
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 3))
         correction_messages = client.chat.completions.calls[1]["messages"]
-        correction_values = [
-            json.loads(message["content"])
-            for message in correction_messages
-            if message["role"] == "user"
-        ]
-        self.assertEqual(correction_values[-1]["type"], "structure_error")
-        self.assertNotIn(
-            "second",
-            json.dumps(correction_values, ensure_ascii=False),
+        self.assertNotIn("second", json.dumps(correction_messages, ensure_ascii=False))
+        self.assertEqual(
+            json.loads(correction_messages[-1]["content"])["type"],
+            "structure_error",
         )
-        next_messages = client.chat.completions.calls[2]["messages"]
-        self.assertIn("second", json.dumps(next_messages, ensure_ascii=False))
+        self.assertIn("second", json.dumps(client.chat.completions.calls[2]["messages"], ensure_ascii=False))
 
-    def test_action_return_value_does_not_create_implicit_result_event(self):
-        self.actions.register(
-            ActionSpec(
-                "test.silent",
-                "silent",
-                empty_object_schema(),
-                lambda data, ctx: {"ignored": True},
-                owner="module:test",
-            )
-        )
-        client = _Client(['{"actions":[{"type":"test.silent","data":{}}]}'])
+    def test_enabled_modules_belong_to_current_instance(self):
+        client = _Client(['{"actions":[{"type":"no_action","data":{}}]}'])
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        self.publish(agent, "start")
-
-        self.assertTrue(
-            _wait(
-                lambda: len(client.chat.completions.calls) == 1
-                and agent.state == "waiting"
-            )
+        first = manager.spawn_root(name="main", preset="main")
+        second = manager.spawn_root(name="other", preset="main")
+        self.actions.register(
+            ActionSpec("clock.now", "time", empty_object_schema(), lambda d, c: None, owner="module:clock")
         )
-        self.assertEqual(len(client.chat.completions.calls), 1)
+        manager.enable_module(first.agent_id, "clock")
+        self.assertIn("clock", first.modules())
+        self.assertNotIn("clock", second.modules())
+        self.assertEqual(self.presets.load("main").modules, ("test",))
 
     def test_main_uses_random_three_digit_agent_id(self):
-        client = _Client(['{"actions":[{"type":"no_action","data":{}}]}'])
-        manager = self.manager(client)
+        manager = self.manager(_Client(['{"actions":[{"type":"no_action","data":{}}]}']))
         agent = manager.spawn_root(name="main", preset="main")
         self.assertRegex(agent.agent_id, re.compile(r"^agent-\d{3}$"))
-        self.assertEqual(agent.name, "main")
-
-    def test_running_agent_refreshes_contract_without_losing_history(self):
-        client = _Client(['{"actions":[{"type":"no_action","data":{}}]}'])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        self.publish(agent, "before-update")
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 1))
-
-        self.actions.register(
-            ActionSpec(
-                "clock.now",
-                "current time",
-                empty_object_schema(),
-                lambda data, ctx: None,
-                owner="module:clock",
-            )
-        )
-        manager.modules.names.add("clock")
-        self.presets.add_module("main", "clock")
-        self.publish(agent, "after-update")
-
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        messages = client.chat.completions.calls[1]["messages"]
-        self.assertIn("clock.now", messages[0]["content"])
-        rendered = json.dumps(messages, ensure_ascii=False)
-        self.assertIn("before-update", rendered)
-        self.assertIn("after-update", rendered)
 
 
 if __name__ == "__main__":

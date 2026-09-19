@@ -41,10 +41,8 @@ def main(argv=None) -> int:
     try:
         app = JarvisApplication(load_config(args.env_file)).start()
         print("Jarvis: система запущена. Ctrl+C — штатное завершение.", flush=True)
-        while not stop.wait(0.2) and not app.shutdown_requested.is_set():
+        while not stop.wait(0.2):
             pass
-        if received_signal is None:
-            return 0
         return 128 + (received_signal or signal.SIGINT)
     finally:
         if app is not None:

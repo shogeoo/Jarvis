@@ -1,28 +1,23 @@
 from jarvis.core.protocol import object_schema
-from jarvis.modules import Module, action, event, event_handler
+from jarvis.modules import ActionQueue, Module, action, event, event_handler
 
-from .actions.speak import speak
+from .actions.speak import submit
 from .handlers.server import SpeechOutput
 
 
 def create_module():
-    controller = SpeechOutput()
+    tasks = ActionQueue()
+    controller = SpeechOutput(tasks)
     status = event(
         "speech_output.status",
-        "Состояние запуска или ошибка подсистемы синтеза речи.",
-        object_schema(
-            {
-                "ready": {"type": "boolean"},
-                "message": {"type": "string"},
-            }
-        ),
+        "Широковещательное состояние фонового Fish Audio worker: ready=true означает готовность, ready=false содержит причину запуска.",
+        object_schema({"ready": {"type": "boolean"}, "message": {"type": "string"}}),
     )
     result = event(
         "speech_output.result",
-        "Адресный результат действия озвучки.",
+        "Адресный результат ранее поставленной реплики: success после воспроизведения, error при сбое или прерывании.",
         object_schema(
             {
-                "action_id": {"type": "string"},
                 "status": {"type": "string", "enum": ["success", "error"]},
                 "text": {"type": "string"},
                 "error": {"type": ["string", "null"]},
@@ -31,8 +26,8 @@ def create_module():
     )
     handler = event_handler(
         "speech_output.server",
-        "Управляет сервером Fish Audio и очередью воспроизведения.",
-        (status,),
+        "Управляет Fish Audio, выполняет очередь речи и возвращает результаты.",
+        (status, result),
         controller.start,
         stop=controller.stop,
     )
@@ -42,11 +37,10 @@ def create_module():
         actions=(
             action(
                 "speech_output.speak",
-                "Произнести text. Допустимы инлайновые теги интонации.",
+                "Поставить text в очередь озвучки. Результат позже придёт событием speech_output.result.",
                 object_schema({"text": {"type": "string"}}),
-                speak,
+                submit(tasks),
             ),
         ),
-        events=(result,),
         handlers=(handler,),
     )

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-
 from openai import OpenAI
 
 from .core.prompts import read_environment_prompt
@@ -27,8 +25,6 @@ class JarvisApplication:
         register_core_protocol(self.actions, self.events)
         self.bus = EventBus(self.events, debug=self.debug)
         self.services: dict = {}
-        self.shutdown_requested = threading.Event()
-        self.services["shutdown_request"] = self.shutdown_requested
         self.modules = ModuleManager(
             self.bus,
             self.actions,
@@ -68,9 +64,7 @@ class JarvisApplication:
         )
 
     def start(self) -> "JarvisApplication":
-        self.modules.load_all(start_handlers=False)
         self.main_agent = self.agents.spawn_root(name="main", preset="main")
-        self.modules.start_all()
         return self
 
     def stop(self) -> None:

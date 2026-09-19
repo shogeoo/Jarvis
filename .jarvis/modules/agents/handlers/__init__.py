@@ -1,1 +1,1 @@
-"""У модуля agents нет фоновых handlers."""
+"""Handlers модуля agents."""

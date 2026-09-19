@@ -1,11 +1,28 @@
 import os
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from jarvis.application import JarvisApplication
+from jarvis.core.protocol import ActionRequest
 from jarvis.infrastructure.config import Config
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
+
+
+class _Receiver:
+    agent_id = "agent-999"
+    name = "receiver"
+    preset = "main"
+
+    def __init__(self):
+        self.events = []
+
+    def accepts_module(self, module_id):
+        return module_id == "speech_output"
+
+    def enqueue(self, event):
+        self.events.append(event)
 
 
 class ApplicationTests(unittest.TestCase):
@@ -34,10 +51,44 @@ class ApplicationTests(unittest.TestCase):
             self.assertIn('"module_id": "speech_output"', system_prompt)
             self.assertIn('"type": "speech_output.speak"', system_prompt)
             self.assertIn('"type": "structure_error"', system_prompt)
+            self.assertIn('"type": "module_error"', system_prompt)
+            self.assertNotIn('"module_id": "module_manager"', system_prompt)
             self.assertEqual(
                 app.modules.loaded_names(),
-                {"agents", "module_manager", "speech_input", "speech_output", "system"},
+                {"agents", "modules", "speech_input", "speech_output"},
             )
+            self.assertNotIn("module_manager", app.modules.loaded_names())
+            other = app.agents.spawn_root(name="other", preset="main")
+            disabled = app.modules.disable_for_edit("speech_output")
+            self.assertEqual(
+                set(disabled["disabled_for"]),
+                {app.main_agent.agent_id, other.agent_id},
+            )
+            self.assertNotIn("speech_output", app.main_agent.modules())
+            self.assertNotIn("speech_output", other.modules())
+            self.assertNotIn("speech_output", app.modules.loaded_names())
+            restored = app.modules.enable_after_edit("speech_output")
+            self.assertEqual(
+                set(restored["restored_for"]),
+                {app.main_agent.agent_id, other.agent_id},
+            )
+            self.assertIn("speech_output", app.main_agent.modules())
+            self.assertIn("speech_output", other.modules())
+
+            receiver = _Receiver()
+            app.bus.bind(receiver)
+            app.modules.dispatch(
+                action=ActionRequest(
+                    "speech_output.speak", {"text": "test"}
+                ),
+                spec=app.actions.require("speech_output.speak"),
+                agent=receiver,
+            )
+            deadline = time.time() + 2
+            while not receiver.events and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(receiver.events[0].type, "speech_output.result")
+            self.assertEqual(receiver.events[0].data["status"], "error")
         finally:
             app.stop()
 

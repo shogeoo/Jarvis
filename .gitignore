@@ -11,5 +11,6 @@ build/
 dist/
 .assistant/
 .jarvis/runtime/
+.jarvis/modules/*/.venv/
 *.s2voice
 :memory:.ses

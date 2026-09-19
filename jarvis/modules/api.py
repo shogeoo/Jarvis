@@ -1,55 +1,14 @@
-"""Публичный контракт пользовательских модулей.
+"""Стабильный публичный API подключаемых модулей.
 
-Модуль — комплект обработчиков событий и действий (или только одного из
-них). Каталог модуля обязан иметь структуру::
-
-    module/
-      module.json
-      module.py
-      actions/
-      handlers/
-
-``module.py`` возвращает :class:`Module`; код конкретных действий и
-обработчиков размещается в соответствующих каталогах и импортируется
-фабрикой через относительные импорты (например, ``from .actions.send import send``).
-Все модули находятся непосредственно в ``.jarvis/modules/<module_id>/``.
-Доступ конкретного агента задаётся массивом module_id в его пресете.
-
-Events могут объявляться непосредственно в ``Module.events`` (например,
-адресный результат action) либо принадлежать конкретному фоновому handler.
-Ядро не создаёт событие результата автоматически: action публикует его через
-``ActionContext.emit``.
-
-Минимальный пример ``module.py``::
-
-    from jarvis.modules import Module, action, event_handler, event
-    from .actions.send import send
-    from .handlers.poll import poll
-
-    def create_module():
-        return Module(
-            module_id="example",
-            description="Пример",
-            actions=(action("example.send", "Отправить текст", {
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-                "additionalProperties": False,
-            }, send),),
-            handlers=(event_handler(
-                "example.poller", "Получает сообщения", (
-                    event("example.message", "Новое сообщение", {
-                        "type": "object",
-                        "properties": {"text": {"type": "string"}},
-                        "required": ["text"],
-                        "additionalProperties": False,
-                    }),
-                ), poll),),
-        )
+Action является быстрым dispatcher: он помещает :class:`ActionTask` в
+:class:`ActionQueue` и сразу возвращается. Только фоновые handlers публикуют
+model-visible events через :meth:`ModuleContext.emit`. Поэтому модуль без
+handlers не способен вернуть модели результат действия.
 """
 
 from __future__ import annotations
 
+import queue
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -94,9 +53,51 @@ class Module:
     module_id: str
     description: str
     actions: tuple[ActionSpec, ...] = field(default_factory=tuple)
-    events: tuple[EventDefinition, ...] = field(default_factory=tuple)
     handlers: tuple[HandlerSpec, ...] = field(default_factory=tuple)
     prepare: ModulePrepare | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ActionTask:
+    """Внутренняя задача модуля, невидимая модели."""
+
+    agent_id: str
+    action_id: str
+    action_type: str
+    data: dict[str, Any]
+
+
+class ActionQueue:
+    """Связывает быстрые action-dispatchers с фоновым handler."""
+
+    def __init__(self):
+        self._items: queue.Queue[ActionTask | None] = queue.Queue()
+
+    def submit(self, data: dict[str, Any], context: "ActionContext") -> None:
+        self._items.put(
+            ActionTask(
+                agent_id=context.agent_id,
+                action_id=context.action_id,
+                action_type=context.action_type,
+                data=dict(data),
+            )
+        )
+
+    def get(self, timeout: float = 0.1) -> ActionTask | None:
+        try:
+            return self._items.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def clear(self) -> None:
+        while True:
+            try:
+                self._items.get_nowait()
+            except queue.Empty:
+                return
+
+    def close(self) -> None:
+        self._items.put(None)
 
 
 def event(type: str, description: str, data_schema: JSONSchema) -> EventDefinition:
@@ -153,6 +154,8 @@ class ModuleContext:
     module_id: str
     module_path: Path
     emit_event: Callable[[Event], None]
+    agent_manager: Any = None
+    modules: Any = None
     config: Any = None
     services: dict[str, Any] = field(default_factory=dict)
     stop_event: threading.Event = field(default_factory=threading.Event)
@@ -185,41 +188,13 @@ class ModuleContext:
 
 @dataclass(slots=True)
 class ActionContext:
-    """Контекст вызова; длительные действия завершаются по stop_event."""
+    """Служебный конверт передачи action коду модуля."""
 
     agent_id: str
     action_id: str
-    event_bus: Any
-    agent_manager: Any
-    modules: Any
+    action_type: str
     module_id: str
     config: Any = None
     services: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     stop_event: threading.Event = field(default_factory=threading.Event)
-
-    def emit(
-        self,
-        type: str,
-        data: dict[str, Any],
-        *,
-        target: str | None = None,
-        reply_to: str | None = None,
-        source: str | None = None,
-        parts: Iterable[InputPart] = (),
-    ) -> Event:
-        if not type.startswith(f"{self.module_id}."):
-            raise ValueError(
-                f"Модуль {self.module_id} не может публиковать событие {type}"
-            )
-        event = Event(
-            type=type,
-            data=data,
-            source=source or f"action:{type}",
-            target=target or self.agent_id,
-            reply_to=reply_to,
-            parts=tuple(parts),
-            module_id=self.module_id,
-        )
-        self.event_bus.publish(event)
-        return event
