@@ -9,6 +9,7 @@ from pathlib import Path
 from jarvis.core.protocol import Event, empty_object_schema, object_schema
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
+from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.modules import ActionSpec, EventDefinition
 from jarvis.presets import PresetStore
@@ -130,7 +131,7 @@ class RuntimeTests(unittest.TestCase):
         for manager in self.managers:
             manager.shutdown()
 
-    def manager(self, client):
+    def manager(self, client, memory=None):
         modules = _Modules(self.actions)
         manager = AgentManager(
             model="test",
@@ -142,6 +143,7 @@ class RuntimeTests(unittest.TestCase):
             presets=self.presets,
             environment_prompt="environment",
             debug=Debugger(enabled=False),
+            memory=memory,
         )
         self.managers.append(manager)
         return manager
@@ -297,6 +299,91 @@ class RuntimeTests(unittest.TestCase):
         manager = self.manager(_Client(['{"actions":[{"type":"no_action","data":{}}]}']))
         agent = manager.spawn_root(name="main", preset="main")
         self.assertEqual(agent.agent_id, "main")
+
+    def test_persisted_context_is_restored_on_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            first = self.manager(
+                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
+                memory=memory,
+            )
+            agent = first.spawn_root(name="main", preset="main")
+            self.publish(agent, "remember me")
+            self.assertTrue(_wait(lambda: len(agent.history) >= 3))
+            record = memory.load("main")
+            self.assertEqual(
+                [message["role"] for message in record["messages"]],
+                ["user", "assistant"],
+            )
+
+            second = self.manager(
+                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
+                memory=memory,
+            )
+            restored = second.restore(name="main", preset="main")
+            self.assertEqual(restored.agent_id, "main")
+            self.assertEqual(len(restored.history), 3)
+            self.assertIn(
+                "remember me",
+                json.dumps(restored.history, ensure_ascii=False),
+            )
+            self.assertIn("environment", restored.history[0]["content"])
+
+    def test_subagent_instances_are_recreated_from_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            first = self.manager(
+                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
+                memory=memory,
+            )
+            root = first.spawn_root(name="main", preset="main")
+            child_info = first.spawn(
+                parent_id=root.agent_id, name="worker", preset="main"
+            )
+            child = first.require_agent(child_info["agent_id"])
+            self.publish(child, "child task")
+            self.assertTrue(_wait(lambda: len(child.history) >= 3))
+
+            second = self.manager(
+                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
+                memory=memory,
+            )
+            restored = second.restore(name="main", preset="main")
+            self.assertEqual(restored.agent_id, "main")
+            recreated = second.require_agent(child_info["agent_id"])
+            self.assertEqual(recreated.parent_id, root.agent_id)
+            self.assertEqual(recreated.name, "worker")
+            self.assertEqual(recreated.preset, "main")
+            self.assertIn(
+                "child task",
+                json.dumps(recreated.history, ensure_ascii=False),
+            )
+
+    def test_delete_removes_agent_memory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            manager = self.manager(
+                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
+                memory=memory,
+            )
+            root = manager.spawn_root(name="main", preset="main")
+            child_info = manager.spawn(
+                parent_id=root.agent_id, name="worker", preset="main"
+            )
+            self.assertIsNotNone(memory.load(child_info["agent_id"]))
+            manager.delete(agent_id=child_info["agent_id"], reason="test")
+            self.assertIsNone(memory.load(child_info["agent_id"]))
+
+    def test_enabled_modules_are_persisted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            manager = self.manager(
+                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
+                memory=memory,
+            )
+            root = manager.spawn_root(name="main", preset="main")
+            manager.enable_module(root.agent_id, "clock")
+            self.assertIn("clock", memory.load("main")["modules"])
 
 
 if __name__ == "__main__":
