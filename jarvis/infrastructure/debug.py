@@ -12,6 +12,7 @@ class Debugger:
     """Печатает только протокольный JSON event-action формата.
 
     Вход: ровно {"type":..., "data":...} как его задаёт модуль.
+    Результат: ровно {"type":"action_result", "action_id":..., "data":...}.
     Выход: сырой content assistant message как его вернула модель.
     OpenAI-обёртка (списки text/image_url, data URL с base64) и
     переформатирование JSON намеренно не выводятся: base64 текстом
@@ -58,6 +59,11 @@ class Debugger:
         """Вывести входное событие в протокольном формате type/data."""
 
         self.message(event.model_value())
+
+    def result(self, result: Any) -> None:
+        """Вывести результат действия как событие: type/action_id/data."""
+
+        self.message(result.model_value())
 
     def event(self, direction: str, agent_id: str, event: Any) -> None:
         """Старый API: доставка события не является выводом для модели."""

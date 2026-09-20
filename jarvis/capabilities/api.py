@@ -1,7 +1,13 @@
-"""Публичный API действий, handlers, событий и результатов."""
+"""Публичный API действий, handlers, событий и результатов.
+
+Идентификаторы в коде не пишутся: фабрики возвращают определения без ID,
+а загрузчик назначает ID из имени файла. Источник определения фиксируется
+автоматически для сверки «один файл — одна единица».
+"""
 
 from __future__ import annotations
 
+import inspect
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,8 +19,8 @@ from ..core.protocol import ActionResult, Event, InputPart, JSONSchema
 ActionHandler = Callable[[dict[str, Any], "ActionContext"], Any]
 HandlerStart = Callable[["HandlerContext"], Any]
 HandlerStop = Callable[["HandlerContext"], Any]
-ContainerPrepare = Callable[[Any], None]
-ResultCallback = Callable[[dict[str, Any]], None]
+LifecycleHook = Callable[[Any], None]
+ResultCallback = Callable[..., None]
 
 
 PENDING = object()
@@ -23,6 +29,17 @@ PENDING = object()
 Если функция действия возвращает ``PENDING``, она обязана позже ровно один
 раз вызвать ``context.complete``. Ядро не синтезирует результат автоматически.
 """
+
+
+def _caller_source() -> str:
+    frame = inspect.currentframe()
+    try:
+        outer = frame.f_back if frame is not None else None
+        while outer is not None and outer.f_code.co_filename == __file__:
+            outer = outer.f_back
+        return outer.f_code.co_filename if outer is not None else ""
+    finally:
+        del frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +56,7 @@ class ActionDefinition:
     args_schema: JSONSchema
     result_schema: JSONSchema
     run: ActionHandler
+    source: str = ""
     owner: str = ""
 
 
@@ -46,19 +64,21 @@ class ActionDefinition:
 class HandlerDefinition:
     id: str
     description: str
-    events: tuple[EventDefinition, ...]
+    event: EventDefinition
     start: HandlerStart
     stop: HandlerStop | None = None
+    source: str = ""
     owner: str = ""
 
 
 @dataclass(frozen=True, slots=True)
-class ModuleContainer:
-    module_id: str
+class ModuleDefinition:
     description: str
+    actions: tuple[ActionDefinition, ...]
+    handlers: tuple[HandlerDefinition, ...]
     execution: str = "in_process"
-    requirements: str | None = None
-    prepare: ContainerPrepare | None = None
+    prepare: LifecycleHook | None = None
+    teardown: LifecycleHook | None = None
 
 
 def event_definition(
@@ -70,44 +90,65 @@ def event_definition(
 
 
 def action_definition(
-    id: str,
     description: str,
     args_schema: JSONSchema,
     result_schema: JSONSchema,
     run: ActionHandler,
 ) -> ActionDefinition:
-    """Объявить одно действие в одном файле."""
+    """Объявить одно действие в одном файле. ID назначит загрузчик."""
 
     return ActionDefinition(
-        id=id,
+        id="",
         description=description,
         args_schema=args_schema,
         result_schema=result_schema,
         run=run,
+        source=_caller_source(),
     )
 
 
 def handler_definition(
-    id: str,
     description: str,
-    events: Iterable[EventDefinition],
+    event: EventDefinition,
     start: HandlerStart,
     *,
     stop: HandlerStop | None = None,
 ) -> HandlerDefinition:
-    """Объявить один handler в одном файле."""
+    """Объявить один handler с ровно одним событием. ID назначит загрузчик."""
 
     return HandlerDefinition(
-        id=id,
+        id="",
         description=description,
-        events=tuple(events),
+        event=event,
         start=start,
         stop=stop,
+        source=_caller_source(),
+    )
+
+
+def module_definition(
+    description: str,
+    actions: Iterable[ActionDefinition],
+    handlers: Iterable[HandlerDefinition],
+    *,
+    execution: str = "in_process",
+    prepare: LifecycleHook | None = None,
+    teardown: LifecycleHook | None = None,
+) -> ModuleDefinition:
+    """Собрать модуль-контейнер в обязательном module.py."""
+
+    return ModuleDefinition(
+        description=description,
+        actions=tuple(actions),
+        handlers=tuple(handlers),
+        execution=execution,
+        prepare=prepare,
+        teardown=teardown,
     )
 
 
 def input_part(type: str, mime_type: str, base64_data: str) -> InputPart:
-    """Создать мультимодальную часть, подготовленную самим handler."""
+    """Создать мультимодальную часть результата или события."""
 
     return InputPart(type=type, mime_type=mime_type, data=base64_data)
 
@@ -128,15 +169,16 @@ class HandlerContext:
 
     def emit(
         self,
-        type: str,
+        event: EventDefinition | str,
         data: dict[str, Any],
         *,
         target: str | None = None,
         reply_to: str | None = None,
         parts: Iterable[InputPart] = (),
     ) -> Event:
-        event = Event(
-            type=type,
+        type_name = event.type if isinstance(event, EventDefinition) else event
+        item = Event(
+            type=type_name,
             data=data,
             source=(
                 f"module:{self.module_id}"
@@ -149,8 +191,8 @@ class HandlerContext:
             module_id=self.module_id,
             handler_id=self.handler_id,
         )
-        self.emit_event(event)
-        return event
+        self.emit_event(item)
+        return item
 
 
 @dataclass(slots=True)

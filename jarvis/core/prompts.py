@@ -10,13 +10,20 @@ from .protocol import json_text
 from .registry import ActionRegistry
 
 
-def read_environment_prompt(path: Path) -> str:
+def read_master_prompt(path: Path) -> str:
+    """Прочитать общий мастер-промпт среды.
+
+    Текст одинаков для всех агентов; блок модальностей конкретной нейронки
+    подставляется билдером вместо плейсхолдера ``{modalities}``, а не
+    хардкодится в файле.
+    """
+
     try:
         text = path.read_text(encoding="utf-8").strip()
     except OSError as exc:
-        raise RuntimeError(f"Не удалось прочитать описание среды {path}: {exc}") from exc
+        raise RuntimeError(f"Не удалось прочитать мастер-промпт {path}: {exc}") from exc
     if not text:
-        raise RuntimeError(f"Описание среды пусто: {path}")
+        raise RuntimeError(f"Мастер-промпт пуст: {path}")
     return text
 
 
@@ -33,14 +40,18 @@ def _event_catalog(event_specs: dict[str, Any]) -> list[dict[str, Any]]:
 
 def agent_system_prompt(
     person_prompt: str,
-    environment_prompt: str,
+    master_prompt: str,
     action_specs: dict[str, Any],
     event_specs: dict[str, Any],
     capability_catalog: dict[str, Any],
     *,
     model_capabilities: ModelCapabilities | None = None,
 ) -> str:
-    """Собрать systemprompt из постоянных и динамических частей."""
+    """Собрать systemprompt из постоянных и динамических частей.
+
+    System prompt — конкатенация personprompt, мастер-промпта с подставленным
+    блоком модальностей и каталога capabilities. Именно он отправляется в API.
+    """
 
     standalone_action_ids = {
         action["type"] for action in capability_catalog.get("actions", [])
@@ -89,8 +100,20 @@ def agent_system_prompt(
         },
         "modules": capability_catalog.get("modules", []),
     }
-    parts = [person_prompt.strip(), environment_prompt.strip()]
-    if model_capabilities is not None:
-        parts.append(model_capabilities.prompt_block())
+    parts = [person_prompt.strip(), _master_text(master_prompt, model_capabilities)]
     parts.append("Доступный контракт capabilities:\n" + json_text(catalog, indent=2))
     return "\n\n".join(part for part in parts if part)
+
+
+def _master_text(
+    master_prompt: str, model_capabilities: ModelCapabilities | None
+) -> str:
+    """Подставить блок модальностей в мастер-промпт вместо плейсхолдера."""
+
+    block = model_capabilities.prompt_block() if model_capabilities is not None else ""
+    text = master_prompt.strip()
+    if "{modalities}" in text:
+        return text.replace("{modalities}", block)
+    if block:
+        return text + "\n\n" + block
+    return text

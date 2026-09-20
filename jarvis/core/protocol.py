@@ -375,6 +375,7 @@ class ActionResult:
     data: dict[str, Any]
     agent_id: str | None = None
     type: str = "action_result"
+    parts: tuple[InputPart, ...] = ()
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -392,7 +393,13 @@ class ActionResult:
         return json_text(self.model_value())
 
     def model_message(self) -> dict[str, Any]:
-        return {"role": "user", "content": self.model_content()}
+        """Собрать одно OpenAI user message для результата действия."""
+
+        if not self.parts:
+            return {"role": "user", "content": self.model_content()}
+        content: Any = [{"type": "text", "text": self.model_content()}]
+        content.extend(part.api_value() for part in self.parts)
+        return {"role": "user", "content": content}
 
     def debug_value(self) -> dict[str, Any]:
         return {
@@ -400,6 +407,7 @@ class ActionResult:
             "action_id": self.action_id,
             "data": self.data,
             "agent_id": self.agent_id,
+            "parts": len(self.parts),
             "created_at": self.created_at,
         }
 

@@ -78,6 +78,24 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
+            type="agents.message",
+            description=(
+                "Адресное сообщение от другого агента. from_agent_id и from_name "
+                "являются метаданными отправителя; text содержит прямую речь "
+                "или задачу."
+            ),
+            data_schema=object_schema(
+                {
+                    "from_agent_id": {"type": "string"},
+                    "from_name": {"type": "string"},
+                    "text": {"type": "string"},
+                }
+            ),
+        ),
+        owner="core",
+    )
+    events.register(
+        EventDefinition(
             type="capability_error",
             description="Необработанная ошибка в коде отдельной capability.",
             data_schema=object_schema(
@@ -196,6 +214,7 @@ class ActionResultTracker:
         agent_id: str,
         action_id: str,
         data: dict[str, Any],
+        parts: tuple = (),
     ) -> bool:
         with self._lock:
             pending = self._pending.pop((agent_id, action_id), None)
@@ -223,7 +242,7 @@ class ActionResultTracker:
             )
             return False
         result = ActionResult(
-            action_id=action_id, data=data, agent_id=agent_id
+            action_id=action_id, data=data, agent_id=agent_id, parts=tuple(parts)
         )
         return manager.deliver_result(result)
 
@@ -389,7 +408,7 @@ class Agent:
             "role": "system",
             "content": agent_system_prompt(
                 preset.person_prompt,
-                self.manager.environment_prompt,
+                self.manager.master_prompt,
                 actions,
                 events,
                 self.manager.capabilities.catalog(snapshot),
@@ -463,11 +482,7 @@ class Agent:
         for item in batch:
             if isinstance(item, ActionResult):
                 self.history.append(item.model_message())
-                self.manager.debug.log(
-                    "action_result",
-                    agent_id=self.agent_id,
-                    action_id=item.action_id,
-                )
+                self.manager.debug.result(item)
             else:
                 self.history.append(
                     item.model_message(self.manager.model_capabilities)
@@ -594,7 +609,7 @@ class AgentManager:
         bus: EventBus,
         capabilities: Any,
         presets: PresetStore,
-        environment_prompt: str,
+        master_prompt: str,
         config: Any = None,
         services: dict[str, Any] | None = None,
         debug: Debugger | None = None,
@@ -608,7 +623,7 @@ class AgentManager:
         self.bus = bus
         self.capabilities = capabilities
         self.presets = presets
-        self.environment_prompt = environment_prompt
+        self.master_prompt = master_prompt
         self.config = config
         self.services = services if services is not None else {}
         self.model_capabilities = model_capabilities
@@ -695,7 +710,9 @@ class AgentManager:
                 error=str(exc),
             )
             if self.memory is not None:
-                self.memory.delete(primary.get("agent_id", "main"))
+                self.memory.delete(
+                    primary.get("preset", "main"), primary.get("agent_id", "main")
+                )
             return self.spawn_root(name=default_name, preset=default_preset)
 
         spawned = {main_agent.agent_id}
@@ -726,7 +743,7 @@ class AgentManager:
                 reason="missing_parent",
             )
             if self.memory is not None:
-                self.memory.delete(record["agent_id"])
+                self.memory.delete(record["preset"], record["agent_id"])
         return main_agent
 
     def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
@@ -870,7 +887,7 @@ class AgentManager:
             snapshot, agents=self.agents_snapshot()
         )
         if self.memory is not None:
-            self.memory.delete(agent_id)
+            self.memory.delete(agent.preset, agent_id)
         return {"agent_id": agent_id, "deleted": True, "reason": reason}
 
     @staticmethod
