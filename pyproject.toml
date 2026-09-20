@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis"
-description = "Jarvis — модульная event-thinking-action система"
+description = "Jarvis — event-thinking-action система"
 readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["version"]
