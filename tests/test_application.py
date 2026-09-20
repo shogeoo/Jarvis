@@ -52,12 +52,11 @@ class ApplicationTests(unittest.TestCase):
             self.assertIn('"type": "speech_output.speak"', system_prompt)
             self.assertIn('"type": "structure_error"', system_prompt)
             self.assertIn('"type": "module_error"', system_prompt)
-            self.assertNotIn('"module_id": "module_manager"', system_prompt)
+            self.assertIn('"module_id": "module_manager"', system_prompt)
             self.assertEqual(
                 app.modules.loaded_names(),
-                {"agents", "module_control", "speech_input", "speech_output", "screenshots"},
+                {"agents", "module_control", "speech_input", "speech_output", "screenshots", "module_manager", "notify"},
             )
-            self.assertNotIn("module_manager", app.modules.loaded_names())
             other = app.agents.spawn(
                 parent_id=app.main_agent.agent_id,
                 name="other",
