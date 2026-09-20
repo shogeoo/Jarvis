@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from openai import OpenAI
 
-from .core.prompts import read_environment_prompt
+from .core.prompts import read_master_prompt
 from .core.registry import ActionRegistry, EventRegistry
 from .core.runtime import AgentManager, EventBus, register_core_protocol
 from .infrastructure.config import Config
@@ -47,8 +47,8 @@ class JarvisApplication:
             config.base_url,
             config.api_key,
         )
-        environment_prompt = read_environment_prompt(
-            config.jarvis_dir / "environment.txt"
+        master_prompt = read_master_prompt(
+            config.project_root / "master_prompt.txt"
         )
         self.agents = AgentManager(
             model=config.model,
@@ -58,7 +58,7 @@ class JarvisApplication:
             bus=self.bus,
             capabilities=self.capabilities,
             presets=self.presets,
-            environment_prompt=environment_prompt,
+            master_prompt=master_prompt,
             config=config,
             services=self.services,
             debug=self.debug,

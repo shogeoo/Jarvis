@@ -13,7 +13,7 @@ import sys
 import threading
 import uuid
 import venv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -36,13 +36,13 @@ from .api import (
     EventDefinition,
     HandlerContext,
     HandlerDefinition,
-    ModuleContainer,
+    ModuleDefinition,
 )
 
 
 DEFAULT_ROOT = DEFAULT_JARVIS_DIR
 _SIMPLE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_QUALIFIED = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*\.[A-Za-z][A-Za-z0-9_-]*$")
+_UNIT = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)*$")
 
 
 @dataclass(slots=True)
@@ -81,7 +81,8 @@ class LoadedHandler:
 
 @dataclass(slots=True)
 class LoadedModule:
-    container: ModuleContainer
+    module_id: str
+    definition: ModuleDefinition
     path: Path
     package_import: str | None = None
     execution: str = "in_process"
@@ -89,7 +90,6 @@ class LoadedModule:
     handler_ids: list[str] = field(default_factory=list)
     stop_event: threading.Event = field(default_factory=threading.Event)
     started: bool = False
-    teardown: Any = None
     process: subprocess.Popen | None = None
     reader_thread: threading.Thread | None = None
     writer_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -133,23 +133,16 @@ class CapabilityManager:
             raise ValueError(f"Некорректный module_id: {module_id!r}")
 
     @staticmethod
-    def validate_standalone_id(unit_id: str, *, kind: str) -> None:
-        if not isinstance(unit_id, str) or not _SIMPLE.fullmatch(unit_id):
+    def validate_unit_id(unit_id: str, *, kind: str) -> None:
+        if not isinstance(unit_id, str) or not _UNIT.fullmatch(unit_id):
             raise ValueError(f"Некорректный {kind}: {unit_id!r}")
 
-    @staticmethod
-    def validate_qualified_id(unit_id: str, *, module_id: str, kind: str) -> None:
-        if unit_id != f"{module_id}.{Path(unit_id).stem}":
-            raise ValueError(f"Некорректный {kind} модуля {module_id}: {unit_id!r}")
-        if not _QUALIFIED.fullmatch(unit_id):
-            raise ValueError(f"Некорректный {kind} модуля {module_id}: {unit_id!r}")
-
     def action_path(self, action_id: str) -> Path:
-        self.validate_standalone_id(action_id, kind="action")
+        self.validate_unit_id(action_id, kind="action")
         return self.actions_dir / f"{action_id}.py"
 
     def handler_path(self, handler_id: str) -> Path:
-        self.validate_standalone_id(handler_id, kind="handler")
+        self.validate_unit_id(handler_id, kind="handler")
         return self.handlers_dir / f"{handler_id}.py"
 
     def module_path(self, module_id: str) -> Path:
@@ -164,7 +157,7 @@ class CapabilityManager:
             for path in self.modules_dir.iterdir()
             if path.is_dir()
             and not path.name.startswith(".")
-            and (path / "module.json").is_file()
+            and (path / "module.py").is_file()
         )
 
     def discover_actions(self) -> list[Path]:
@@ -184,7 +177,7 @@ class CapabilityManager:
             and path.suffix == ".py"
             and not path.name.startswith(".")
             and path.name != "__init__.py"
-            and _SIMPLE.fullmatch(path.stem)
+            and _UNIT.fullmatch(path.stem)
         )
 
     def existing_modules(self) -> set[str]:
@@ -233,12 +226,13 @@ class CapabilityManager:
         loaded = self.loaded_snapshot()
         modules = []
         for path in self.discover_modules():
+            package = None
             try:
-                manifest = self._manifest(path)
+                module_id, definition, package = self._inspect_module(path)
                 modules.append(
                     {
-                        "module_id": manifest["module_id"],
-                        "description": manifest["description"],
+                        "module_id": module_id,
+                        "description": definition.description,
                         "loaded": path.name in loaded["modules"],
                     }
                 )
@@ -251,6 +245,9 @@ class CapabilityManager:
                         "error": str(exc),
                     }
                 )
+            finally:
+                if package is not None:
+                    self._forget_import(package)
         actions = []
         for path in self.discover_actions():
             with self._lock:
@@ -291,74 +288,6 @@ class CapabilityManager:
             )
         return {"modules": modules, "actions": actions, "handlers": handlers}
 
-    def _manifest(self, path: Path) -> dict[str, Any]:
-        manifest_path = path / "module.json"
-        if not manifest_path.is_file():
-            raise ValueError(f"В модуле {path} нет module.json")
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Некорректный module.json: {manifest_path}: {exc}") from exc
-        if not isinstance(manifest, dict):
-            raise ValueError(f"module.json должен быть JSON-объектом: {manifest_path}")
-        module_id = manifest.get("module_id")
-        self.validate_module_id(module_id)
-        if module_id != path.name:
-            raise ValueError(
-                f"module_id {module_id!r} не совпадает с каталогом {path.name!r}"
-            )
-        description = manifest.get("description", "")
-        execution = manifest.get("execution", "in_process")
-        requirements = manifest.get("requirements")
-        prepare = manifest.get("prepare")
-        teardown = manifest.get("teardown")
-        if not isinstance(description, str):
-            raise ValueError(f"Описание модуля {module_id} должно быть строкой")
-        if execution not in {"in_process", "isolated"}:
-            raise ValueError(f"Неизвестный execution модуля {module_id}: {execution}")
-        if requirements is not None and (
-            not isinstance(requirements, str)
-            or Path(requirements).is_absolute()
-            or ".." in Path(requirements).parts
-        ):
-            raise ValueError(f"Некорректный requirements модуля {module_id}")
-        if prepare is not None and (
-            not isinstance(prepare, str)
-            or ":" not in prepare
-            or Path(prepare.split(":", 1)[0]).is_absolute()
-            or ".." in Path(prepare.split(":", 1)[0]).parts
-            or not prepare.split(":", 1)[1].isidentifier()
-        ):
-            raise ValueError(f"Некорректный prepare модуля {module_id}")
-        if teardown is not None and (
-            not isinstance(teardown, str)
-            or ":" not in teardown
-            or Path(teardown.split(":", 1)[0]).is_absolute()
-            or ".." in Path(teardown.split(":", 1)[0]).parts
-            or not teardown.split(":", 1)[1].isidentifier()
-        ):
-            raise ValueError(f"Некорректный teardown модуля {module_id}")
-        actions_dir = path / "actions"
-        handlers_dir = path / "handlers"
-        if not actions_dir.is_dir() or not handlers_dir.is_dir():
-            raise ValueError(
-                f"Модуль {module_id} обязан содержать actions/ и handlers/"
-            )
-        units = [
-            *self._discover_units(actions_dir),
-            *self._discover_units(handlers_dir),
-        ]
-        if not units:
-            raise ValueError(f"Модуль {module_id} не содержит действий или handlers")
-        return {
-            "module_id": module_id,
-            "description": description,
-            "execution": execution,
-            "requirements": requirements,
-            "prepare": prepare,
-            "teardown": teardown,
-        }
-
     @staticmethod
     def _forget_import(name: str) -> None:
         for key in tuple(sys.modules):
@@ -367,30 +296,17 @@ class CapabilityManager:
 
     @classmethod
     def _import_file(
-        cls,
-        path: Path,
-        *,
-        package: str | None,
-        subpackage: str | None,
-        search_paths: list[str],
+        cls, path: Path, package: str | None
     ) -> tuple[ModuleType, str]:
         if not path.is_file():
             raise ValueError(f"Нет файла capability: {path}")
         safe = re.sub(r"[^A-Za-z0-9_]", "_", path.stem)
-        if package is not None and subpackage is not None:
-            parent = f"{package}.{subpackage}"
-            if parent not in sys.modules:
-                subpackage_module = ModuleType(parent)
-                subpackage_module.__path__ = [str(path.parent.resolve())]
-                sys.modules[parent] = subpackage_module
-            import_name = f"{parent}.{safe}_{uuid.uuid4().hex}"
-        elif package is not None:
+        if package is not None:
             import_name = f"{package}.{safe}_{uuid.uuid4().hex}"
         else:
             import_name = f"jarvis_unit_{safe}_{uuid.uuid4().hex}"
         # Файлы capability не являются пакетами: относительные импорты
-        # разрешаются по dotted-имени, поэтому submodule_search_locations
-        # не передаётся.
+        # разрешаются по dotted-имени.
         spec = importlib.util.spec_from_file_location(import_name, path)
         if spec is None or spec.loader is None:
             raise ValueError(f"Не удалось импортировать файл: {path}")
@@ -411,23 +327,35 @@ class CapabilityManager:
         sys.modules[package] = package_module
         return package
 
-    def _load_action_file(
-        self,
-        path: Path,
-        *,
-        expected_id: str,
-        module_id: str | None,
-        package: str | None,
-    ) -> tuple[ActionDefinition, ModuleType, str]:
-        search_paths = [str(path.parent.resolve())]
-        if package is not None:
-            search_paths.append(str(self.module_path(module_id).resolve()))
-        python_module, import_name = self._import_file(
-            path,
-            package=package,
-            subpackage="actions" if package is not None else None,
-            search_paths=search_paths,
-        )
+    @staticmethod
+    def _check_action(definition: ActionDefinition) -> None:
+        if not callable(definition.run):
+            raise ValueError("Некорректное действие: run должен быть функцией")
+        for name, schema in (
+            ("аргументов", definition.args_schema),
+            ("результата", definition.result_schema),
+        ):
+            if not isinstance(schema, dict) or schema.get("type") != "object":
+                raise ValueError(f"Схема {name} действия должна быть объектом")
+            validate_strict_schema(schema, where=f"схема {name} действия")
+
+    @staticmethod
+    def _check_handler(definition: HandlerDefinition) -> None:
+        if not callable(definition.start):
+            raise ValueError("Некорректный handler: start должен быть функцией")
+        if definition.stop is not None and not callable(definition.stop):
+            raise ValueError("Некорректный stop handler")
+        event = definition.event
+        if not isinstance(event, EventDefinition):
+            raise ValueError("Handler обязан объявлять ровно одно событие")
+        if not isinstance(event.data_schema, dict):
+            raise ValueError(f"Схема события {event.type} должна быть объектом")
+        validate_strict_schema(event.data_schema, where=f"схема события {event.type}")
+
+    def _load_standalone_action(
+        self, path: Path
+    ) -> tuple[ActionDefinition, str]:
+        python_module, import_name = self._import_file(path, None)
         try:
             factory = getattr(python_module, "create_action", None)
             if not callable(factory):
@@ -439,31 +367,18 @@ class CapabilityManager:
         if not isinstance(definition, ActionDefinition):
             self._forget_import(import_name)
             raise ValueError(f"create_action в {path} должен вернуть ActionDefinition")
-        if definition.id != expected_id:
+        if definition.id:
             self._forget_import(import_name)
             raise ValueError(
-                f"ID действия {definition.id!r} не совпадает с файлом {path.name!r}"
+                f"ID действия захардкожен в {path}: назначается из имени файла"
             )
         self._check_action(definition)
-        return definition, python_module, import_name
+        return definition, import_name
 
-    def _load_handler_file(
-        self,
-        path: Path,
-        *,
-        expected_id: str,
-        module_id: str | None,
-        package: str | None,
-    ) -> tuple[HandlerDefinition, ModuleType, str]:
-        search_paths = [str(path.parent.resolve())]
-        if package is not None:
-            search_paths.append(str(self.module_path(module_id).resolve()))
-        python_module, import_name = self._import_file(
-            path,
-            package=package,
-            subpackage="handlers" if package is not None else None,
-            search_paths=search_paths,
-        )
+    def _load_standalone_handler(
+        self, path: Path
+    ) -> tuple[HandlerDefinition, str]:
+        python_module, import_name = self._import_file(path, None)
         try:
             factory = getattr(python_module, "create_handler", None)
             if not callable(factory):
@@ -477,190 +392,182 @@ class CapabilityManager:
             raise ValueError(
                 f"create_handler в {path} должен вернуть HandlerDefinition"
             )
-        if definition.id != expected_id:
+        if definition.id:
             self._forget_import(import_name)
             raise ValueError(
-                f"ID handler {definition.id!r} не совпадает с файлом {path.name!r}"
+                f"ID handler захардкожен в {path}: назначается из имени файла"
             )
         self._check_handler(definition)
-        return definition, python_module, import_name
+        return definition, import_name
 
-    @staticmethod
-    def _check_action(definition: ActionDefinition) -> None:
-        if not definition.id or not callable(definition.run):
-            raise ValueError(f"Некорректное действие {definition.id!r}")
-        for name, schema in (
-            ("аргументов", definition.args_schema),
-            ("результата", definition.result_schema),
-        ):
-            if not isinstance(schema, dict) or schema.get("type") != "object":
-                raise ValueError(
-                    f"Схема {name} действия {definition.id} должна быть объектом"
-                )
-            validate_strict_schema(schema, where=f"схема {name} {definition.id}")
+    def _inspect_module(
+        self, path: Path
+    ) -> tuple[str, ModuleDefinition, str]:
+        """Импортировать module.py и вернуть метаданные. Пакет не удаляется."""
 
-    @staticmethod
-    def _check_handler(definition: HandlerDefinition) -> None:
-        if not definition.id or not callable(definition.start):
-            raise ValueError(f"Некорректный handler {definition.id!r}")
-        if definition.stop is not None and not callable(definition.stop):
-            raise ValueError(f"Некорректный stop handler {definition.id!r}")
-        seen = set()
-        for event in definition.events:
-            if event.type in seen:
-                raise ValueError(
-                    f"Handler {definition.id} повторяет событие {event.type}"
-                )
-            seen.add(event.type)
-            if not isinstance(event.data_schema, dict):
-                raise ValueError(
-                    f"Схема события {event.type} должна быть объектом"
-                )
-            validate_strict_schema(
-                event.data_schema, where=f"схема события {event.type}"
-            )
-
-    def _load_hook(
-        self,
-        path: Path,
-        manifest: dict[str, Any],
-        key: str,
-        package: str | None = None,
-    ):
-        hook = manifest.get(key)
-        if hook is None:
-            return None
-        source_name, function_name = hook.split(":", 1)
-        source = path / source_name
-        owned_package = package is None
-        if owned_package:
-            package = self._ensure_package(manifest["module_id"], path)
+        module_id = path.name
+        self.validate_module_id(module_id)
+        source = path / "module.py"
+        if not source.is_file():
+            raise ValueError(f"В модуле {path} нет обязательного module.py")
+        package = self._ensure_package(module_id, path)
         try:
-            python_module, import_name = self._import_file(
-                source,
-                package=package,
-                subpackage=None,
-                search_paths=[str(path.resolve())],
-            )
+            python_module, _ = self._import_file(source, package)
+            factory = getattr(python_module, "create_module", None)
+            if not callable(factory):
+                raise ValueError(f"В файле {source} нет create_module()")
+            definition = factory()
         except Exception:
-            if owned_package:
-                self._forget_import(package)
+            self._forget_import(package)
             raise
-        function = getattr(python_module, function_name, None)
-        if not callable(function):
-            if owned_package:
-                self._forget_import(package)
-            self._forget_import(import_name)
-            raise ValueError(f"Функция {hook} не найдена в модуле {path.name}")
-        return function, package, import_name
+        if not isinstance(definition, ModuleDefinition):
+            self._forget_import(package)
+            raise ValueError(f"create_module в {source} должен вернуть ModuleDefinition")
+        if definition.execution not in {"in_process", "isolated"}:
+            self._forget_import(package)
+            raise ValueError(f"Неизвестный execution модуля {module_id}")
+        return module_id, definition, package
 
-    def _load_prepare(self, path: Path, manifest: dict[str, Any], package=None):
-        return self._load_hook(path, manifest, "prepare", package)
+    def _derive_module_units(
+        self, path: Path, module_id: str, definition: ModuleDefinition
+    ) -> tuple[list[tuple[str, ActionDefinition]], list[tuple[str, HandlerDefinition]]]:
+        """Сопоставить определения с файлами и назначить ID. Без захардкоженных ID."""
+
+        by_source: dict[str, tuple[str, Any]] = {}
+        for item in definition.actions:
+            if not isinstance(item, ActionDefinition):
+                raise ValueError(f"Модуль {module_id} вернул не действие")
+            if item.id:
+                raise ValueError("ID действия захардкожен: назначается из имени файла")
+            if not item.source:
+                raise ValueError("Действие без файла-источника")
+            key = str(Path(item.source).resolve())
+            if key in by_source:
+                raise ValueError(
+                    f"Один файл — одно действие: {item.source}"
+                )
+            by_source[key] = ("action", item)
+        for item in definition.handlers:
+            if not isinstance(item, HandlerDefinition):
+                raise ValueError(f"Модуль {module_id} вернул не handler")
+            if item.id:
+                raise ValueError("ID handler захардкожен: назначается из имени файла")
+            if not item.source:
+                raise ValueError("Handler без файла-источника")
+            key = str(Path(item.source).resolve())
+            if key in by_source:
+                raise ValueError(f"Один файл — одна единица: {item.source}")
+            by_source[key] = ("handler", item)
+        actions_dir = path / "actions"
+        handlers_dir = path / "handlers"
+        if not actions_dir.is_dir() or not handlers_dir.is_dir():
+            raise ValueError(
+                f"Модуль {module_id} обязан содержать actions/ и handlers/"
+            )
+        actions: list[tuple[str, ActionDefinition]] = []
+        for unit in self._discover_units(actions_dir):
+            key = str(unit.resolve())
+            entry = by_source.get(key)
+            if entry is None or entry[0] != "action":
+                raise ValueError(
+                    f"Файл {unit.name} не подключён в module.py модуля {module_id}"
+                )
+            if not _SIMPLE.fullmatch(unit.stem):
+                raise ValueError(
+                    f"Некорректное имя действия модуля {module_id}: {unit.name!r}"
+                )
+            definition_item = entry[1]
+            self._check_action(definition_item)
+            actions.append((f"{module_id}.{unit.stem}", definition_item))
+        handlers: list[tuple[str, HandlerDefinition]] = []
+        for unit in self._discover_units(handlers_dir):
+            key = str(unit.resolve())
+            entry = by_source.get(key)
+            if entry is None or entry[0] != "handler":
+                raise ValueError(
+                    f"Файл {unit.name} не подключён в module.py модуля {module_id}"
+                )
+            if not _SIMPLE.fullmatch(unit.stem):
+                raise ValueError(
+                    f"Некорректное имя handler модуля {module_id}: {unit.name!r}"
+                )
+            definition_item = entry[1]
+            self._check_handler(definition_item)
+            handlers.append((f"{module_id}.{unit.stem}", definition_item))
+        if not actions and not handlers:
+            raise ValueError(f"Модуль {module_id} не содержит действий или handlers")
+        return actions, handlers
 
     def validate_action(self, action_id: str) -> dict[str, Any]:
         path = self.action_path(action_id)
-        definition, _, import_name = self._load_action_file(
-            path, expected_id=action_id, module_id=None, package=None
-        )
+        definition, import_name = self._load_standalone_action(path)
         try:
-            return self._action_summary(definition, path)
+            assigned = replace(definition, id=action_id)
+            return self._action_summary(assigned, path)
         finally:
             self._forget_import(import_name)
 
     def validate_handler(self, handler_id: str) -> dict[str, Any]:
         path = self.handler_path(handler_id)
-        definition, _, import_name = self._load_handler_file(
-            path, expected_id=handler_id, module_id=None, package=None
-        )
+        definition, import_name = self._load_standalone_handler(path)
         try:
-            return self._handler_summary(definition, path)
+            assigned = replace(definition, id=handler_id)
+            return self._handler_summary(assigned, path)
         finally:
             self._forget_import(import_name)
 
     def validate_module(self, module_id: str) -> dict[str, Any]:
         path = self.module_path(module_id)
-        manifest = self._manifest(path)
-        if manifest["execution"] == "isolated":
-            catalog = self._describe_isolated(module_id)
-            return {"module_id": module_id, **catalog}
-        package = self._ensure_package(module_id, path)
-        imports = [package]
+        module_id, definition, package = self._inspect_module(path)
         try:
-            actions = []
-            handlers = []
-            for unit in self._discover_units(path / "actions"):
-                expected_id = f"{module_id}.{unit.stem}"
-                definition, _, import_name = self._load_action_file(
-                    unit, expected_id=expected_id, module_id=module_id, package=package
-                )
-                imports.append(import_name)
-                actions.append(self._action_summary(definition, unit))
-            for unit in self._discover_units(path / "handlers"):
-                expected_id = f"{module_id}.{unit.stem}"
-                definition, _, import_name = self._load_handler_file(
-                    unit, expected_id=expected_id, module_id=module_id, package=package
-                )
-                imports.append(import_name)
-                handlers.append(self._handler_summary(definition, unit))
-            if manifest.get("prepare") is not None:
-                self._check_hook(path, manifest, "prepare")
-            if manifest.get("teardown") is not None:
-                self._check_hook(path, manifest, "teardown")
+            actions, handlers = self._derive_module_units(path, module_id, definition)
             return {
                 "module_id": module_id,
-                "description": manifest["description"],
-                "actions": actions,
-                "handlers": handlers,
+                "description": definition.description,
+                "actions": [
+                    self._action_summary(
+                        replace(item, id=action_id),
+                        path / "actions" / f"{action_id.split('.', 1)[1]}.py",
+                    )
+                    for action_id, item in actions
+                ],
+                "handlers": [
+                    self._handler_summary(
+                        replace(item, id=handler_id),
+                        path / "handlers" / f"{handler_id.split('.', 1)[1]}.py",
+                    )
+                    for handler_id, item in handlers
+                ],
             }
         finally:
-            for import_name in reversed(imports):
-                self._forget_import(import_name)
+            self._forget_import(package)
 
     def validate(self, *, kind: str, capability_id: str) -> dict[str, Any]:
         if kind == "module":
             return self.validate_module(capability_id)
         if kind == "action":
+            path = self.actions_dir / f"{capability_id}.py"
+            if path.is_file():
+                return self.validate_action(capability_id)
             if "." in capability_id:
                 module_id, _ = capability_id.split(".", 1)
-                summary = self.validate_module(module_id)
-                for action in summary["actions"]:
-                    if action["id"] == capability_id:
-                        return action
-                raise ValueError(f"Действие не найдено в модуле: {capability_id}")
-            return self.validate_action(capability_id)
-        if kind == "handler":
-            if "." in capability_id:
-                module_id, _ = capability_id.split(".", 1)
-                summary = self.validate_module(module_id)
-                for handler in summary["handlers"]:
-                    if handler["id"] == capability_id:
-                        return handler
-                raise ValueError(f"Handler не найден в модуле: {capability_id}")
-            return self.validate_handler(capability_id)
-        raise ValueError(f"Неизвестный вид capability: {kind!r}")
-
-    def _check_hook(self, path: Path, manifest: dict[str, Any], key: str) -> None:
-        source_name, function_name = manifest[key].split(":", 1)
-        source = path / source_name
-        if not source.is_file():
-            raise ValueError(f"В модуле {path.name} нет файла {source_name}")
-        package = self._ensure_package(manifest["module_id"], path)
-        try:
-            python_module, import_name = self._import_file(
-                source,
-                package=package,
-                subpackage=None,
-                search_paths=[str(path.resolve())],
-            )
-            try:
-                if not callable(getattr(python_module, function_name, None)):
+                if module_id in self.existing_modules():
                     raise ValueError(
-                        f"Функция {manifest[key]} не найдена в модуле {path.name}"
+                        f"Часть модуля нельзя проверить отдельно: {capability_id!r}"
                     )
-            finally:
-                self._forget_import(import_name)
-        finally:
-            self._forget_import(package)
+            raise ValueError(f"Действие не найдено: {capability_id}")
+        if kind == "handler":
+            path = self.handlers_dir / f"{capability_id}.py"
+            if path.is_file():
+                return self.validate_handler(capability_id)
+            if "." in capability_id:
+                module_id, _ = capability_id.split(".", 1)
+                if module_id in self.existing_modules():
+                    raise ValueError(
+                        f"Часть модуля нельзя проверить отдельно: {capability_id!r}"
+                    )
+            raise ValueError(f"Handler не найден: {capability_id}")
+        raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
     def load_snapshot(self, snapshot: dict[str, set[str]], *, start_handlers: bool) -> None:
         loaded: list[tuple[str, str]] = []
@@ -694,17 +601,17 @@ class CapabilityManager:
             with self._lock:
                 runtime = self._modules.get(module_id)
             if runtime is not None:
-                self._start_module(runtime)
+                self.start_module(module_id)
         for action_id in sorted(snapshot.get("actions", ())):
             with self._lock:
                 runtime = self._actions.get(action_id)
             if runtime is not None and runtime.module_id is None:
-                self._start_action(runtime)
+                self.start_action(action_id)
         for handler_id in sorted(snapshot.get("handlers", ())):
             with self._lock:
                 runtime = self._handlers.get(handler_id)
             if runtime is not None and runtime.module_id is None:
-                self._start_handler(runtime)
+                self.start_handler(handler_id)
 
     def release_snapshot(
         self, snapshot: dict[str, set[str]], *, agents: list[Any]
@@ -726,15 +633,28 @@ class CapabilityManager:
             existing = self._modules.get(module_id)
         if existing is not None:
             if start_handlers:
-                self._start_module(existing)
+                self.start_module(module_id)
             return self._module_summary(existing)
         path = self.module_path(module_id)
-        manifest = self._manifest(path)
-        if manifest["execution"] == "isolated":
-            catalog = self._describe_isolated(module_id)
-            runtime = self._register_isolated_module(path, manifest, catalog)
-        else:
-            runtime = self._register_in_process_module(path, manifest)
+        module_id, definition, package = self._inspect_module(path)
+        try:
+            actions, handlers = self._derive_module_units(path, module_id, definition)
+            if definition.execution == "isolated":
+                catalog = self._describe_isolated(module_id)
+                runtime = self._register_isolated_module(
+                    path, module_id, definition, catalog
+                )
+            else:
+                if self.config is not None and definition.prepare is not None:
+                    definition.prepare(self.config)
+                runtime = self._register_in_process_module(
+                    path, module_id, definition, package, actions, handlers
+                )
+        except Exception:
+            self.actions.unregister_owner(f"module:{module_id}")
+            self.events.unregister_owner(f"module:{module_id}")
+            self._forget_import(package)
+            raise
         with self._lock:
             self._modules[module_id] = runtime
         if start_handlers:
@@ -746,31 +666,35 @@ class CapabilityManager:
         return self._module_summary(runtime)
 
     def load_action(self, action_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
-        if "." in action_id:
-            raise ValueError(
-                f"Часть модуля нельзя загрузить отдельно: {action_id!r}"
-            )
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
             existing = self._actions.get(action_id)
         if existing is not None:
             if start_handlers:
-                self._start_action(existing)
+                self.start_action(action_id)
             return self._action_summary(existing.definition, existing.path)
-        path = self.action_path(action_id)
-        definition, _, import_name = self._load_action_file(
-            path, expected_id=action_id, module_id=None, package=None
-        )
+        path = self.actions_dir / f"{action_id}.py"
+        if not path.is_file():
+            if "." in action_id:
+                module_id, _ = action_id.split(".", 1)
+                if module_id in self.existing_modules():
+                    raise ValueError(
+                        f"Часть модуля нельзя загрузить отдельно: {action_id!r}"
+                    )
+            raise ValueError(f"Действие не найдено: {action_id}")
+        definition, import_name = self._load_standalone_action(path)
         owner = f"action:{action_id}"
         try:
-            self.actions.replace_owner([definition], owner=owner)
+            self.actions.replace_owner(
+                [replace(definition, id=action_id, owner=owner)], owner=owner
+            )
         except Exception:
             self._forget_import(import_name)
             raise
         runtime = LoadedAction(
             id=action_id,
-            definition=definition,
+            definition=replace(definition, id=action_id, owner=owner),
             path=path,
             python_import=import_name,
             module_id=None,
@@ -784,34 +708,36 @@ class CapabilityManager:
             except Exception:
                 self.unload_action(action_id)
                 raise
-        return self._action_summary(definition, path)
+        return self._action_summary(runtime.definition, path)
 
     def load_handler(self, handler_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
-        if "." in handler_id:
-            raise ValueError(
-                f"Часть модуля нельзя загрузить отдельно: {handler_id!r}"
-            )
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
             existing = self._handlers.get(handler_id)
         if existing is not None:
             if start_handlers:
-                self._start_handler(existing)
+                self.start_handler(handler_id)
             return self._handler_summary(existing.definition, existing.path)
-        path = self.handler_path(handler_id)
-        definition, _, import_name = self._load_handler_file(
-            path, expected_id=handler_id, module_id=None, package=None
-        )
+        path = self.handlers_dir / f"{handler_id}.py"
+        if not path.is_file():
+            if "." in handler_id:
+                module_id, _ = handler_id.split(".", 1)
+                if module_id in self.existing_modules():
+                    raise ValueError(
+                        f"Часть модуля нельзя загрузить отдельно: {handler_id!r}"
+                    )
+            raise ValueError(f"Handler не найден: {handler_id}")
+        definition, import_name = self._load_standalone_handler(path)
         owner = f"handler:{handler_id}"
         try:
-            self.events.replace_owner(list(definition.events), owner=owner)
+            self.events.replace_owner([definition.event], owner=owner)
         except Exception:
             self._forget_import(import_name)
             raise
         runtime = LoadedHandler(
             id=handler_id,
-            definition=definition,
+            definition=replace(definition, id=handler_id, owner=owner),
             path=path,
             python_import=import_name,
             module_id=None,
@@ -825,103 +751,97 @@ class CapabilityManager:
             except Exception:
                 self.unload_handler(handler_id)
                 raise
-        return self._handler_summary(definition, path)
+        return self._handler_summary(runtime.definition, path)
+
+    def start_module(self, module_id: str) -> None:
+        with self._lock:
+            runtime = self._modules.get(module_id)
+        if runtime is None:
+            raise RuntimeError(f"Модуль {module_id} не загружен")
+        self._start_module(runtime)
+
+    def start_action(self, action_id: str) -> None:
+        with self._lock:
+            runtime = self._actions.get(action_id)
+        if runtime is None:
+            raise RuntimeError(f"Действие {action_id} не загружено")
+        self._start_action(runtime)
+
+    def start_handler(self, handler_id: str) -> None:
+        with self._lock:
+            runtime = self._handlers.get(handler_id)
+        if runtime is None:
+            raise RuntimeError(f"Handler {handler_id} не загружен")
+        self._start_handler(runtime)
 
     def _register_in_process_module(
-        self, path: Path, manifest: dict[str, Any]
+        self,
+        path: Path,
+        module_id: str,
+        definition: ModuleDefinition,
+        package: str,
+        actions: list[tuple[str, ActionDefinition]],
+        handlers: list[tuple[str, HandlerDefinition]],
     ) -> LoadedModule:
-        module_id = manifest["module_id"]
-        package = self._ensure_package(module_id, path)
-        imports = [package]
-        actions: list[ActionDefinition] = []
-        handlers: list[HandlerDefinition] = []
+        owner = f"module:{module_id}"
+        assigned_actions = [
+            replace(item, id=action_id, owner=owner)
+            for action_id, item in actions
+        ]
+        assigned_handlers = [
+            replace(item, id=handler_id, owner=owner)
+            for handler_id, item in handlers
+        ]
+        self.actions.replace_owner(assigned_actions, owner=owner)
         try:
-            for unit in self._discover_units(path / "actions"):
-                expected_id = f"{module_id}.{unit.stem}"
-                definition, _, import_name = self._load_action_file(
-                    unit, expected_id=expected_id, module_id=module_id, package=package
-                )
-                imports.append(import_name)
-                actions.append(definition)
-            for unit in self._discover_units(path / "handlers"):
-                expected_id = f"{module_id}.{unit.stem}"
-                definition, _, import_name = self._load_handler_file(
-                    unit, expected_id=expected_id, module_id=module_id, package=package
-                )
-                imports.append(import_name)
-                handlers.append(definition)
-            prepare = None
-            teardown = None
-            if manifest.get("prepare") is not None:
-                prepare, package_name, _ = self._load_prepare(
-                    path, manifest, package
-                )
-                package = package_name
-            if manifest.get("teardown") is not None:
-                teardown, package_name, _ = self._load_hook(
-                    path, manifest, "teardown", package
-                )
-                package = package_name
-            owner = f"module:{module_id}"
-            self.actions.replace_owner(actions, owner=owner)
-            try:
-                self.events.replace_owner(
-                    [event for handler in handlers for event in handler.events],
-                    owner=owner,
-                )
-            except Exception:
-                self.actions.unregister_owner(owner)
-                raise
-            if prepare is not None and self.config is not None:
-                prepare(self.config)
-            runtime = LoadedModule(
-                container=ModuleContainer(
-                    module_id=module_id,
-                    description=manifest["description"],
-                    execution="in_process",
-                    requirements=manifest.get("requirements"),
-                    prepare=prepare,
-                ),
-                path=path,
-                package_import=package,
-                execution="in_process",
-                teardown=teardown,
-                action_ids=[definition.id for definition in actions],
-                handler_ids=[definition.id for definition in handlers],
+            self.events.replace_owner(
+                [handler.event for handler in assigned_handlers],
+                owner=owner,
             )
-            with self._lock:
-                for definition in actions:
-                    self._actions[definition.id] = LoadedAction(
-                        id=definition.id,
-                        definition=definition,
-                        path=path / "actions" / f"{definition.id.split('.', 1)[1]}.py",
-                        python_import=None,
-                        module_id=module_id,
-                        execution="in_process",
-                        stop_event=runtime.stop_event,
-                    )
-                for definition in handlers:
-                    self._handlers[definition.id] = LoadedHandler(
-                        id=definition.id,
-                        definition=definition,
-                        path=path / "handlers" / f"{definition.id.split('.', 1)[1]}.py",
-                        python_import=None,
-                        module_id=module_id,
-                        execution="in_process",
-                        stop_event=runtime.stop_event,
-                    )
-            return runtime
         except Exception:
-            self.actions.unregister_owner(f"module:{module_id}")
-            self.events.unregister_owner(f"module:{module_id}")
-            self._forget_import(package)
+            self.actions.unregister_owner(owner)
             raise
+        runtime = LoadedModule(
+            module_id=module_id,
+            definition=definition,
+            path=path,
+            package_import=package,
+            execution="in_process",
+            action_ids=[item.id for item in assigned_actions],
+            handler_ids=[item.id for item in assigned_handlers],
+        )
+        with self._lock:
+            for item in assigned_actions:
+                stem = item.id.split(".", 1)[1]
+                self._actions[item.id] = LoadedAction(
+                    id=item.id,
+                    definition=item,
+                    path=path / "actions" / f"{stem}.py",
+                    python_import=None,
+                    module_id=module_id,
+                    execution="in_process",
+                    stop_event=runtime.stop_event,
+                )
+            for item in assigned_handlers:
+                stem = item.id.split(".", 1)[1]
+                self._handlers[item.id] = LoadedHandler(
+                    id=item.id,
+                    definition=item,
+                    path=path / "handlers" / f"{stem}.py",
+                    python_import=None,
+                    module_id=module_id,
+                    execution="in_process",
+                    stop_event=runtime.stop_event,
+                )
+        return runtime
 
     def _register_isolated_module(
-        self, path: Path, manifest: dict[str, Any], catalog: dict[str, Any]
+        self,
+        path: Path,
+        module_id: str,
+        definition: ModuleDefinition,
+        catalog: dict[str, Any],
     ) -> LoadedModule:
-        module_id = manifest["module_id"]
-
         def proxy(action_id: str):
             def run(data, context):
                 self._send_isolated(
@@ -945,6 +865,7 @@ class CapabilityManager:
                 args_schema=item["args_schema"],
                 result_schema=item["result_schema"],
                 run=proxy(item["id"]),
+                source="",
                 owner=f"module:{module_id}",
             )
             for item in catalog["actions"]
@@ -953,13 +874,13 @@ class CapabilityManager:
             HandlerDefinition(
                 id=item["id"],
                 description=item["description"],
-                events=tuple(
-                    EventDefinition(
-                        event["type"], event["description"], event["data_schema"]
-                    )
-                    for event in item["events"]
+                event=EventDefinition(
+                    item["event"]["type"],
+                    item["event"]["description"],
+                    item["event"]["data_schema"],
                 ),
                 start=lambda context: None,
+                source="",
                 owner=f"module:{module_id}",
             )
             for item in catalog["handlers"]
@@ -968,39 +889,36 @@ class CapabilityManager:
         self.actions.replace_owner(list(actions), owner=owner)
         try:
             self.events.replace_owner(
-                [event for handler in handlers for event in handler.events],
+                [handler.event for handler in handlers],
                 owner=owner,
             )
         except Exception:
             self.actions.unregister_owner(owner)
             raise
         runtime = LoadedModule(
-            container=ModuleContainer(
-                module_id=module_id,
-                description=manifest["description"],
-                execution="isolated",
-                requirements=manifest.get("requirements"),
-            ),
+            module_id=module_id,
+            definition=definition,
             path=path,
+            package_import=None,
             execution="isolated",
-            action_ids=[definition.id for definition in actions],
-            handler_ids=[definition.id for definition in handlers],
+            action_ids=[item.id for item in actions],
+            handler_ids=[item.id for item in handlers],
         )
         with self._lock:
-            for definition in actions:
-                self._actions[definition.id] = LoadedAction(
-                    id=definition.id,
-                    definition=definition,
+            for item in actions:
+                self._actions[item.id] = LoadedAction(
+                    id=item.id,
+                    definition=item,
                     path=path,
                     python_import=None,
                     module_id=module_id,
                     execution="isolated",
                     stop_event=runtime.stop_event,
                 )
-            for definition in handlers:
-                self._handlers[definition.id] = LoadedHandler(
-                    id=definition.id,
-                    definition=definition,
+            for item in handlers:
+                self._handlers[item.id] = LoadedHandler(
+                    id=item.id,
+                    definition=item,
                     path=path,
                     python_import=None,
                     module_id=module_id,
@@ -1008,27 +926,6 @@ class CapabilityManager:
                     stop_event=runtime.stop_event,
                 )
         return runtime
-
-    def start_module(self, module_id: str) -> None:
-        with self._lock:
-            runtime = self._modules.get(module_id)
-        if runtime is None:
-            raise RuntimeError(f"Модуль {module_id} не загружен")
-        self._start_module(runtime)
-
-    def start_action(self, action_id: str) -> None:
-        with self._lock:
-            runtime = self._actions.get(action_id)
-        if runtime is None:
-            raise RuntimeError(f"Действие {action_id} не загружено")
-        self._start_action(runtime)
-
-    def start_handler(self, handler_id: str) -> None:
-        with self._lock:
-            runtime = self._handlers.get(handler_id)
-        if runtime is None:
-            raise RuntimeError(f"Handler {handler_id} не загружен")
-        self._start_handler(runtime)
 
     def _start_module(self, runtime: LoadedModule) -> None:
         with self._lock:
@@ -1040,12 +937,12 @@ class CapabilityManager:
         for action_id in runtime.action_ids:
             with self._lock:
                 loaded = self._actions.get(action_id)
-            if loaded is not None and loaded.module_id == runtime.container.module_id:
+            if loaded is not None and loaded.module_id == runtime.module_id:
                 self._start_action(loaded)
         for handler_id in runtime.handler_ids:
             with self._lock:
                 loaded = self._handlers.get(handler_id)
-            if loaded is not None and loaded.module_id == runtime.container.module_id:
+            if loaded is not None and loaded.module_id == runtime.module_id:
                 self._start_handler(loaded)
 
     def _start_action(self, runtime: LoadedAction) -> None:
@@ -1144,11 +1041,11 @@ class CapabilityManager:
             raise RuntimeError(f"Worker вернул неожиданный ответ: {message}")
         catalog = message["catalog"]
         if catalog.get("module_id") != module_id:
-            raise ValueError("module_id worker не совпадает с module.json")
+            raise ValueError("module_id worker не совпадает с каталогом модуля")
         return catalog
 
     def _start_isolated(self, runtime: LoadedModule) -> None:
-        module_id = runtime.container.module_id
+        module_id = runtime.module_id
         log_dir = (self.config.jarvis_dir if self.config else DEFAULT_ROOT) / "runtime"
         log_dir.mkdir(parents=True, exist_ok=True)
         runtime.stderr_stream = open(log_dir / f"{module_id}.log", "ab")
@@ -1200,7 +1097,7 @@ class CapabilityManager:
                 message = json.loads(line)
                 if message.get("kind") == "module_error":
                     self._report_error(
-                        f"module:{runtime.container.module_id}", message["error"]
+                        f"module:{runtime.module_id}", message["error"]
                     )
                     if message.get("action_id"):
                         self._discard_pending(
@@ -1211,6 +1108,10 @@ class CapabilityManager:
                         message.get("agent_id"),
                         message.get("action_id"),
                         message.get("data"),
+                        tuple(
+                            InputPart(item["type"], item["mime_type"], item["data"])
+                            for item in message.get("parts", [])
+                        ),
                     )
                 elif message.get("kind") == "event":
                     raw = message["event"]
@@ -1218,24 +1119,22 @@ class CapabilityManager:
                         Event(
                             type=raw["type"],
                             data=raw["data"],
-                            source=f"module:{runtime.container.module_id}",
+                            source=f"module:{runtime.module_id}",
                             target=raw.get("target"),
                             reply_to=raw.get("reply_to"),
                             parts=tuple(
                                 InputPart(item["type"], item["mime_type"], item["data"])
                                 for item in raw.get("parts", [])
                             ),
-                            module_id=runtime.container.module_id,
+                            module_id=runtime.module_id,
                             handler_id=raw.get("handler_id"),
                         )
                     )
             except Exception as exc:  # noqa: BLE001
-                self._report_error(
-                    f"module:{runtime.container.module_id}", exc
-                )
+                self._report_error(f"module:{runtime.module_id}", exc)
         if not runtime.stop_event.is_set():
             self._report_error(
-                f"module:{runtime.container.module_id}",
+                f"module:{runtime.module_id}",
                 "Worker неожиданно завершился",
             )
 
@@ -1243,7 +1142,11 @@ class CapabilityManager:
         return getattr(self.event_bus, "manager", None)
 
     def _complete_action(
-        self, agent_id: str | None, action_id: str | None, data: Any
+        self,
+        agent_id: str | None,
+        action_id: str | None,
+        data: Any,
+        parts: Any = (),
     ) -> bool:
         manager = self._manager()
         if manager is None or agent_id is None or action_id is None:
@@ -1264,7 +1167,11 @@ class CapabilityManager:
             manager.results.discard(agent_id, action_id)
             return False
         return manager.results.complete(
-            manager, agent_id=agent_id, action_id=action_id, data=data
+            manager,
+            agent_id=agent_id,
+            action_id=action_id,
+            data=data,
+            parts=tuple(parts),
         )
 
     def _discard_pending(self, agent_id: str | None, action_id: str | None) -> None:
@@ -1294,8 +1201,8 @@ class CapabilityManager:
                 action_type=action.type,
                 capability_id=action.type,
                 module_id=runtime.module_id,
-                complete=lambda data: self._complete_action(
-                    agent.agent_id, action.action_id, data
+                complete=lambda data, parts=(): self._complete_action(
+                    agent.agent_id, action.action_id, data, parts
                 ),
                 config=self.config,
                 agent_manager=manager,
@@ -1388,10 +1295,10 @@ class CapabilityManager:
         if runtime is None or runtime.module_id is not None:
             return
         runtime.stop_event.set()
-        for context, definition in zip(runtime.contexts, [runtime.definition]):
-            if definition.stop is not None:
+        if runtime.definition.stop is not None:
+            for context in runtime.contexts:
                 try:
-                    definition.stop(context)
+                    runtime.definition.stop(context)
                 except Exception as exc:  # noqa: BLE001
                     self._report_error(f"handler:{handler_id}", exc)
         current = threading.current_thread()
@@ -1406,12 +1313,14 @@ class CapabilityManager:
         with self._lock:
             runtime = self._modules.pop(module_id, None)
             actions = [
-                self._actions.pop(action_id, None)
-                for action_id in (runtime.action_ids if runtime is not None else [])
+                self._actions.pop(action_id, None) for action_id in (
+                    runtime.action_ids if runtime is not None else []
+                )
             ]
             handlers = [
-                self._handlers.pop(handler_id, None)
-                for handler_id in (runtime.handler_ids if runtime is not None else [])
+                self._handlers.pop(handler_id, None) for handler_id in (
+                    runtime.handler_ids if runtime is not None else []
+                )
             ]
         if runtime is None:
             return
@@ -1437,13 +1346,12 @@ class CapabilityManager:
             except subprocess.TimeoutExpired:
                 terminate_process(runtime.process, group=True)
         for handler in handlers:
-            if handler is not None:
+            if handler is not None and handler.definition.stop is not None:
                 for context in handler.contexts:
-                    if handler.definition.stop is not None:
-                        try:
-                            handler.definition.stop(context)
-                        except Exception as exc:  # noqa: BLE001
-                            self._report_error(f"module:{module_id}", exc)
+                    try:
+                        handler.definition.stop(context)
+                    except Exception as exc:  # noqa: BLE001
+                        self._report_error(f"module:{module_id}", exc)
         current = threading.current_thread()
         for action in actions:
             if (
@@ -1466,9 +1374,9 @@ class CapabilityManager:
         owner = f"module:{module_id}"
         self.actions.unregister_owner(owner)
         self.events.unregister_owner(owner)
-        if runtime.teardown is not None:
+        if runtime.definition.teardown is not None:
             try:
-                runtime.teardown(self.config)
+                runtime.definition.teardown(self.config)
             except Exception as exc:  # noqa: BLE001
                 self._report_error(f"module:{module_id}", exc)
         if runtime.package_import is not None:
@@ -1515,14 +1423,9 @@ class CapabilityManager:
 
     def create_environment(self, module_id: str) -> dict[str, Any]:
         path = self.module_path(module_id)
-        manifest = self._manifest(path)
-        environment = path / ".venv"
-        requirements_name = manifest.get("requirements")
-        requirements = None
+        requirements = path / "requirements.txt"
+        requirements_name = "requirements.txt" if requirements.is_file() else None
         if requirements_name:
-            requirements = path / requirements_name
-            if not requirements.is_file():
-                raise ValueError(f"Не найден requirements: {requirements}")
             unpinned = [
                 line.strip()
                 for line in requirements.read_text(encoding="utf-8").splitlines()
@@ -1535,9 +1438,10 @@ class CapabilityManager:
                     "Зависимости должны быть закреплены через ==: "
                     + ", ".join(unpinned)
                 )
+        environment = path / ".venv"
         if not environment.exists():
             venv.EnvBuilder(with_pip=True).create(environment)
-        if requirements is not None:
+        if requirements_name is not None:
             python = environment / "bin" / "python"
             subprocess.run(
                 [str(python), "-m", "pip", "install", "-r", str(requirements)],
@@ -1565,13 +1469,13 @@ class CapabilityManager:
                 if runtime is None or runtime.module_id is not None:
                     continue
                 handlers.append(self._handler_summary(runtime.definition, runtime.path))
-                events.extend(
+                event = runtime.definition.event
+                events.append(
                     {
                         "type": event.type,
                         "description": event.description,
                         "data_schema": event.data_schema,
                     }
-                    for event in runtime.definition.events
                 )
             modules = []
             for module_id in sorted(snapshot.get("modules", ())):
@@ -1584,10 +1488,14 @@ class CapabilityManager:
     def shutdown(self) -> None:
         self._closing.set()
         for action_id in list(self.loaded_actions()):
-            if "." not in action_id:
+            if self._actions.get(action_id) is not None and (
+                self._actions[action_id].module_id is None
+            ):
                 self.unload_action(action_id)
         for handler_id in list(self.loaded_handlers()):
-            if "." not in handler_id:
+            if self._handlers.get(handler_id) is not None and (
+                self._handlers[handler_id].module_id is None
+            ):
                 self.unload_handler(handler_id)
         for module_id in list(self.loaded_modules()):
             self.unload_module(module_id)
@@ -1611,11 +1519,10 @@ class CapabilityManager:
             "path": str(path),
             "events": [
                 {
-                    "type": event.type,
-                    "description": event.description,
-                    "data_schema": event.data_schema,
+                    "type": definition.event.type,
+                    "description": definition.event.description,
+                    "data_schema": definition.event.data_schema,
                 }
-                for event in definition.events
             ],
         }
 
@@ -1641,17 +1548,17 @@ class CapabilityManager:
                         "description": loaded.definition.description,
                     }
                 )
-                events.extend(
+                event = loaded.definition.event
+                events.append(
                     {
                         "type": event.type,
                         "description": event.description,
                         "data_schema": event.data_schema,
                     }
-                    for event in loaded.definition.events
                 )
             return {
-                "module_id": runtime.container.module_id,
-                "description": runtime.container.description,
+                "module_id": runtime.module_id,
+                "description": runtime.definition.description,
                 "path": str(runtime.path),
                 "actions": actions,
                 "handlers": handlers,

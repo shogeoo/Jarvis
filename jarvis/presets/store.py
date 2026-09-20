@@ -25,8 +25,8 @@ class AgentPreset:
 class PresetStore:
     """Читает пресеты с диска при каждом обращении.
 
-    Благодаря этому изменение ``capabilities.json`` применяется к уже работающим
-    агентам на следующей безопасной границе их цикла.
+    Каждый пресет: personprompt.txt плюс три JSON-перечисления —
+    modules.json, actions.json, handlers.json.
     """
 
     def __init__(self, root: Path):
@@ -58,32 +58,15 @@ class PresetStore:
             person_prompt = (path / "personprompt.txt").read_text(
                 encoding="utf-8"
             ).strip()
-            raw = json.loads(
-                (path / "capabilities.json").read_text(encoding="utf-8")
+            raw_modules = self._read_list(path, name, "modules", _NAME, "module")
+            raw_actions = self._read_list(path, name, "actions", _CAPABILITY, "action")
+            raw_handlers = self._read_list(
+                path, name, "handlers", _CAPABILITY, "handler"
             )
         except FileNotFoundError as exc:
             raise ValueError(f"Пресет не найден или неполон: {name}") from exc
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"Не удалось прочитать пресет {name}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise ValueError(
-                f"capabilities.json пресета {name} должен быть объектом"
-            )
-        capabilities = {}
-        for kind in ("modules", "actions", "handlers"):
-            values = raw.get(kind, [])
-            singular = kind.rstrip("s") if kind != "modules" else "module"
-            if not isinstance(values, list) or not all(
-                isinstance(item, str) for item in values
-            ):
-                raise ValueError(
-                    f"capabilities.json пресета {name}: {kind} должен быть массивом строк"
-                )
-            for item in values:
-                self.validate_capability(singular, item)
-            if len(values) != len(set(values)):
-                raise ValueError(f"Пресet {name} содержит повторяющиеся {kind}")
-            capabilities[kind] = tuple(values)
         metadata_path = path / "preset.json"
         try:
             metadata = (
@@ -100,9 +83,9 @@ class PresetStore:
         return AgentPreset(
             name,
             person_prompt,
-            capabilities["modules"],
-            capabilities["actions"],
-            capabilities["handlers"],
+            tuple(raw_modules),
+            tuple(raw_actions),
+            tuple(raw_handlers),
             metadata.get("protected", False),
         )
 
@@ -137,7 +120,7 @@ class PresetStore:
         (path / "personprompt.txt").write_text(
             person_prompt.strip() + "\n", encoding="utf-8"
         )
-        self._write_capabilities(path, normalized)
+        self._write_lists(path, normalized)
         return self.load(name)
 
     def delete(self, name: str) -> None:
@@ -154,6 +137,24 @@ class PresetStore:
                 raise ValueError(f"В пресете есть неизвестный каталог: {child}")
         path.rmdir()
 
+    @staticmethod
+    def _read_list(path: Path, name: str, filename: str, pattern, kind: str) -> list[str]:
+        try:
+            values = json.loads((path / f"{filename}.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Не удалось прочитать {filename}.json пресета {name}: {exc}"
+            ) from exc
+        if not isinstance(values, list) or not all(
+            isinstance(item, str) and pattern.fullmatch(item) for item in values
+        ):
+            raise ValueError(
+                f"{filename}.json пресета {name} должен быть массивом строк"
+            )
+        if len(values) != len(set(values)):
+            raise ValueError(f"Пресет {name} содержит повторяющиеся {filename}")
+        return values
+
     def add_capability(
         self, name: str, kind: str, capability_id: str
     ) -> AgentPreset:
@@ -169,7 +170,7 @@ class PresetStore:
             "handlers": list(preset.handlers),
         }
         normalized[key].append(capability_id)
-        self._write_capabilities(self.path(name), self._normalize(normalized))
+        self._write_lists(self.path(name), self._normalize(normalized))
         return self.load(name)
 
     @classmethod
@@ -193,10 +194,15 @@ class PresetStore:
         return normalized
 
     @staticmethod
-    def _write_capabilities(
+    def _write_lists(
         path: Path, capabilities: dict[str, list[str]]
     ) -> None:
-        (path / "capabilities.json").write_text(
-            json.dumps(capabilities, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        for filename, values in (
+            ("modules", capabilities["modules"]),
+            ("actions", capabilities["actions"]),
+            ("handlers", capabilities["handlers"]),
+        ):
+            (path / f"{filename}.json").write_text(
+                json.dumps(values, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
