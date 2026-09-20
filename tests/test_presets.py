@@ -13,14 +13,11 @@ class PresetStoreTests(unittest.TestCase):
         main = self.root / "main"
         main.mkdir()
         (main / "personprompt.txt").write_text("Jarvis\n", encoding="utf-8")
-        (main / "capabilities.json").write_text(
-            json.dumps(
-                {"modules": ["agents"], "actions": [], "handlers": []},
-                ensure_ascii=False,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
+        (main / "modules.json").write_text('["agents"]\n', encoding="utf-8")
+        (main / "actions.json").write_text('[]\n', encoding="utf-8")
+        (main / "handlers.json").write_text('[]\n', encoding="utf-8")
+        (main / "actions.json").write_text('[]\n', encoding="utf-8")
+        (main / "handlers.json").write_text('[]\n', encoding="utf-8")
         (main / "preset.json").write_text(
             '{"protected": true}\n', encoding="utf-8"
         )
@@ -41,11 +38,8 @@ class PresetStoreTests(unittest.TestCase):
         self.assertEqual(self.store.load("main").person_prompt, "Jarvis")
 
     def test_duplicate_capabilities_are_rejected(self):
-        (self.root / "main" / "capabilities.json").write_text(
-            json.dumps(
-                {"modules": ["agents", "agents"], "actions": [], "handlers": []}
-            ),
-            encoding="utf-8",
+        (self.root / "main" / "actions.json").write_text(
+            json.dumps(["say", "say"]), encoding="utf-8"
         )
         with self.assertRaises(ValueError):
             self.store.load("main")

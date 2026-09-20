@@ -25,13 +25,15 @@ class ApplicationTests(unittest.TestCase):
         client = Mock()
         openai.return_value = client
         discover.return_value = ModelCapabilities("test", ("text",))
-        with tempfile.TemporaryDirectory() as jarvis_dir:
-            root = fixtures.write_jarvis_root(Path(jarvis_dir))
+        with tempfile.TemporaryDirectory() as project_dir:
+            project = Path(project_dir)
+            fixtures.write_master_prompt(project)
+            root = fixtures.write_jarvis_root(project / ".jarvis")
             config = Config(
                 model="test",
                 base_url="http://localhost/v1",
                 api_key="test",
-                project_root=Path.cwd(),
+                project_root=project,
                 jarvis_dir=root,
             )
             with tempfile.TemporaryDirectory() as temporary:
@@ -48,6 +50,7 @@ class ApplicationTests(unittest.TestCase):
                         '"type": "capability_error"', system_prompt
                     )
                     self.assertIn("action_result", system_prompt)
+                    self.assertIn("environment", system_prompt)
                     self.assertEqual(
                         app.capabilities.loaded_snapshot(),
                         {

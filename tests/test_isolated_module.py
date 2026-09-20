@@ -25,7 +25,6 @@ def run(data, context):
 
 def create_action():
     return action_definition(
-        "isolated.run",
         "run",
         object_schema({"value": {"type": "string"}}),
         object_schema({"value": {"type": "string"}}),
@@ -34,7 +33,15 @@ def create_action():
 """
 
 HANDLER_CODE = """
-from jarvis.capabilities import handler_definition
+from jarvis.capabilities import event_definition, handler_definition
+from jarvis.core.protocol import object_schema
+
+
+IDLE = event_definition(
+    "isolated.idle",
+    "idle",
+    object_schema({"value": {"type": "string"}}),
+)
 
 
 def start(context):
@@ -42,7 +49,23 @@ def start(context):
 
 
 def create_handler():
-    return handler_definition("isolated.idle", "idle", (), start)
+    return handler_definition("idle handler", IDLE, start)
+"""
+
+MODULE_CODE = """
+from jarvis.capabilities import module_definition
+
+from .actions.run import create_action as run
+from .handlers.idle import create_handler as idle
+
+
+def create_module():
+    return module_definition(
+        "isolated test",
+        (run(),),
+        (idle(),),
+        execution="isolated",
+    )
 """
 
 
@@ -81,16 +104,7 @@ class IsolatedModuleTests(unittest.TestCase):
             (module / "handlers").mkdir()
             (module / "actions" / "run.py").write_text(ACTION_CODE, encoding="utf-8")
             (module / "handlers" / "idle.py").write_text(HANDLER_CODE, encoding="utf-8")
-            (module / "module.json").write_text(
-                json.dumps(
-                    {
-                        "module_id": "isolated",
-                        "description": "isolated test",
-                        "execution": "isolated",
-                    }
-                ),
-                encoding="utf-8",
-            )
+            (module / "module.py").write_text(MODULE_CODE, encoding="utf-8")
             python = module / ".venv" / "bin" / "python"
             python.parent.mkdir(parents=True)
             os.symlink(sys.executable, python)

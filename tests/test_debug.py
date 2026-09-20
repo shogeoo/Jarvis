@@ -3,7 +3,7 @@ import json
 import unittest
 
 from jarvis.infrastructure.debug import Debugger
-from jarvis.core.protocol import Event, InputPart
+from jarvis.core.protocol import ActionResult, Event, InputPart
 
 
 class DebugTests(unittest.TestCase):
@@ -18,9 +18,11 @@ class DebugTests(unittest.TestCase):
             ),
         )
         assistant_output = '{"actions":[{"action_id":"say-1","type":"no_action","data":{}}]}'
+        action_result = ActionResult(action_id="say-1", data={"spoken": True})
 
         debug.input(event)
         debug.model("main", assistant_output)
+        debug.result(action_result)
         debug.log("event", event=event.debug_value())
         debug.state("main", "acting")
 
@@ -31,6 +33,8 @@ class DebugTests(unittest.TestCase):
             + json.dumps(
                 json.loads(assistant_output), ensure_ascii=False, indent=2
             )
+            + "\n"
+            + json.dumps(action_result.model_value(), ensure_ascii=False, indent=2)
             + "\n",
         )
         self.assertNotIn("base64", output.getvalue())
