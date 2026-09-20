@@ -3,6 +3,7 @@ import unittest
 
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
 from jarvis.core.protocol import (
+    ActionResult,
     Event,
     InputPart,
     parse_actions,
@@ -34,13 +35,28 @@ class ProtocolTests(unittest.TestCase):
         text_message = event.model_message(ModelCapabilities("test", ("text",)))
         self.assertIsInstance(text_message["content"], str)
 
+    def test_action_result_is_a_strict_model_value_with_external_action_id(self):
+        result = ActionResult(
+            action_id="say-1", data={"spoken": True}, agent_id="main"
+        )
+        self.assertEqual(
+            json.loads(result.model_content()),
+            {
+                "type": "action_result",
+                "action_id": "say-1",
+                "data": {"spoken": True},
+            },
+        )
+        self.assertEqual(result.model_message()["role"], "user")
+        self.assertNotIn("agent_id", json.loads(result.model_content()))
+
     def test_no_action_cannot_be_combined(self):
         with self.assertRaises(ValueError):
             parse_actions(
                 {
                     "actions": [
-                        {"type": "no_action", "data": {}},
-                        {"type": "speech", "data": {"text": "x"}},
+                        {"action_id": "one", "type": "no_action", "data": {}},
+                        {"action_id": "two", "type": "speech", "data": {}},
                     ]
                 }
             )
@@ -65,11 +81,30 @@ class ProtocolTests(unittest.TestCase):
             validate_json(
                 {
                     "actions": [
-                        {"type": "no_action", "data": {}},
-                        {"type": "speech", "data": {"text": "x"}},
+                        {"action_id": "one", "type": "no_action", "data": {}},
+                        {"action_id": "two", "type": "speech", "data": {}},
                     ]
                 },
                 schema,
+            )
+
+    def test_duplicate_action_id_is_a_structure_error(self):
+        with self.assertRaisesRegex(ValueError, "action_id повторяется"):
+            parse_actions(
+                {
+                    "actions": [
+                        {
+                            "action_id": "say-1",
+                            "type": "speech",
+                            "data": {"text": "one"},
+                        },
+                        {
+                            "action_id": "say-1",
+                            "type": "speech",
+                            "data": {"text": "two"},
+                        },
+                    ]
+                }
             )
 
     def test_strict_action_schema_rejects_unknown_arguments(self):
@@ -87,7 +122,11 @@ class ProtocolTests(unittest.TestCase):
             validate_json(
                 {
                     "actions": [
-                        {"type": "speech", "data": {"text": "x", "extra": 1}}
+                        {
+                            "action_id": "say-1",
+                            "type": "speech",
+                            "data": {"text": "x", "extra": 1},
+                        }
                     ]
                 },
                 schema,

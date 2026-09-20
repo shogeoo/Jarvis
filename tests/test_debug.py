@@ -17,7 +17,7 @@ class DebugTests(unittest.TestCase):
                 InputPart("image", "image/png", "aGVsbG8="),
             ),
         )
-        assistant_output = '{"actions":[{"type":"no_action","data":{}}]}'
+        assistant_output = '{"actions":[{"action_id":"say-1","type":"no_action","data":{}}]}'
 
         debug.input(event)
         debug.model("main", assistant_output)

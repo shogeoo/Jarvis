@@ -6,13 +6,15 @@ import time
 import unittest
 from pathlib import Path
 
-from jarvis.core.protocol import Event, empty_object_schema, object_schema
+from jarvis.capabilities.manager import CapabilityManager
+from jarvis.core.protocol import Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
-from jarvis.modules import ActionSpec, EventDefinition
 from jarvis.presets import PresetStore
+
+import fixtures
 
 
 class _Response:
@@ -42,54 +44,28 @@ class _Client:
         self.chat = type("Chat", (), {"completions": completions})()
 
 
-class _Modules:
-    def __init__(self, actions):
-        self.actions = actions
-        self.names = {"test"}
-        self.dispatched = []
-        self.fail_types = set()
+def _action_file(action_id, args_schema, result_schema, run_body):
+    return (
+        "from jarvis.capabilities import action_definition\n"
+        "from jarvis.core.protocol import object_schema\n\n\n"
+        f"def run(data, context):\n{run_body}\n\n\n"
+        "def create_action():\n"
+        f"    return action_definition(\n"
+        f"        {action_id!r},\n"
+        "        \"test\",\n"
+        f"        {args_schema!r},\n"
+        f"        {result_schema!r},\n"
+        "        run,\n"
+        "    )\n"
+    )
 
-    def loaded_names(self):
-        return set(self.names)
 
-    def load_many(self, module_ids, *, start_handlers):
-        self.names.update(module_ids)
-
-    def start_many(self, module_ids):
-        self.names.update(module_ids)
-
-    def load(self, module_id, *, start_handlers=True):
-        self.names.add(module_id)
-
-    def unload(self, module_id):
-        self.names.discard(module_id)
-
-    def dispatch(self, *, action, spec, agent):
-        self.dispatched.append(action)
-        if action.type in self.fail_types:
-            raise RuntimeError("dispatch failed")
-
-    def catalog(self, module_ids):
-        result = []
-        for module_id in sorted(module_ids):
-            actions = [
-                {
-                    "type": spec.type,
-                    "description": spec.description,
-                    "data_schema": spec.data_schema,
-                }
-                for spec in self.actions.all().values()
-                if spec.owner == f"module:{module_id}"
-            ]
-            result.append(
-                {
-                    "module_id": module_id,
-                    "description": module_id,
-                    "actions": actions,
-                    "events": [],
-                }
-            )
-        return result
+def _no_action(action_id="done"):
+    return (
+        '{"actions":[{"action_id":'
+        f"{json.dumps(action_id)},"
+        '"type":"no_action","data":{}}]}'
+    )
 
 
 def _wait(predicate, timeout=2):
@@ -105,25 +81,11 @@ class RuntimeTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        main = root / "main"
-        main.mkdir()
-        (main / "personprompt.txt").write_text("main", encoding="utf-8")
-        (main / "modules.json").write_text('["test"]\n', encoding="utf-8")
-        self.presets = PresetStore(root)
+        self.root = fixtures.write_jarvis_root(Path(temporary.name))
+        self.presets = PresetStore(self.root / "presets")
         self.actions = ActionRegistry()
         self.events = EventRegistry()
         register_core_protocol(self.actions, self.events)
-        for event_type in ("test.input", "test.result"):
-            field = "text" if event_type.endswith("input") else "name"
-            self.events.register(
-                EventDefinition(
-                    event_type,
-                    event_type,
-                    object_schema({field: {"type": "string"}}),
-                ),
-                owner="module:test",
-            )
         self.bus = EventBus(self.events, debug=Debugger(enabled=False))
         self.managers = []
 
@@ -132,14 +94,20 @@ class RuntimeTests(unittest.TestCase):
             manager.shutdown()
 
     def manager(self, client, memory=None):
-        modules = _Modules(self.actions)
+        capabilities = CapabilityManager(
+            self.bus,
+            self.actions,
+            self.events,
+            root=self.root,
+            debug=Debugger(enabled=False),
+        )
         manager = AgentManager(
             model="test",
             client=client,
             actions=self.actions,
             events=self.events,
             bus=self.bus,
-            modules=modules,
+            capabilities=capabilities,
             presets=self.presets,
             environment_prompt="environment",
             debug=Debugger(enabled=False),
@@ -151,68 +119,92 @@ class RuntimeTests(unittest.TestCase):
     def publish(self, agent, text):
         self.bus.publish(
             Event(
-                type="test.input",
+                type="tick.event",
                 data={"text": text},
                 target=agent.agent_id,
-                module_id="test",
+                handler_id="tick",
             )
         )
 
-    def test_actions_are_dispatched_in_array_order_without_waiting(self):
-        self.actions.register(
-            ActionSpec(
-                "test.run",
-                "run",
-                object_schema({"name": {"type": "string"}}),
-                lambda data, context: None,
-                owner="module:test",
-            )
+    def write_action(self, action_id, args_schema, result_schema, run_body):
+        path = self.root / "actions" / f"{action_id}.py"
+        path.write_text(
+            _action_file(action_id, args_schema, result_schema, run_body),
+            encoding="utf-8",
         )
+
+    def action_results(self, agent):
+        return [
+            json.loads(message["content"])
+            for message in agent.history
+            if message["role"] == "user"
+            and '"action_result"' in message["content"]
+        ]
+
+    def test_actions_are_dispatched_in_array_order_with_results(self):
         client = _Client(
             [
                 '{"actions":['
-                '{"type":"test.run","data":{"name":"one"}},'
-                '{"type":"test.run","data":{"name":"two"}}]}'
+                '{"action_id":"say-1","type":"say","data":{"text":"one"}},'
+                '{"action_id":"say-2","type":"say","data":{"text":"two"}}]}',
+                _no_action("done-1"),
             ]
         )
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: agent.state == "waiting" and len(manager.modules.dispatched) == 2))
-        self.assertEqual([item.data["name"] for item in manager.modules.dispatched], ["one", "two"])
-        self.assertEqual(len(client.chat.completions.calls), 1)
+        self.assertTrue(_wait(lambda: len(self.action_results(agent)) == 2))
+        self.assertEqual(
+            [item["data"]["text"] for item in self.action_results(agent)],
+            ["one", "two"],
+        )
+        self.assertEqual(
+            [item["action_id"] for item in self.action_results(agent)],
+            ["say-1", "say-2"],
+        )
 
     def test_dispatch_error_does_not_stop_later_actions(self):
-        schema = empty_object_schema()
-        for name in ("test.fail", "test.next"):
-            self.actions.register(
-                ActionSpec(name, name, schema, lambda data, context: None, owner="module:test")
-            )
+        self.write_action(
+            "fail",
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            "    raise RuntimeError('dispatch failed')\n",
+        )
+        self.write_action(
+            "next",
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+                "additionalProperties": False,
+            },
+            "    return {'ok': True}\n",
+        )
         client = _Client(
             [
                 '{"actions":['
-                '{"type":"test.fail","data":{}},'
-                '{"type":"test.next","data":{}}]}',
-                '{"actions":[{"type":"no_action","data":{}}]}',
+                '{"action_id":"fail-1","type":"fail","data":{}},'
+                '{"action_id":"next-1","type":"next","data":{}}]}',
+                _no_action("done-1"),
             ]
         )
         manager = self.manager(client)
-        manager.modules.fail_types.add("test.fail")
         agent = manager.spawn_root(name="main", preset="main")
+        manager.enable_action(agent.agent_id, "fail")
+        manager.enable_action(agent.agent_id, "next")
         self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: len(manager.modules.dispatched) == 2))
-        self.assertEqual([item.type for item in manager.modules.dispatched], ["test.fail", "test.next"])
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         values = [
             json.loads(message["content"])
             for message in client.chat.completions.calls[1]["messages"]
             if message["role"] == "user"
         ]
-        error = next(item for item in values if item["type"] == "module_error")
-        self.assertEqual(
-            set(error["data"]),
-            {"module_id", "error"},
-        )
+        error = next(item for item in values if item["type"] == "capability_error")
+        self.assertEqual(error["data"]["capability"], "action:fail")
+        results = [item for item in values if item["type"] == "action_result"]
+        self.assertEqual([item["action_id"] for item in results], ["next-1"])
+        self.assertEqual(results[0]["data"], {"ok": True})
 
     def test_events_in_busy_batch_keep_arrival_order(self):
         thinking = threading.Event()
@@ -223,23 +215,12 @@ class RuntimeTests(unittest.TestCase):
                 thinking.set()
                 release.wait(2)
 
-        client = _Client(
-            ['{"actions":[{"type":"no_action","data":{}}]}'] * 2,
-            block,
-        )
+        client = _Client([_no_action("done-1"), _no_action("done-2")], block)
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "first")
         self.assertTrue(thinking.wait(2))
         self.publish(agent, "external")
-        self.bus.publish(
-            Event(
-                type="test.result",
-                data={"name": "result"},
-                target=agent.agent_id,
-                module_id="test",
-            )
-        )
         release.set()
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         values = [
@@ -247,7 +228,10 @@ class RuntimeTests(unittest.TestCase):
             for message in client.chat.completions.calls[1]["messages"]
             if message["role"] == "user"
         ]
-        self.assertEqual([item["type"] for item in values[-2:]], ["test.input", "test.result"])
+        self.assertEqual(
+            [item["data"]["text"] for item in values[-2:]],
+            ["first", "external"],
+        )
 
     def test_structure_error_holds_external_events(self):
         correction = threading.Event()
@@ -261,8 +245,8 @@ class RuntimeTests(unittest.TestCase):
         client = _Client(
             [
                 "not json",
-                '{"actions":[{"type":"no_action","data":{}}]}',
-                '{"actions":[{"type":"no_action","data":{}}]}',
+                _no_action("done-1"),
+                _no_action("done-2"),
             ],
             block,
         )
@@ -281,32 +265,53 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertIn("second", json.dumps(client.chat.completions.calls[2]["messages"], ensure_ascii=False))
 
-    def test_enabled_modules_belong_to_current_instance(self):
-        client = _Client(['{"actions":[{"type":"no_action","data":{}}]}'])
+    def test_duplicate_action_id_is_a_structure_error(self):
+        client = _Client(
+            [
+                '{"actions":['
+                '{"action_id":"say-1","type":"say","data":{"text":"one"}},'
+                '{"action_id":"say-1","type":"say","data":{"text":"two"}}]}',
+                _no_action("done-1"),
+            ]
+        )
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        self.publish(agent, "start")
+        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
+        values = [
+            json.loads(message["content"])
+            for message in client.chat.completions.calls[1]["messages"]
+            if message["role"] == "user"
+        ]
+        self.assertEqual(values[-1]["type"], "structure_error")
+        self.assertEqual(self.action_results(agent), [])
+
+    def test_enabled_capabilities_belong_to_current_instance(self):
+        self.write_action(
+            "clock",
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            "    return {}\n",
+        )
+        client = _Client([_no_action("done-1")])
         manager = self.manager(client)
         first = manager.spawn_root(name="main", preset="main")
         second_info = manager.spawn(parent_id=first.agent_id, name="other", preset="main")
         second = manager.require_agent(second_info["agent_id"])
-        self.actions.register(
-            ActionSpec("clock.now", "time", empty_object_schema(), lambda d, c: None, owner="module:clock")
-        )
-        manager.enable_module(first.agent_id, "clock")
-        self.assertIn("clock", first.modules())
-        self.assertNotIn("clock", second.modules())
-        self.assertEqual(self.presets.load("main").modules, ("test",))
+        manager.enable_action(first.agent_id, "clock")
+        self.assertIn("clock", first.standalone_actions())
+        self.assertNotIn("clock", second.standalone_actions())
+        self.assertEqual(self.presets.load("main").actions, ("say",))
 
     def test_main_uses_reserved_main_agent_id(self):
-        manager = self.manager(_Client(['{"actions":[{"type":"no_action","data":{}}]}']))
+        manager = self.manager(_Client([_no_action("done-1")]))
         agent = manager.spawn_root(name="main", preset="main")
         self.assertEqual(agent.agent_id, "main")
 
     def test_persisted_context_is_restored_on_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
-            first = self.manager(
-                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
-                memory=memory,
-            )
+            first = self.manager(_Client([_no_action("done-1")]), memory=memory)
             agent = first.spawn_root(name="main", preset="main")
             self.publish(agent, "remember me")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3))
@@ -316,10 +321,7 @@ class RuntimeTests(unittest.TestCase):
                 ["user", "assistant"],
             )
 
-            second = self.manager(
-                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
-                memory=memory,
-            )
+            second = self.manager(_Client([_no_action("done-2")]), memory=memory)
             restored = second.restore(name="main", preset="main")
             self.assertEqual(restored.agent_id, "main")
             self.assertEqual(len(restored.history), 3)
@@ -332,10 +334,7 @@ class RuntimeTests(unittest.TestCase):
     def test_subagent_instances_are_recreated_from_memory(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
-            first = self.manager(
-                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
-                memory=memory,
-            )
+            first = self.manager(_Client([_no_action("done-1")]), memory=memory)
             root = first.spawn_root(name="main", preset="main")
             child_info = first.spawn(
                 parent_id=root.agent_id, name="worker", preset="main"
@@ -344,10 +343,7 @@ class RuntimeTests(unittest.TestCase):
             self.publish(child, "child task")
             self.assertTrue(_wait(lambda: len(child.history) >= 3))
 
-            second = self.manager(
-                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
-                memory=memory,
-            )
+            second = self.manager(_Client([_no_action("done-2")]), memory=memory)
             restored = second.restore(name="main", preset="main")
             self.assertEqual(restored.agent_id, "main")
             recreated = second.require_agent(child_info["agent_id"])
@@ -362,10 +358,7 @@ class RuntimeTests(unittest.TestCase):
     def test_delete_removes_agent_memory(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
-            manager = self.manager(
-                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
-                memory=memory,
-            )
+            manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
             root = manager.spawn_root(name="main", preset="main")
             child_info = manager.spawn(
                 parent_id=root.agent_id, name="worker", preset="main"
@@ -374,16 +367,16 @@ class RuntimeTests(unittest.TestCase):
             manager.delete(agent_id=child_info["agent_id"], reason="test")
             self.assertIsNone(memory.load(child_info["agent_id"]))
 
-    def test_enabled_modules_are_persisted(self):
+    def test_enabled_capabilities_are_persisted(self):
+        fixtures.write_echo_module(self.root)
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
-            manager = self.manager(
-                _Client(['{"actions":[{"type":"no_action","data":{}}]}']),
-                memory=memory,
-            )
+            manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
             root = manager.spawn_root(name="main", preset="main")
-            manager.enable_module(root.agent_id, "clock")
-            self.assertIn("clock", memory.load("main")["modules"])
+            manager.enable_module(root.agent_id, "echo")
+            record = memory.load("main")
+            self.assertIn("echo", record["modules"])
+            self.assertIn("say", record["actions"])
 
 
 if __name__ == "__main__":
