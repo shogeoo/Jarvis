@@ -1,1 +1,0 @@
-"""Actions модуля agents."""

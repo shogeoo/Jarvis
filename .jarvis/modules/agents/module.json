@@ -1,7 +1,5 @@
 {
   "module_id": "agents",
-  "description": "Управление экземплярами агентов, межагентные сообщения и presets. Actions ставят задачи, handler возвращает результаты.",
-  "entrypoint": "module.py",
-  "factory": "create_module",
+  "description": "Управление экземплярами агентов, межагентные сообщения и presets. Каждое действие возвращает обязательный ActionResult.",
   "execution": "in_process"
 }

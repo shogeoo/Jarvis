@@ -3,6 +3,10 @@ import queue
 import threading
 from pathlib import Path
 
+from jarvis.capabilities import event_definition, handler_definition
+from jarvis.core.protocol import object_schema
+
+
 def _bool(name, default):
     value = os.environ.get(name)
     if value is None:
@@ -128,3 +132,28 @@ class SpeechInput:
                 os.remove(item["path"])
             except FileNotFoundError:
                 pass
+
+
+def create_handler():
+    controller = SpeechInput()
+    speech = event_definition(
+        "speech_input.speech",
+        "Новая завершённая реплика пользователя с микрофона. text содержит "
+        "распознанную речь.",
+        object_schema({"text": {"type": "string"}}),
+    )
+    error = event_definition(
+        "speech_input.error",
+        "Фоновая ошибка микрофона, VAD или распознавания. message содержит "
+        "причину, которую следует сообщить пользователю или передать на "
+        "исправление.",
+        object_schema({"message": {"type": "string"}}),
+    )
+    return handler_definition(
+        "speech_input.microphone",
+        "Непрерывно слушает микрофон, режет речь по VAD и публикует "
+        "завершённые транскрипции и ошибки.",
+        (speech, error),
+        controller.start,
+        stop=controller.stop,
+    )

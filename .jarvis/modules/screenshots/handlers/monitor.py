@@ -4,7 +4,8 @@ import base64
 import re
 from pathlib import Path
 
-from jarvis.modules import input_part
+from jarvis.capabilities import event_definition, handler_definition, input_part
+from jarvis.core.protocol import object_schema
 
 
 SCREENSHOTS_DIR = Path.home() / "Images" / "Screenshots"
@@ -23,7 +24,7 @@ def _files(directory):
         return {}
 
 
-def build_monitor(ctx):
+def run(ctx):
     seen = set(_files(SCREENSHOTS_DIR))
     stable_sizes = {}
     while not ctx.stop_event.is_set():
@@ -45,3 +46,21 @@ def build_monitor(ctx):
                 parts=(input_part("image", "image/png", encoded),),
             )
         ctx.stop_event.wait(POLL_SECONDS)
+
+
+def create_handler():
+    captured = event_definition(
+        "screenshot",
+        "Новый PNG-снимок обнаружен в Images/Screenshots. В data присутствует "
+        "только text с именем файла. Сам снимок прикреплён отдельной "
+        "image-частью, а не текстом base64.",
+        object_schema({"text": {"type": "string"}}),
+    )
+    return handler_definition(
+        "screenshots.monitor",
+        "Мониторит Images/Screenshots и публикует каждый новый файл, имя "
+        "которого соответствует YYYY-MM-DD-HHMMSS_jarvis.png. Старые файлы "
+        "игнорируются.",
+        (captured,),
+        run,
+    )

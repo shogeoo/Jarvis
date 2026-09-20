@@ -1,7 +1,5 @@
 {
   "module_id": "module_manager",
-  "description": "Редактирование, тестирование, выключение и динамическое включение модулей Jarvis.",
-  "entrypoint": "module.py",
-  "factory": "create_module",
+  "description": "Редактирование, тестирование, выключение и динамическое включение capabilities Jarvis.",
   "execution": "in_process"
 }
