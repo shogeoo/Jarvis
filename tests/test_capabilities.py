@@ -87,6 +87,26 @@ class CapabilityTests(unittest.TestCase):
             finally:
                 manager.shutdown()
 
+    def test_hardcoded_ids_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = fixtures.write_jarvis_root(Path(temporary))
+            (root / "actions" / "bad.py").write_text(
+                "from dataclasses import replace\n"
+                "from jarvis.capabilities import action_definition\n"
+                "from jarvis.core.protocol import object_schema\n"
+                "def run(data, context):\n"
+                "    return {}\n"
+                "def create_action():\n"
+                "    return replace(action_definition('t', {}, {}, run), id='bad')\n",
+                encoding="utf-8",
+            )
+            manager, actions, events = self.manager(root)
+            try:
+                with self.assertRaisesRegex(ValueError, "захардкожен"):
+                    manager.load_action("bad", start_handlers=False)
+            finally:
+                manager.shutdown()
+
     def test_fixture_presets_only_reference_existing_capabilities(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
@@ -98,9 +118,7 @@ class CapabilityTests(unittest.TestCase):
                     "actions": manager.existing_actions(),
                     "handlers": manager.existing_handlers(),
                 }
-                self.assertLessEqual(
-                    {"echo"}, existing["modules"]
-                )
+                self.assertLessEqual({"echo"}, existing["modules"])
                 self.assertLessEqual({"say"}, existing["actions"])
                 self.assertLessEqual({"tick"}, existing["handlers"])
                 for preset in PresetStore(root / "presets").list():
@@ -125,12 +143,6 @@ class CapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
             module = fixtures.write_echo_module(root)
-            manifest_path = module / "module.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest.update(
-                {"execution": "isolated", "requirements": "requirements.txt"}
-            )
-            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             (module / "requirements.txt").write_text("requests>=2\n", encoding="utf-8")
             manager, actions, events = self.manager(root)
             with self.assertRaisesRegex(ValueError, "закреплены"):

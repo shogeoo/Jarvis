@@ -44,20 +44,26 @@ class _Client:
         self.chat = type("Chat", (), {"completions": completions})()
 
 
-def _action_file(action_id, args_schema, result_schema, run_body):
+def _action_file(args_schema, result_schema, run_body):
     return (
-        "from jarvis.capabilities import action_definition\n"
-        "from jarvis.core.protocol import object_schema\n\n\n"
+        "from jarvis.capabilities import action_definition\n\n\n"
         f"def run(data, context):\n{run_body}\n\n\n"
         "def create_action():\n"
-        f"    return action_definition(\n"
-        f"        {action_id!r},\n"
-        "        \"test\",\n"
+        "    return action_definition(\n"
+        '        "test",\n'
         f"        {args_schema!r},\n"
         f"        {result_schema!r},\n"
         "        run,\n"
         "    )\n"
     )
+
+
+EMPTY_SCHEMA = {
+    "type": "object",
+    "properties": {},
+    "required": [],
+    "additionalProperties": False,
+}
 
 
 def _no_action(action_id="done"):
@@ -109,7 +115,7 @@ class RuntimeTests(unittest.TestCase):
             bus=self.bus,
             capabilities=capabilities,
             presets=self.presets,
-            environment_prompt="environment",
+            master_prompt="environment",
             debug=Debugger(enabled=False),
             memory=memory,
         )
@@ -129,7 +135,7 @@ class RuntimeTests(unittest.TestCase):
     def write_action(self, action_id, args_schema, result_schema, run_body):
         path = self.root / "actions" / f"{action_id}.py"
         path.write_text(
-            _action_file(action_id, args_schema, result_schema, run_body),
+            _action_file(args_schema, result_schema, run_body),
             encoding="utf-8",
         )
 
@@ -166,13 +172,13 @@ class RuntimeTests(unittest.TestCase):
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(
             "fail",
-            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
-            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            EMPTY_SCHEMA,
+            EMPTY_SCHEMA,
             "    raise RuntimeError('dispatch failed')\n",
         )
         self.write_action(
             "next",
-            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            EMPTY_SCHEMA,
             {
                 "type": "object",
                 "properties": {"ok": {"type": "boolean"}},
@@ -287,12 +293,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.action_results(agent), [])
 
     def test_enabled_capabilities_belong_to_current_instance(self):
-        self.write_action(
-            "clock",
-            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
-            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
-            "    return {}\n",
-        )
+        self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         client = _Client([_no_action("done-1")])
         manager = self.manager(client)
         first = manager.spawn_root(name="main", preset="main")
@@ -315,7 +316,7 @@ class RuntimeTests(unittest.TestCase):
             agent = first.spawn_root(name="main", preset="main")
             self.publish(agent, "remember me")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3))
-            record = memory.load("main")
+            record = memory.load("main", "main")
             self.assertEqual(
                 [message["role"] for message in record["messages"]],
                 ["user", "assistant"],
@@ -363,9 +364,9 @@ class RuntimeTests(unittest.TestCase):
             child_info = manager.spawn(
                 parent_id=root.agent_id, name="worker", preset="main"
             )
-            self.assertIsNotNone(memory.load(child_info["agent_id"]))
+            self.assertIsNotNone(memory.load("main", child_info["agent_id"]))
             manager.delete(agent_id=child_info["agent_id"], reason="test")
-            self.assertIsNone(memory.load(child_info["agent_id"]))
+            self.assertIsNone(memory.load("main", child_info["agent_id"]))
 
     def test_enabled_capabilities_are_persisted(self):
         fixtures.write_echo_module(self.root)
@@ -374,7 +375,7 @@ class RuntimeTests(unittest.TestCase):
             manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
             root = manager.spawn_root(name="main", preset="main")
             manager.enable_module(root.agent_id, "echo")
-            record = memory.load("main")
+            record = memory.load("main", "main")
             self.assertIn("echo", record["modules"])
             self.assertIn("say", record["actions"])
 
