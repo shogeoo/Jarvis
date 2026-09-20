@@ -1,6 +1,0 @@
-{
-  "module_id": "speech_output",
-  "description": "Синтез и воспроизведение речи через Fish Audio. Действие возвращает обязательный ActionResult после озвучки.",
-  "execution": "in_process",
-  "teardown": "service.py:teardown"
-}

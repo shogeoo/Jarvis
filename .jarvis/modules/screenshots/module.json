@@ -1,5 +1,0 @@
-{
-  "module_id": "screenshots",
-  "description": "Создаёт PNG активного монитора Hyprland через screenshots.capture. Action возвращает подтверждение запуска, а handler обнаруживает новый файл в Images/Screenshots и рассылает событие screenshot.",
-  "execution": "in_process"
-}

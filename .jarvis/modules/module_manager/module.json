@@ -1,5 +1,0 @@
-{
-  "module_id": "module_manager",
-  "description": "Редактирование, тестирование, выключение и динамическое включение capabilities Jarvis.",
-  "execution": "in_process"
-}
