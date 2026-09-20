@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from jarvis.model_capabilities import ModelCapabilities
-from jarvis.protocol import (
+from jarvis.infrastructure.model_capabilities import ModelCapabilities
+from jarvis.core.protocol import (
     Event,
     InputPart,
     parse_actions,

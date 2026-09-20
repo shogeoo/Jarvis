@@ -1,0 +1,7 @@
+{
+  "module_id": "speech_output",
+  "description": "Синтез и воспроизведение речи через Fish Audio",
+  "entrypoint": "module.py",
+  "factory": "create_module",
+  "execution": "in_process"
+}
