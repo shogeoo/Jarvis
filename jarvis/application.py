@@ -8,6 +8,7 @@ from .core.prompts import read_environment_prompt
 from .core.registry import ActionRegistry, EventRegistry
 from .core.runtime import AgentManager, EventBus, register_core_protocol
 from .infrastructure.config import Config
+from .infrastructure.context import MemoryStore
 from .infrastructure.debug import Debugger
 from .infrastructure.model_capabilities import discover_model_capabilities
 from .modules.manager import ModuleManager
@@ -15,11 +16,12 @@ from .presets import PresetStore
 
 
 class JarvisApplication:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, *, memory: MemoryStore | None = None):
         if not config.llm_enabled:
             raise RuntimeError("LLM_MODEL не задан")
         self.config = config
         self.debug = Debugger(enabled=True)
+        self.memory = memory or MemoryStore(config.jarvis_dir / "memory")
         self.actions = ActionRegistry()
         self.events = EventRegistry()
         register_core_protocol(self.actions, self.events)
@@ -61,10 +63,11 @@ class JarvisApplication:
             services=self.services,
             debug=self.debug,
             capabilities=capabilities,
+            memory=self.memory,
         )
 
     def start(self) -> "JarvisApplication":
-        self.main_agent = self.agents.spawn_root(name="main", preset="main")
+        self.main_agent = self.agents.restore(name="main", preset="main")
         return self
 
     def stop(self) -> None:
