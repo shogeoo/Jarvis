@@ -11,7 +11,7 @@ from .infrastructure.config import Config
 from .infrastructure.context import MemoryStore
 from .infrastructure.debug import Debugger
 from .infrastructure.model_capabilities import discover_model_capabilities
-from .modules.manager import ModuleManager
+from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
 
 
@@ -27,11 +27,11 @@ class JarvisApplication:
         register_core_protocol(self.actions, self.events)
         self.bus = EventBus(self.events, debug=self.debug)
         self.services: dict = {}
-        self.modules = ModuleManager(
+        self.capabilities = CapabilityManager(
             self.bus,
             self.actions,
             self.events,
-            modules_dir=config.jarvis_dir / "modules",
+            root=config.jarvis_dir,
             config=config,
             debug=self.debug,
             services=self.services,
@@ -56,13 +56,13 @@ class JarvisApplication:
             actions=self.actions,
             events=self.events,
             bus=self.bus,
-            modules=self.modules,
+            capabilities=self.capabilities,
             presets=self.presets,
             environment_prompt=environment_prompt,
             config=config,
             services=self.services,
             debug=self.debug,
-            capabilities=capabilities,
+            model_capabilities=capabilities,
             memory=self.memory,
         )
 
@@ -72,6 +72,6 @@ class JarvisApplication:
 
     def stop(self) -> None:
         self.agents.begin_shutdown()
-        self.modules.shutdown()
+        self.capabilities.shutdown()
         self.client.close()
         self.agents.shutdown()

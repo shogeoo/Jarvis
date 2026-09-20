@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_CAPABILITY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,13 +17,15 @@ class AgentPreset:
     name: str
     person_prompt: str
     modules: tuple[str, ...]
+    actions: tuple[str, ...]
+    handlers: tuple[str, ...]
     protected: bool = False
 
 
 class PresetStore:
     """Читает пресеты с диска при каждом обращении.
 
-    Благодаря этому изменение ``modules.json`` применяется к уже работающим
+    Благодаря этому изменение ``capabilities.json`` применяется к уже работающим
     агентам на следующей безопасной границе их цикла.
     """
 
@@ -34,6 +37,17 @@ class PresetStore:
         if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise ValueError(f"Некорректное имя пресета: {name!r}")
 
+    @staticmethod
+    def validate_capability(kind: str, capability_id: str) -> None:
+        if kind == "module":
+            pattern = _NAME
+        elif kind in {"action", "handler"}:
+            pattern = _CAPABILITY
+        else:
+            raise ValueError(f"Неизвестный вид capability: {kind!r}")
+        if not isinstance(capability_id, str) or not pattern.fullmatch(capability_id):
+            raise ValueError(f"Некорректный {kind}: {capability_id!r}")
+
     def path(self, name: str) -> Path:
         self.validate_name(name)
         return self.root / name
@@ -44,19 +58,32 @@ class PresetStore:
             person_prompt = (path / "personprompt.txt").read_text(
                 encoding="utf-8"
             ).strip()
-            raw_modules = json.loads(
-                (path / "modules.json").read_text(encoding="utf-8")
+            raw = json.loads(
+                (path / "capabilities.json").read_text(encoding="utf-8")
             )
         except FileNotFoundError as exc:
             raise ValueError(f"Пресет не найден или неполон: {name}") from exc
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"Не удалось прочитать пресет {name}: {exc}") from exc
-        if not isinstance(raw_modules, list) or not all(
-            isinstance(item, str) and _NAME.fullmatch(item) for item in raw_modules
-        ):
-            raise ValueError(f"modules.json пресета {name} должен быть массивом строк")
-        if len(raw_modules) != len(set(raw_modules)):
-            raise ValueError(f"Пресет {name} содержит повторяющиеся модули")
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"capabilities.json пресета {name} должен быть объектом"
+            )
+        capabilities = {}
+        for kind in ("modules", "actions", "handlers"):
+            values = raw.get(kind, [])
+            singular = kind.rstrip("s") if kind != "modules" else "module"
+            if not isinstance(values, list) or not all(
+                isinstance(item, str) for item in values
+            ):
+                raise ValueError(
+                    f"capabilities.json пресета {name}: {kind} должен быть массивом строк"
+                )
+            for item in values:
+                self.validate_capability(singular, item)
+            if len(values) != len(set(values)):
+                raise ValueError(f"Пресet {name} содержит повторяющиеся {kind}")
+            capabilities[kind] = tuple(values)
         metadata_path = path / "preset.json"
         try:
             metadata = (
@@ -73,7 +100,9 @@ class PresetStore:
         return AgentPreset(
             name,
             person_prompt,
-            tuple(raw_modules),
+            capabilities["modules"],
+            capabilities["actions"],
+            capabilities["handlers"],
             metadata.get("protected", False),
         )
 
@@ -86,25 +115,29 @@ class PresetStore:
                 presets.append(self.load(path.name))
         return presets
 
-    def create(self, name: str, person_prompt: str, modules: list[str]) -> AgentPreset:
+    def create(
+        self,
+        name: str,
+        person_prompt: str,
+        capabilities: dict[str, list[str]] | None = None,
+    ) -> AgentPreset:
         self.validate_name(name)
         path = self.path(name)
-        if path.exists() and self.load(name).protected:
-            raise ValueError(f"Защищённый пресет {name} нельзя заменить")
+        if path.exists():
+            try:
+                existing = self.load(name)
+            except ValueError:
+                existing = None
+            if existing is not None and existing.protected:
+                raise ValueError(f"Защищённый пресет {name} нельзя заменить")
         if not person_prompt.strip():
             raise ValueError("personprompt не должен быть пустым")
-        if not all(
-            isinstance(module_id, str) and _NAME.fullmatch(module_id)
-            for module_id in modules
-        ):
-            raise ValueError("Список модулей содержит некорректный module_id")
-        if len(modules) != len(set(modules)):
-            raise ValueError("Список модулей содержит повторы")
+        normalized = self._normalize(capabilities or {})
         path.mkdir(parents=True, exist_ok=True)
         (path / "personprompt.txt").write_text(
             person_prompt.strip() + "\n", encoding="utf-8"
         )
-        self._write_modules(path, modules)
+        self._write_capabilities(path, normalized)
         return self.load(name)
 
     def delete(self, name: str) -> None:
@@ -121,18 +154,49 @@ class PresetStore:
                 raise ValueError(f"В пресете есть неизвестный каталог: {child}")
         path.rmdir()
 
-    def add_module(self, name: str, module_id: str) -> AgentPreset:
-        if not isinstance(module_id, str) or not _NAME.fullmatch(module_id):
-            raise ValueError(f"Некорректный module_id: {module_id!r}")
+    def add_capability(
+        self, name: str, kind: str, capability_id: str
+    ) -> AgentPreset:
+        self.validate_capability(kind, capability_id)
         preset = self.load(name)
-        if module_id in preset.modules:
+        key = {"module": "modules", "action": "actions", "handler": "handlers"}[kind]
+        current = getattr(preset, key)
+        if capability_id in current:
             return preset
-        self._write_modules(self.path(name), [*preset.modules, module_id])
+        normalized = {
+            "modules": list(preset.modules),
+            "actions": list(preset.actions),
+            "handlers": list(preset.handlers),
+        }
+        normalized[key].append(capability_id)
+        self._write_capabilities(self.path(name), self._normalize(normalized))
         return self.load(name)
 
+    @classmethod
+    def _normalize(
+        cls, capabilities: dict[str, list[str]]
+    ) -> dict[str, list[str]]:
+        normalized = {
+            "modules": list(capabilities.get("modules", [])),
+            "actions": list(capabilities.get("actions", [])),
+            "handlers": list(capabilities.get("handlers", [])),
+        }
+        for kind, values in (
+            ("module", normalized["modules"]),
+            ("action", normalized["actions"]),
+            ("handler", normalized["handlers"]),
+        ):
+            for item in values:
+                cls.validate_capability(kind, item)
+            if len(values) != len(set(values)):
+                raise ValueError("Список capabilities содержит повторы")
+        return normalized
+
     @staticmethod
-    def _write_modules(path: Path, modules: list[str]) -> None:
-        (path / "modules.json").write_text(
-            json.dumps(modules, ensure_ascii=False, indent=2) + "\n",
+    def _write_capabilities(
+        path: Path, capabilities: dict[str, list[str]]
+    ) -> None:
+        (path / "capabilities.json").write_text(
+            json.dumps(capabilities, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )

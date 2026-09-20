@@ -88,6 +88,7 @@ def actions_response_schema(action_schemas: Mapping[str, JSONSchema]) -> JSONSch
     for action_type, data_schema in sorted(action_schemas.items()):
         variant = object_schema(
             {
+                "action_id": {"type": "string"},
                 "type": {"type": "string", "enum": [action_type]},
                 "data": data_schema,
             }
@@ -309,6 +310,7 @@ class Event:
     reply_to: str | None = None
     parts: tuple[InputPart, ...] = ()
     module_id: str | None = None
+    handler_id: str | None = None
     id: str = field(default_factory=lambda: make_id("evt"))
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -348,6 +350,7 @@ class Event:
             "target": self.target,
             "reply_to": self.reply_to,
             "module_id": self.module_id,
+            "handler_id": self.handler_id,
             "created_at": self.created_at,
         }
 
@@ -358,10 +361,47 @@ class ActionRequest:
 
     type: str
     data: dict[str, Any]
-    id: str = field(default_factory=lambda: make_id("act"))
+    action_id: str
 
     def model_value(self) -> dict[str, Any]:
-        return {"type": self.type, "data": self.data}
+        return {"action_id": self.action_id, "type": self.type, "data": self.data}
+
+
+@dataclass(frozen=True, slots=True)
+class ActionResult:
+    """Обязательный результат конкретного действия для его инициатора."""
+
+    action_id: str
+    data: dict[str, Any]
+    agent_id: str | None = None
+    type: str = "action_result"
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+
+    def model_value(self) -> dict[str, Any]:
+        """Представление результата в одном сообщении контекста модели."""
+
+        return {
+            "type": self.type,
+            "action_id": self.action_id,
+            "data": self.data,
+        }
+
+    def model_content(self) -> str:
+        return json_text(self.model_value())
+
+    def model_message(self) -> dict[str, Any]:
+        return {"role": "user", "content": self.model_content()}
+
+    def debug_value(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "action_id": self.action_id,
+            "data": self.data,
+            "agent_id": self.agent_id,
+            "created_at": self.created_at,
+        }
 
 
 def parse_actions(value: Any) -> list[ActionRequest]:
@@ -379,16 +419,31 @@ def parse_actions(value: Any) -> list[ActionRequest]:
         raise ValueError("Ответ агента должен содержать непустой массив actions")
 
     actions: list[ActionRequest] = []
+    seen_action_ids: set[str] = set()
     for index, raw in enumerate(raw_actions):
-        if not isinstance(raw, dict) or set(raw) != {"type", "data"}:
+        if not isinstance(raw, dict) or set(raw) != {"action_id", "type", "data"}:
             raise ValueError(
-                f"Действие #{index + 1} должно содержать только type и data"
+                f"Действие #{index + 1} должно содержать только action_id, type и data"
             )
+        if (
+            not isinstance(raw["action_id"], str)
+            or not raw["action_id"].strip()
+        ):
+            raise ValueError(f"У действия #{index + 1} некорректный action_id")
+        if raw["action_id"] in seen_action_ids:
+            raise ValueError(
+                f"action_id повторяется в ответе: {raw['action_id']!r}"
+            )
+        seen_action_ids.add(raw["action_id"])
         if not isinstance(raw["type"], str) or not raw["type"]:
             raise ValueError(f"У действия #{index + 1} некорректный type")
         if not isinstance(raw["data"], dict):
             raise ValueError(f"У действия #{index + 1} data должен быть объектом")
-        actions.append(ActionRequest(type=raw["type"], data=raw["data"]))
+        actions.append(
+            ActionRequest(
+                type=raw["type"], data=raw["data"], action_id=raw["action_id"]
+            )
+        )
 
     no_action_count = sum(action.type == "no_action" for action in actions)
     if no_action_count and (no_action_count != 1 or len(actions) != 1):
