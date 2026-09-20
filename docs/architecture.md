@@ -8,18 +8,19 @@ jarvis/capabilities/     SDK, loader и isolated worker
 jarvis/presets/          стартовые конфигурации экземпляров
 jarvis/infrastructure/   LLM-конфигурация и диагностика
 jarvis/application.py    composition root
+master_prompt.txt        общее описание среды для всех агентов
 
 .jarvis/                  отдельный git-репозиторий runtime-данных
 .jarvis/actions/<action_id>.py
 .jarvis/handlers/<handler_id>.py
-.jarvis/modules/<module_id>/
+.jarvis/modules/<module_id>/module.py + actions/ + handlers/
 .jarvis/presets/<preset>/
 .jarvis/runtime/
 ```
 
 Ядро резервирует `no_action`, `structure_error`, `module_error`,
-`capability_error` и строгий тип результата `action_result`. Все остальные
-actions и events приходят из динамически загруженных деклараций.
+`capability_error`, `agents.message` и строгий тип результата `action_result`.
+Все остальные actions и events приходят из динамически загруженных деклараций.
 
 ## Цикл агента
 
@@ -87,7 +88,8 @@ Handler внешнего опроса использует broadcast. `agents.me
 
 ## Состояние capabilities экземпляра
 
-Preset содержит `capabilities.json`, но этот файл используется только при создании
+Preset содержит три JSON-перечисления (`modules.json`, `actions.json`,
+`handlers.json`), но эти файлы используются только при создании
 экземпляра. После запуска каждый агент владеет независимым набором включённых
 модулей, действий и handlers в оперативной памяти.
 
@@ -143,9 +145,11 @@ Module manager работает прямо с `.jarvis/`.
 
 ## Декларация и JSON-каталог
 
-Каждый файл действия возвращает `ActionDefinition` с описанием, строгой схемой
-аргументов и обязательной строгой схемой результата. Каждый файл handler
-возвращает `HandlerDefinition` со списком публикуемых событий.
+Каждый файл действия возвращает `ActionDefinition` без ID: описание, строгая
+схема аргументов и обязательная строгая схема результата. ID назначается
+загрузчиком из имени файла. Каждый файл handler возвращает `HandlerDefinition`
+с ровно одним событием. Обязательный `module.py` в корне модуля импортирует
+unit-файлы и агрегирует их определения; загрузчик сверяет покрытие файлов.
 
 Перед запросом к модели prompt builder группирует эти декларации по standalone
 действиям/handlers и модулям-контейнерам:
@@ -175,12 +179,12 @@ Module manager работает прямо с `.jarvis/`.
 ```
 
 Это единственное описание конкретных возможностей для обычного агента.
-Personprompt задаёт личность, а environment — общий протокол без перечня
-установленных модулей.
+Personprompt задаёт личность и цель, а мастер-промпт — общий протокол без перечня
+установленных возможностей.
 
 ## Зависимости и процессы
 
-Manifest поддерживает два режима.
+Поле `execution` в `module_definition()` поддерживает два режима.
 
 `in_process` предназначен для доверенного кода без конфликтующих зависимостей.
 Он импортируется в процесс Jarvis и может получать внутренние менеджеры через
@@ -188,14 +192,16 @@ HandlerContext и ActionContext.
 
 `isolated` предназначен для обычных интеграций:
 
-```json
-{
-  "execution": "isolated",
-  "requirements": "requirements.txt"
-}
+```python
+return module_definition(
+    "...",
+    (send_message.create_action(),),
+    (new_message.create_handler(),),
+    execution="isolated",
+)
 ```
 
-Внутри каталога создаётся отдельная `.venv`. Версии сторонних пакетов должны
+Файл `requirements.txt` рядом описывает зависимости. Внутри каталога создаётся отдельная `.venv`. Версии сторонних пакетов должны
 быть закреплены через `==`. Worker запускается Python этого окружения. Основной
 процесс получает описание, отправляет actions и принимает events по JSON Lines.
 Зависимости worker никогда не добавляются в `sys.path` Jarvis.
@@ -206,36 +212,42 @@ shutdown, затем при необходимости завершает всю
 
 ## Стандартные возможности
 
-- `agents` — экземпляры, сообщения и файловые presets;
-- `capability_control` — просмотр и доступ текущего экземпляра;
-- `module_manager` — редактирование, тестирование и выключение кода;
-- `speech_input` — входная речь, только handler;
+- `agents.*` — экземпляры, сообщения и файловые presets;
+- `capability_control.*` — просмотр и доступ текущего экземпляра;
+- `module_manager.*` — редактирование, тестирование и выключение кода;
+- `speech_input` — входная речь: handlers `microphone` и `errors` на общем пайплайне;
 - `speech_output` — озвучка с обязательным результатом после воспроизведения;
-- `screenshots` — action `screenshots.capture` возвращает подтверждение запуска,
-  handler публикует broadcast-событие `screenshot` (`data.text` — имя файла)
-  с отдельной image-частью, base64 в `data` нет;
+- `screenshots.capture` — снимок возвращается прямо в результате действия
+  отдельной image-частью, base64 в `data` нет;
 - `notify_send` — простое корневое действие десктопных уведомлений.
 
 ## Долговременная память
 
-`jarvis/infrastructure/context.py` (`MemoryStore`) хранит по одному файлу
-`.jarvis/memory/<agent_id>.json` на экземпляр агента. Запись содержит `agent_id`,
-`name`, `preset`, `parent_id`, сохранённый набор capabilities и историю сообщений
-без system message.
+```text
+memory/<preset_id>/agent.json
+memory/<preset_id>/context.json
+memory/<preset_id>/<agent_id>/agent.json
+memory/<preset_id>/<agent_id>/context.json
+```
+
+Корневой агент пресета хранится без подпапки `agent_id`. `agent.json` описывает
+экземпляр (имя, preset, родитель, набор capabilities), `context.json` содержит
+только историю сообщений без system message. Модальности кроме текста
+вырезаются при записи.
 
 ```text
 agent: event / assistant / module change
         ↓
 история + метаданные
         ↓
-атомарная запись .jarvis/memory/<agent_id>.json
+атомарная запись agent.json + context.json
 ```
 
 `AgentManager.restore` читает все записи, поднимает `main`, затем восстанавливает
 субагентов в порядке «родитель раньше ребёнка» с прежними `agent_id`, preset,
 capabilities и контекстом. Записи с отсутствующим родителем пропускаются и удаляются.
-Битые файлы игнорируются. `delete` агента удаляет его файл. Незавершённые
-действия при остановке удаляются из RAM и на диск не сохраняются. Каталог в `.gitignore`;
+Битые файлы игнорируются. `delete` агента удаляет его файлы. Незавершённые
+действия при остановке удаляются из RAM и на диск не сохраняются;
 пока файлы не удалены, контекст переживает перезапуск.
 
 Отдельного `system` нет. Ctrl+C сейчас напрямую запускает очистку runtime.
