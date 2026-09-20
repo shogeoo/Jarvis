@@ -19,6 +19,8 @@ class MemoryStoreTests(unittest.TestCase):
             "preset": "main",
             "parent_id": None,
             "modules": ["speech_output", "agents"],
+            "actions": ["say", "echo.repeat"],
+            "handlers": ["tick", "echo.monitor"],
             "messages": [
                 {"role": "user", "content": '{"type":"x","data":{}}'},
                 {"role": "assistant", "content": '{"actions":[]}'},
@@ -27,6 +29,8 @@ class MemoryStoreTests(unittest.TestCase):
         self.store.save(record)
         loaded = self.store.load("main")
         self.assertEqual(loaded["modules"], ["agents", "speech_output"])
+        self.assertEqual(loaded["actions"], ["echo.repeat", "say"])
+        self.assertEqual(loaded["handlers"], ["echo.monitor", "tick"])
         self.assertEqual(loaded["messages"], record["messages"])
         self.assertTrue((self.root / "main.json").is_file())
 

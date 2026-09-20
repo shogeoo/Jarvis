@@ -7,39 +7,43 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
-from jarvis.core.runtime import EventBus
+from jarvis.core.runtime import ActionResultTracker, EventBus
 from jarvis.infrastructure.debug import Debugger
-from jarvis.modules.manager import ModuleManager
 
 
-MODULE_CODE = '''
+ACTION_CODE = """
+from jarvis.capabilities import action_definition
 from jarvis.core.protocol import object_schema
-from jarvis.modules import ActionQueue, Module, action, event, event_handler
 
-tasks = ActionQueue()
 
-def run(ctx):
-    while not ctx.stop_event.is_set():
-        task = tasks.get()
-        if task is not None:
-            ctx.emit("isolated.done", {"value": task.data["value"]}, target=task.agent_id)
+def run(data, context):
+    return {"value": data["value"]}
 
-def stop(ctx):
-    tasks.clear()
-    tasks.close()
 
-def create_module():
-    done = event("isolated.done", "done", object_schema({"value": {"type": "string"}}))
-    handler = event_handler("isolated.worker", "worker", (done,), run, stop=stop)
-    return Module(
-        module_id="isolated",
-        description="isolated test",
-        actions=(action("isolated.run", "run", object_schema({"value": {"type": "string"}}), tasks.submit),),
-        handlers=(handler,),
+def create_action():
+    return action_definition(
+        "isolated.run",
+        "run",
+        object_schema({"value": {"type": "string"}}),
+        object_schema({"value": {"type": "string"}}),
+        run,
     )
-'''
+"""
+
+HANDLER_CODE = """
+from jarvis.capabilities import handler_definition
+
+
+def start(context):
+    context.stop_event.wait()
+
+
+def create_handler():
+    return handler_definition("isolated.idle", "idle", (), start)
+"""
 
 
 class _Agent:
@@ -48,32 +52,40 @@ class _Agent:
     preset = "test"
 
     def __init__(self):
-        self.events = []
+        self.results = []
 
-    def accepts_module(self, module_id):
-        return module_id == "isolated"
+    def enqueue_result(self, result):
+        self.results.append(result)
 
-    def enqueue(self, event):
-        self.events.append(event)
+
+class _Manager:
+    def __init__(self, agent):
+        self.agent = agent
+        self.debug = Debugger(enabled=False)
+        self.results = ActionResultTracker(debug=self.debug)
+
+    def deliver_result(self, result):
+        self.agent.enqueue_result(result)
+        return True
+
+    def report_capability_error(self, capability, error):
+        self.debug.log("capability_error", capability=capability, error=str(error))
 
 
 class IsolatedModuleTests(unittest.TestCase):
-    def test_local_venv_worker_returns_handler_event(self):
+    def test_isolated_worker_returns_action_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            module = root / "isolated"
+            module = root / "modules" / "isolated"
             (module / "actions").mkdir(parents=True)
             (module / "handlers").mkdir()
-            (module / "actions" / "__init__.py").write_text("", encoding="utf-8")
-            (module / "handlers" / "__init__.py").write_text("", encoding="utf-8")
-            (module / "module.py").write_text(MODULE_CODE, encoding="utf-8")
+            (module / "actions" / "run.py").write_text(ACTION_CODE, encoding="utf-8")
+            (module / "handlers" / "idle.py").write_text(HANDLER_CODE, encoding="utf-8")
             (module / "module.json").write_text(
                 json.dumps(
                     {
                         "module_id": "isolated",
                         "description": "isolated test",
-                        "entrypoint": "module.py",
-                        "factory": "create_module",
                         "execution": "isolated",
                     }
                 ),
@@ -86,28 +98,39 @@ class IsolatedModuleTests(unittest.TestCase):
             actions, events = ActionRegistry(), EventRegistry()
             bus = EventBus(events, debug=Debugger(enabled=False))
             config = SimpleNamespace(project_root=Path.cwd(), jarvis_dir=root)
-            manager = ModuleManager(
+            manager = CapabilityManager(
                 bus,
                 actions,
                 events,
-                modules_dir=root,
+                root=root,
                 config=config,
                 debug=Debugger(enabled=False),
             )
-            agent = _Agent()
-            bus.bind(agent)
+            fake = _Manager(_Agent())
+            bus.manager = fake
+            agent = fake.agent
+            agent.results.clear()
             try:
-                manager.load("isolated", start_handlers=True)
+                manager.load_module("isolated", start_handlers=True)
                 spec = actions.require("isolated.run")
                 manager.dispatch(
-                    action=ActionRequest("isolated.run", {"value": "ok"}),
+                    action=ActionRequest(
+                        "isolated.run", {"value": "ok"}, "run-1"
+                    ),
                     spec=spec,
                     agent=agent,
                 )
-                deadline = time.time() + 3
-                while not agent.events and time.time() < deadline:
+                deadline = time.time() + 5
+                while not agent.results and time.time() < deadline:
                     time.sleep(0.01)
-                self.assertEqual(agent.events[0].model_value(), {"type": "isolated.done", "data": {"value": "ok"}})
+                self.assertEqual(
+                    agent.results[0].model_value(),
+                    {
+                        "type": "action_result",
+                        "action_id": "run-1",
+                        "data": {"value": "ok"},
+                    },
+                )
             finally:
                 manager.shutdown()
 
