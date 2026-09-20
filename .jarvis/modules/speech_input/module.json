@@ -1,7 +1,6 @@
 {
   "module_id": "speech_input",
   "description": "Микрофон, VAD и локальное распознавание речи",
-  "entrypoint": "module.py",
-  "factory": "create_module",
-  "execution": "in_process"
+  "execution": "in_process",
+  "prepare": "cuda.py:prepare_cuda_env"
 }

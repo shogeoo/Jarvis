@@ -1,15 +1,14 @@
-"""Action, который запускает hyprshot fire-and-forget.
-
-Команда отсоединяется double-fork: родитель никого не ждёт, зомби-процессов
-не остаётся, таймаутов и проверок кода возврата нет.
-"""
+"""Action, который запускает hyprshot и возвращает подтверждение."""
 
 import os
 from datetime import datetime
 from pathlib import Path
 
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
 
-def build_capture(data, context):
+
+def run(data, context):
     directory = Path.home() / "Images" / "Screenshots"
     directory.mkdir(parents=True, exist_ok=True)
     filename = datetime.now().strftime("%Y-%m-%d-%H%M%S_jarvis.png")
@@ -23,7 +22,7 @@ def build_capture(data, context):
     pid = os.fork()
     if pid != 0:
         os.waitpid(pid, 0)
-        return
+        return {"accepted": True, "filename": filename}
     try:
         os.setsid()
         if os.fork() != 0:
@@ -35,3 +34,21 @@ def build_capture(data, context):
         os.execvp(argv[0], argv)
     except BaseException:
         os._exit(127)
+
+
+def create_action():
+    return action_definition(
+        "screenshots.capture",
+        "Запустить hyprshot для активного монитора и сохранить PNG в "
+        "~/Images/Screenshots с именем YYYY-MM-DD-HHMMSS_jarvis.png. "
+        "Возвращает подтверждение запуска и имя файла; сам снимок позже "
+        "приходит отдельным событием screenshot от handler.",
+        object_schema({}),
+        object_schema(
+            {
+                "accepted": {"type": "boolean"},
+                "filename": {"type": "string"},
+            }
+        ),
+        run,
+    )
