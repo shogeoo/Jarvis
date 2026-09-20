@@ -14,11 +14,16 @@ from pathlib import Path
 from typing import Any
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_CAPABILITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9][A-Za-z0-9_-]*)?$")
 _VERSION = 1
 
 
 def valid_name(value: Any) -> bool:
     return isinstance(value, str) and bool(_NAME.fullmatch(value))
+
+
+def valid_capability(value: Any) -> bool:
+    return isinstance(value, str) and bool(_CAPABILITY.fullmatch(value))
 
 
 def _valid_message(message: Any) -> bool:
@@ -114,6 +119,16 @@ class MemoryStore:
             valid_name(item) for item in modules
         ):
             modules = []
+        actions = raw.get("actions", [])
+        if not isinstance(actions, list) or not all(
+            valid_capability(item) for item in actions
+        ):
+            actions = []
+        handlers = raw.get("handlers", [])
+        if not isinstance(handlers, list) or not all(
+            valid_capability(item) for item in handlers
+        ):
+            handlers = []
         name = raw.get("name")
         preset = raw.get("preset")
         return {
@@ -122,6 +137,8 @@ class MemoryStore:
             "preset": preset if valid_name(preset) else "main",
             "parent_id": parent_id,
             "modules": sorted(set(modules)),
+            "actions": sorted(set(actions)),
+            "handlers": sorted(set(handlers)),
             "messages": [
                 message for message in messages if _valid_message(message)
             ],

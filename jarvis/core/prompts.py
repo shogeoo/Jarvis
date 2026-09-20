@@ -36,21 +36,17 @@ def agent_system_prompt(
     environment_prompt: str,
     action_specs: dict[str, Any],
     event_specs: dict[str, Any],
-    module_catalog: list[dict[str, Any]],
+    capability_catalog: dict[str, Any],
     *,
-    capabilities: ModelCapabilities | None = None,
+    model_capabilities: ModelCapabilities | None = None,
 ) -> str:
     """Собрать systemprompt из постоянных и динамических частей."""
 
-    module_action_names = {
-        action["type"]
-        for module in module_catalog
-        for action in module["actions"]
+    standalone_action_ids = {
+        action["type"] for action in capability_catalog.get("actions", [])
     }
-    module_event_names = {
-        event["type"]
-        for module in module_catalog
-        for event in module["events"]
+    standalone_event_types = {
+        event["type"] for event in capability_catalog.get("events", [])
     }
     catalog = {
         "core_protocol": {
@@ -58,21 +54,43 @@ def agent_system_prompt(
                 {
                     name: spec
                     for name, spec in action_specs.items()
-                    if name not in module_action_names
+                    if name not in standalone_action_ids
+                    and name
+                    not in {
+                        action["type"]
+                        for module in capability_catalog.get("modules", [])
+                        for action in module["actions"]
+                    }
                 }
             ),
             "events": _event_catalog(
                 {
                     name: spec
                     for name, spec in event_specs.items()
-                    if name not in module_event_names
+                    if name not in standalone_event_types
+                    and name
+                    not in {
+                        event["type"]
+                        for module in capability_catalog.get("modules", [])
+                        for event in module["events"]
+                    }
                 }
             ),
+            "action_result": {
+                "type": "action_result",
+                "action_id": "строка, выбранная моделью в действии",
+                "data": "объект по схеме результата конкретного действия",
+            },
         },
-        "modules": module_catalog,
+        "standalone": {
+            "actions": capability_catalog.get("actions", []),
+            "handlers": capability_catalog.get("handlers", []),
+            "events": capability_catalog.get("events", []),
+        },
+        "modules": capability_catalog.get("modules", []),
     }
     parts = [person_prompt.strip(), environment_prompt.strip()]
-    if capabilities is not None:
-        parts.append(capabilities.prompt_block())
-    parts.append("Доступный контракт модулей:\n" + json_text(catalog, indent=2))
+    if model_capabilities is not None:
+        parts.append(model_capabilities.prompt_block())
+    parts.append("Доступный контракт capabilities:\n" + json_text(catalog, indent=2))
     return "\n\n".join(part for part in parts if part)
