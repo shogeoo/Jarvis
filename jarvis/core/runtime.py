@@ -9,6 +9,7 @@ import threading
 import traceback
 from typing import Any
 
+from ..infrastructure.context import MemoryStore
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
 from ..modules.api import ActionSpec, EventDefinition
@@ -136,6 +137,7 @@ class Agent:
         *,
         parent_id: str | None = None,
         enabled_modules: set[str] | None = None,
+        restored_messages: list[dict[str, Any]] | None = None,
     ):
         self.agent_id = agent_id
         self.name = name
@@ -145,7 +147,8 @@ class Agent:
         self._enabled_modules = set(enabled_modules or ())
         self._modules_lock = threading.RLock()
         self.history: list[dict[str, Any]] = [
-            {"role": "system", "content": ""}
+            {"role": "system", "content": ""},
+            *[dict(message) for message in (restored_messages or ())],
         ]
         self._events: "queue.Queue[Event | None]" = queue.Queue()
         self._stop = threading.Event()
@@ -170,16 +173,33 @@ class Agent:
     def enable_module(self, module_id: str) -> None:
         with self._modules_lock:
             self._enabled_modules.add(module_id)
+        self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
         with self._modules_lock:
             self._enabled_modules.discard(module_id)
+        self._persist_context()
 
     def accepts_module(self, module_id: str) -> bool:
         try:
             return module_id in self.modules()
         except ValueError:
             return False
+
+    def memory_record(self) -> dict[str, Any]:
+        """Снимок экземпляра для долговременной памяти."""
+
+        return {
+            "agent_id": self.agent_id,
+            "name": self.name,
+            "preset": self.preset,
+            "parent_id": self.parent_id,
+            "modules": sorted(self.modules()),
+            "messages": list(self.history[1:]),
+        }
+
+    def _persist_context(self) -> None:
+        self.manager.persist_agent(self)
 
     def _contract(
         self,
@@ -267,6 +287,7 @@ class Agent:
         for event in events:
             self.history.append(event.model_message(self.manager.capabilities))
             self.manager.debug.input(event, self.manager.capabilities)
+        self._persist_context()
 
         try:
             specs, _ = self._contract(module_ids)
@@ -290,6 +311,7 @@ class Agent:
                 return
 
             self.history.append({"role": "assistant", "content": content})
+            self._persist_context()
             self.manager.debug.model(self.agent_id, content)
             if refusal:
                 self._append_structure_error(
@@ -335,6 +357,7 @@ class Agent:
         )
         self.history.append(event.model_message(self.manager.capabilities))
         self.manager.debug.input(event, self.manager.capabilities)
+        self._persist_context()
 
     def _model_failure(self, exc: Exception) -> None:
         self.manager.debug.log(
@@ -383,6 +406,7 @@ class AgentManager:
         services: dict[str, Any] | None = None,
         debug: Debugger | None = None,
         capabilities: ModelCapabilities | None = None,
+        memory: MemoryStore | None = None,
     ):
         self.model = model
         self.client = client
@@ -396,6 +420,7 @@ class AgentManager:
         self.services = services if services is not None else {}
         self.capabilities = capabilities
         self.debug = debug or Debugger(enabled=False)
+        self.memory = memory
         self.stopping = threading.Event()
         self.processes = ProcessManager()
         self.services.setdefault("process_manager", self.processes)
@@ -419,6 +444,102 @@ class AgentManager:
 
         return self._spawn(name=name, preset=preset, parent_id=None, primary=True)
 
+    def restore(self, *, name: str, preset: str) -> Agent:
+        """Поднять экземпляры из памяти или создать новый корневой агент."""
+
+        records = self.memory.load_all() if self.memory is not None else []
+        if not records:
+            return self.spawn_root(name=name, preset=preset)
+        return self._restore(records, default_name=name, default_preset=preset)
+
+    def _restore(
+        self, records: list[dict[str, Any]], *, default_name: str, default_preset: str
+    ) -> Agent:
+        primary = next(
+            (
+                record
+                for record in records
+                if record["agent_id"] == "main" and record["parent_id"] is None
+            ),
+            None,
+        )
+        if primary is None:
+            primary = next(
+                (record for record in records if record["parent_id"] is None),
+                {
+                    "agent_id": "main",
+                    "name": default_name,
+                    "preset": default_preset,
+                    "parent_id": None,
+                    "modules": [],
+                    "messages": [],
+                },
+            )
+        try:
+            main_agent = self._spawn_record(primary, primary=True)
+        except Exception as exc:  # noqa: BLE001
+            self.debug.log(
+                "memory_restore_failed",
+                agent_id=primary.get("agent_id"),
+                error=str(exc),
+            )
+            if self.memory is not None:
+                self.memory.delete(primary.get("agent_id", "main"))
+            return self.spawn_root(name=default_name, preset=default_preset)
+
+        spawned = {main_agent.agent_id}
+        remaining = [
+            record for record in records if record["agent_id"] != main_agent.agent_id
+        ]
+        progress = True
+        while remaining and progress:
+            progress = False
+            for record in list(remaining):
+                if record["parent_id"] in spawned:
+                    try:
+                        self._spawn_record(record, primary=False)
+                    except Exception as exc:  # noqa: BLE001
+                        self.debug.log(
+                            "memory_restore_failed",
+                            agent_id=record["agent_id"],
+                            error=str(exc),
+                        )
+                    else:
+                        spawned.add(record["agent_id"])
+                    remaining.remove(record)
+                    progress = True
+        for record in remaining:
+            self.debug.log(
+                "memory_restore_skipped",
+                agent_id=record["agent_id"],
+                reason="missing_parent",
+            )
+            if self.memory is not None:
+                self.memory.delete(record["agent_id"])
+        return main_agent
+
+    def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
+        modules = record.get("modules") or None
+        if modules is not None:
+            try:
+                self.modules.load_many(set(modules), start_handlers=False)
+            except Exception as exc:  # noqa: BLE001
+                self.debug.log(
+                    "memory_modules_fallback",
+                    agent_id=record["agent_id"],
+                    error=str(exc),
+                )
+                modules = None
+        return self._spawn(
+            name=record["name"],
+            preset=record["preset"],
+            parent_id=record["parent_id"],
+            primary=primary,
+            agent_id=record["agent_id"],
+            modules_override=set(modules) if modules is not None else None,
+            restored_messages=record["messages"],
+        )
+
     def spawn(self, *, parent_id: str, name: str, preset: str) -> dict[str, Any]:
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
@@ -432,44 +553,70 @@ class AgentManager:
         preset: str,
         parent_id: str | None,
         primary: bool = False,
+        agent_id: str | None = None,
+        modules_override: set[str] | None = None,
+        restored_messages: list[dict[str, Any]] | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Имя агента не должно быть пустым")
         selected = self.presets.load(preset)
-        initial_modules = set(selected.modules)
+        initial_modules = (
+            set(modules_override)
+            if modules_override is not None
+            else set(selected.modules)
+        )
         self.modules.load_many(initial_modules, start_handlers=False)
         with self._lock:
-            agent_id = "main" if primary else self._new_id()
-            if agent_id in self.agents:
-                raise ValueError("Экземпляр main уже существует")
+            if primary:
+                resolved_id = "main"
+            elif agent_id is not None:
+                resolved_id = agent_id
+            else:
+                resolved_id = self._new_id()
+            if resolved_id in self.agents:
+                raise ValueError(f"Экземпляр {resolved_id} уже существует")
             agent = Agent(
-                agent_id,
+                resolved_id,
                 name.strip(),
                 preset,
                 self,
                 parent_id=parent_id,
                 enabled_modules=initial_modules,
+                restored_messages=restored_messages,
             )
-            self.agents[agent_id] = agent
+            self.agents[resolved_id] = agent
             self.bus.bind(agent)
             if primary and self.primary_agent_id is None:
-                self.primary_agent_id = agent_id
+                self.primary_agent_id = resolved_id
         try:
             agent.start()
             self.modules.start_many(initial_modules)
         except Exception:
             with self._lock:
-                self.agents.pop(agent_id, None)
-                if self.primary_agent_id == agent_id:
+                self.agents.pop(resolved_id, None)
+                if self.primary_agent_id == resolved_id:
                     self.primary_agent_id = None
-            self.bus.unbind(agent_id)
+            self.bus.unbind(resolved_id)
             for module_id in initial_modules:
                 if not self.agents_with_module(module_id):
                     self.modules.unload(module_id)
             raise
+        self.persist_agent(agent)
         return agent
+
+    def persist_agent(self, agent: Agent) -> None:
+        """Сохранить метаданные и контекст экземпляра в память."""
+
+        if self.memory is None:
+            return
+        try:
+            self.memory.save(agent.memory_record())
+        except Exception as exc:  # noqa: BLE001
+            self.debug.log(
+                "memory_save_error", agent_id=agent.agent_id, error=str(exc)
+            )
 
     def require_agent(self, agent_id: str) -> Agent:
         agent = self.agents.get(agent_id)
@@ -495,6 +642,8 @@ class AgentManager:
         for module_id in module_ids:
             if not self.agents_with_module(module_id):
                 self.modules.unload(module_id)
+        if self.memory is not None:
+            self.memory.delete(agent_id)
         return {"agent_id": agent_id, "deleted": True, "reason": reason}
 
     @staticmethod
