@@ -1,0 +1,7 @@
+{
+  "module_id": "notify",
+  "description": "Отправляет десктопные уведомления через notify-send в демон SwayNC. Action notify.send показывает текстовое уведомление от имени Jarvis; выполнение fire-and-forget, событие результата не предусмотрено.",
+  "entrypoint": "module.py",
+  "factory": "create_module",
+  "execution": "in_process"
+}
