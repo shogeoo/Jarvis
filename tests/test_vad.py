@@ -1,10 +1,14 @@
+import importlib
 import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from jarvis.vad import Segmenter
+from jarvis.core.registry import ActionRegistry, EventRegistry
+from jarvis.core.runtime import EventBus
+from jarvis.infrastructure.debug import Debugger
+from jarvis.modules.manager import ModuleManager
 
 
 class _VAD:
@@ -19,9 +23,29 @@ class _VAD:
 
 
 class VadTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        events = EventRegistry()
+        actions = ActionRegistry()
+        bus = EventBus(events, debug=Debugger(enabled=False))
+        cls.manager = ModuleManager(
+            bus,
+            actions,
+            events,
+            modules_dir=Path(".jarvis/modules"),
+            debug=Debugger(enabled=False),
+        )
+        cls.manager.load("speech_input", start_handlers=False)
+        package = cls.manager._loaded["speech_input"].python_module.__name__
+        cls.vad = importlib.import_module(package + ".vad")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.manager.unload("speech_input")
+
     def test_segmenter_signals_speech_onset_before_transcription(self):
         with tempfile.TemporaryDirectory() as directory:
-            segmenter = Segmenter(
+            segmenter = self.vad.Segmenter(
                 _VAD([True, True]),
                 out_dir=Path(directory),
                 pre_roll=0,

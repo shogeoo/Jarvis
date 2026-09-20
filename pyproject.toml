@@ -4,14 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis"
-description = "Jarvis — голосовой ассистент: parec -> VAD -> faster-whisper -> LLM -> Fish Audio TTS"
+description = "Jarvis — модульная event-thinking-action система"
 readme = "README.md"
 requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = [
-    "faster-whisper>=1.1",
-    "numpy>=1.26",
-    "onnxruntime>=1.20",
     "openai>=1.0",
     "python-dotenv>=1.0",
     "requests>=2.31",
@@ -19,7 +16,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+speech = [
+    "faster-whisper>=1.1",
+    "numpy>=1.26",
+    "onnxruntime>=1.20",
+]
 cuda = [
+    "faster-whisper>=1.1",
+    "numpy>=1.26",
+    "onnxruntime>=1.20",
     "nvidia-cublas-cu12",
     "nvidia-cudnn-cu12",
 ]
