@@ -93,7 +93,7 @@ cp .env.example .env
 Action не публикует события. Падение действия не вешает поток, но и не создаёт
 автоматического результата: результат обязано вернуть само действие.
 
-Снимок экрана — обычное действие `screenshot`: PNG возвращается прямо
+Снимок экрана — обычное действие `take_screenshot`: PNG возвращается прямо
 в `ActionResult` отдельной `image_url`-частью того же сообщения, base64 в `data`
 нет.
 
@@ -190,9 +190,9 @@ Module manager работает прямо в `.jarvis/`; его рабочие 
 используется только для единиц модуля (`<module_id>.<unit_id>`):
 
 ```text
-.jarvis/actions/notify_send/
+.jarvis/actions/send_notification/
   action.py            # run(data, context) + create_action()
-.jarvis/actions/screenshot/
+.jarvis/actions/take_screenshot/
   action.py
 .jarvis/handlers/computer_is_on/
   handler.py           # start(context) + create_handler()
