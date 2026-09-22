@@ -212,9 +212,9 @@ actions, events и результатами по JSON Lines.
 - `list_agent_presets` — файловые пресеты;
 - `list_capabilities`, `list_active_capabilities`, `enable_capability`,
   `disable_capability` — просмотр и доступ текущего экземпляра;
-- `screenshot` — снимок возвращается прямо в результате действия отдельной
-  image-частью, base64 в `data` нет;
-- `notify_send` — десктопные уведомления.
+- `take_screenshot` — снимок возвращается прямо в результате действия
+  отдельной image-частью, base64 в `data` нет;
+- `send_notification` — десктопные уведомления.
 
 Пресет `module_manager` пока не имеет собственных инструментов (кроме
 `send_message_to_agent`) — они будут предоставлены отдельно.
