@@ -519,7 +519,7 @@ def main(argv=None) -> int:
             except Exception as exc:  # noqa: BLE001
                 _send(
                     {
-                        "kind": "module_error",
+                        "kind": "capability_error",
                         "agent_id": agent_id,
                         "action_id": action_id,
                         "error": str(exc),
@@ -581,7 +581,7 @@ def main(argv=None) -> int:
                 selected.start(selected_context)
             except Exception as exc:  # noqa: BLE001
                 if not stop.is_set():
-                    _send({"kind": "module_error", "error": str(exc)})
+                    _send({"kind": "capability_error", "error": str(exc)})
 
         thread = threading.Thread(target=run_handler, daemon=True)
         thread.start()
@@ -615,7 +615,7 @@ def main(argv=None) -> int:
             if spec is None:
                 _send(
                     {
-                        "kind": "module_error",
+                        "kind": "capability_error",
                         "agent_id": message.get("agent_id"),
                         "action_id": message.get("action_id"),
                         "error": f"Неизвестное действие: {message.get('type')}",

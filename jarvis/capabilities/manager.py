@@ -439,7 +439,7 @@ class CapabilityManager:
                 kind = message.get("kind")
                 if kind == "rpc":
                     self._handle_rpc(host, message)
-                elif kind == "module_error":
+                elif kind == "capability_error":
                     self._report_error(host.key, message.get("error", ""))
                     if message.get("action_id"):
                         self._discard_pending(
