@@ -101,7 +101,10 @@ class DebugTests(unittest.TestCase):
     def test_subagent_error_is_red_even_for_subagent(self):
         output = _Tty()
         debug = Debugger(stream=output)
-        event = Event(type="module_error", data={"module_id": "x", "error": "boom"})
+        event = Event(
+            type="capability_error",
+            data={"capability": "module:x", "error": "boom"},
+        )
         debug.input(event, agent_id="agent-001")
         self.assertIn("\033[31m", output.getvalue())
         self.assertNotIn("\033[33m", output.getvalue())

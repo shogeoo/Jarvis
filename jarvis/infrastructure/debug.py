@@ -13,9 +13,7 @@ _SUB_COLOR = "\033[33m"  # жёлтый: субагенты и их handlers
 _ERROR_COLOR = "\033[31m"  # красный: structure_error и иные ошибки
 _RESET = "\033[0m"
 
-_ERROR_EVENT_TYPES = frozenset(
-    {"structure_error", "module_error", "capability_error"}
-)
+_ERROR_EVENT_TYPES = frozenset({"structure_error", "capability_error"})
 
 
 class Debugger:
@@ -28,8 +26,7 @@ class Debugger:
 
     Сломанный (невалидный) ответ модели в консоль не выводится вовсе:
     модель видит только structure_error, содержащий его текст.
-    structure_error, module_error и capability_error подсвечиваются
-    красным.
+    structure_error и capability_error подсвечиваются красным.
 
     Между любыми двумя JSON-блоками — пустая строка. Всё, что связано
     с main, печатается зелёным; субагенты (включая их handlers и

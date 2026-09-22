@@ -68,19 +68,6 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
-            type="module_error",
-            description="Необработанная ошибка в коде подключаемого модуля.",
-            data_schema=object_schema(
-                {
-                    "module_id": {"type": "string"},
-                    "error": {"type": "string"},
-                }
-            ),
-        ),
-        owner="core",
-    )
-    events.register(
-        EventDefinition(
             type="message_from_agent",
             description=(
                 "Адресное сообщение от другого агента. from_agent_id и from_name "
@@ -100,7 +87,10 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     events.register(
         EventDefinition(
             type="capability_error",
-            description="Необработанная ошибка в коде отдельной capability.",
+            description=(
+                "Необработанная ошибка в коде capability: действия, handler "
+                "или модуля. capability содержит идентификатор источника."
+            ),
             data_schema=object_schema(
                 {
                     "capability": {"type": "string"},
@@ -1137,15 +1127,8 @@ class AgentManager:
         self, capability: str, error: Exception | str
     ) -> None:
         target = self.primary_agent_id
-        if capability.startswith("module:"):
-            event_type = "module_error"
-            data = {
-                "module_id": capability.removeprefix("module:"),
-                "error": str(error),
-            }
-        else:
-            event_type = "capability_error"
-            data = {"capability": capability, "error": str(error)}
+        event_type = "capability_error"
+        data = {"capability": capability, "error": str(error)}
         if target is None:
             self.debug.log(event_type, **data)
             return

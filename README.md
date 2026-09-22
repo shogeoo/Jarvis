@@ -103,8 +103,8 @@ Action не публикует события. Падение действия �
 
 ```json
 {
-  "type":"module_error",
-  "data":{"module_id":"telegram","error":"текст ошибки"}
+  "type":"capability_error",
+  "data":{"capability":"module:telegram","error":"текст ошибки"}
 }
 ```
 
