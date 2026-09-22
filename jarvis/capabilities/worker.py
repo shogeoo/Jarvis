@@ -103,7 +103,7 @@ def _unit_entries(directory: Path) -> list[Path]:
         for child in directory.iterdir()
         if child.is_dir()
         and not child.name.startswith(".")
-        and _UNIT_NAME.fullmatch(child.name)
+        and _SIMPLE.fullmatch(child.name)
     )
 
 
@@ -349,7 +349,7 @@ def load_unit(root: Path, rel: Path) -> _Unit:
     if len(parts) == 2 and parts[0] in {"actions", "handlers"}:
         kind = "action" if parts[0] == "actions" else "handler"
         unit_id = parts[1]
-        if not _UNIT_NAME.fullmatch(unit_id):
+        if not _SIMPLE.fullmatch(unit_id):
             raise ValueError(f"Некорректный id единицы: {unit_id!r}")
         return _load_leaf(root, rel, kind, unit_id)
     if len(parts) == 2 and parts[0] == "modules":

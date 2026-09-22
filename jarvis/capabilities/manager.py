@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import subprocess
+import sys
 import threading
 import venv
 from dataclasses import dataclass, field
@@ -42,6 +44,8 @@ from .api import (
 DEFAULT_ROOT = DEFAULT_JARVIS_DIR
 _ENTRYPOINTS = {"action": "action.py", "handler": "handler.py", "module": "module.py"}
 _DIRS = {"action": "actions", "handler": "handlers", "module": "modules"}
+# Точка в ID корневой единицы запрещена: она означает единицу модуля.
+_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
 @dataclass(slots=True)
@@ -130,16 +134,12 @@ class CapabilityManager:
     # --- пути и обнаружение ------------------------------------------
     @staticmethod
     def validate_module_id(module_id: str) -> None:
-        if not isinstance(module_id, str) or not module_id:
-            raise ValueError(f"Некорректный module_id: {module_id!r}")
-        if "/" in module_id or "\\" in module_id or module_id.startswith("."):
+        if not isinstance(module_id, str) or not _NAME.fullmatch(module_id):
             raise ValueError(f"Некорректный module_id: {module_id!r}")
 
     @staticmethod
     def validate_unit_id(unit_id: str, *, kind: str) -> None:
-        if not isinstance(unit_id, str) or not unit_id:
-            raise ValueError(f"Некорректный {kind}: {unit_id!r}")
-        if "/" in unit_id or "\\" in unit_id or ".." in unit_id.split("."):
+        if not isinstance(unit_id, str) or not _NAME.fullmatch(unit_id):
             raise ValueError(f"Некорректный {kind}: {unit_id!r}")
 
     def _unit_path(self, kind: str, unit_id: str) -> Path:
@@ -265,13 +265,12 @@ class CapabilityManager:
 
     # --- процесс единицы ---------------------------------------------
     def _python(self, path: Path) -> Path:
+        """Окружение единицы; без собственного .venv используется ядро."""
+
         python = path / ".venv" / "bin" / "python"
-        if not python.is_file():
-            raise ValueError(
-                f"У единицы {path.name} нет .venv. Подготовь окружение "
-                "(действие module_manager.prepare_environment)."
-            )
-        return python
+        if python.is_file():
+            return python
+        return Path(sys.executable)
 
     def _worker_command(self, kind: str, unit_id: str) -> list[str]:
         path = self._unit_path(kind, unit_id)
@@ -599,24 +598,24 @@ class CapabilityManager:
         if kind == "module":
             return self.validate_module(capability_id)
         if kind == "action":
+            if "." in capability_id:
+                module_id = capability_id.split(".", 1)[0]
+                if module_id in self.existing_modules():
+                    raise ValueError(
+                        f"Часть модуля нельзя проверить отдельно: {capability_id!r}"
+                    )
             if self.action_path(capability_id).is_dir():
                 return self.validate_action(capability_id)
-            if "." in capability_id:
-                module_id, _ = capability_id.split(".", 1)
-                if module_id in self.existing_modules():
-                    raise ValueError(
-                        f"Часть модуля нельзя проверить отдельно: {capability_id!r}"
-                    )
             raise ValueError(f"Действие не найдено: {capability_id}")
         if kind == "handler":
-            if self.handler_path(capability_id).is_dir():
-                return self.validate_handler(capability_id)
             if "." in capability_id:
-                module_id, _ = capability_id.split(".", 1)
+                module_id = capability_id.split(".", 1)[0]
                 if module_id in self.existing_modules():
                     raise ValueError(
                         f"Часть модуля нельзя проверить отдельно: {capability_id!r}"
                     )
+            if self.handler_path(capability_id).is_dir():
+                return self.validate_handler(capability_id)
             raise ValueError(f"Handler не найден: {capability_id}")
         raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
@@ -686,14 +685,15 @@ class CapabilityManager:
             if start_handlers:
                 self.start_action(action_id)
             return self._action_summary(existing.definition, existing.path)
-        path = self.action_path(action_id)
+        path = self.actions_dir / action_id
+        if "." in action_id:
+            module_id = action_id.split(".", 1)[0]
+            if module_id in self.existing_modules():
+                raise ValueError(
+                    f"Часть модуля нельзя загрузить отдельно: {action_id!r}"
+                )
+            raise ValueError(f"Действие не найдено: {action_id}")
         if not path.is_dir():
-            if "." in action_id:
-                module_id, _ = action_id.split(".", 1)
-                if module_id in self.existing_modules():
-                    raise ValueError(
-                        f"Часть модуля нельзя загрузить отдельно: {action_id!r}"
-                    )
             raise ValueError(f"Действие не найдено: {action_id}")
         catalog = self._describe("action", action_id)
         items = catalog["actions"]
@@ -729,14 +729,15 @@ class CapabilityManager:
             if start_handlers:
                 self.start_handler(handler_id)
             return self._handler_summary(existing.definition, existing.path)
-        path = self.handler_path(handler_id)
+        path = self.handlers_dir / handler_id
+        if "." in handler_id:
+            module_id = handler_id.split(".", 1)[0]
+            if module_id in self.existing_modules():
+                raise ValueError(
+                    f"Часть модуля нельзя загрузить отдельно: {handler_id!r}"
+                )
+            raise ValueError(f"Handler не найден: {handler_id}")
         if not path.is_dir():
-            if "." in handler_id:
-                module_id, _ = handler_id.split(".", 1)
-                if module_id in self.existing_modules():
-                    raise ValueError(
-                        f"Часть модуля нельзя загрузить отдельно: {handler_id!r}"
-                    )
             raise ValueError(f"Handler не найден: {handler_id}")
         catalog = self._describe("handler", handler_id)
         items = catalog["handlers"]
@@ -1273,8 +1274,6 @@ class _AgentApi:
         manager = self._manager
         sender = manager.require_agent(sender_id)
         target = manager.require_agent(target_id)
-        if action_type not in target.standalone_actions():
-            raise ValueError("Получатель не принимает сообщения агентов")
         manager.bus.publish(
             Event(
                 type="agents.message",

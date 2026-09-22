@@ -161,10 +161,15 @@ def module_definition(
     )
 
 
-def input_part(type: str, mime_type: str, base64_data: str) -> InputPart:
-    """Создать мультимодальную часть результата или события."""
+def input_part(
+    type: str, mime_type: str, base64_data: str, name: str = ""
+) -> InputPart:
+    """Создать мультимодальную часть результата или события.
 
-    return InputPart(type=type, mime_type=mime_type, data=base64_data)
+    ``name`` используется для file-частей как имя файла.
+    """
+
+    return InputPart(type=type, mime_type=mime_type, data=base64_data, name=name)
 
 
 @dataclass(slots=True)

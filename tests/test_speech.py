@@ -70,6 +70,11 @@ class SpeechProtocolTests(unittest.TestCase):
         self.assertTrue(TTS_REFERENCE.is_file())
         self.assertTrue(TTS_REFERENCE_TEXT.is_file())
 
+    def test_speech_event_carries_text_only(self):
+        event = self.events.get("speech_detected")
+        self.assertIsNotNone(event)
+        self.assertEqual(list(event.data_schema["properties"]), ["text"])
+
 
 class CoreDispatchTests(unittest.TestCase):
     def manager(self, root):
@@ -94,7 +99,7 @@ class CoreDispatchTests(unittest.TestCase):
                 with patch.object(
                     speech_service,
                     "speak_result",
-                    return_value={"spoken": True, "text": "привет", "error": None},
+                    return_value={"status": "successful"},
                 ):
                     manager.dispatch(
                         action=ActionRequest("speech", {"text": "привет"}, "sp-1"),
@@ -109,20 +114,16 @@ class CoreDispatchTests(unittest.TestCase):
                     {
                         "type": "action_result",
                         "action_id": "sp-1",
-                        "data": {"spoken": True, "text": "привет", "error": None},
+                        "data": {"status": "successful"},
                     },
                 )
             finally:
                 manager.shutdown()
 
-    def test_unavailable_speech_degrades_to_error_result(self):
+    def test_unavailable_speech_fails_action(self):
         self.assertFalse(speech_service.available)
-        result = speech_service.speak_result("тест")
-        self.assertEqual(
-            result,
-            {"spoken": False, "text": "тест", "error": "speech_unavailable"},
-        )
-
+        with self.assertRaisesRegex(RuntimeError, "speech_unavailable"):
+            speech_service.speak_result("тест")
 
 if __name__ == "__main__":
     unittest.main()

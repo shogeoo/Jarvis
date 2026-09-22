@@ -111,15 +111,17 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         ActionDefinition(
             id="speech",
             description=(
-                "Озвучить text и вернуть обязательный результат: spoken после "
-                "воспроизведения, error при сбое, отключении или прерывании."
+                "Озвучить text и вернуть статус озвучки. status равен "
+                "successful после воспроизведения или interrupted, если "
+                "реплика была прервана новой речью пользователя."
             ),
             args_schema=object_schema({"text": {"type": "string"}}),
             result_schema=object_schema(
                 {
-                    "spoken": {"type": "boolean"},
-                    "text": {"type": "string"},
-                    "error": {"type": ["string", "null"]},
+                    "status": {
+                        "type": "string",
+                        "enum": ["successful", "interrupted"],
+                    }
                 }
             ),
             run=_speech_action_run,
@@ -130,16 +132,10 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         EventDefinition(
             type="speech_detected",
             description=(
-                "Речь пользователя с микрофона. text содержит распознанную "
-                "реплику; error содержит фоновую ошибку микрофона, VAD или "
-                "распознавания, и тогда text пуст."
+                "Речь пользователя с микрофона: text содержит распознанную "
+                "реплику."
             ),
-            data_schema=object_schema(
-                {
-                    "text": {"type": "string"},
-                    "error": {"type": ["string", "null"]},
-                }
-            ),
+            data_schema=object_schema({"text": {"type": "string"}}),
         ),
         owner="core:speech",
     )
@@ -823,6 +819,12 @@ class AgentManager:
     def spawn(self, *, parent_id: str, name: str, preset: str) -> dict[str, Any]:
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
+        selected = self.presets.load(preset)
+        if selected.protected:
+            raise ValueError(
+                f"Пресет {preset} защищён: у него может существовать только "
+                "корневой экземпляр"
+            )
         agent = self._spawn(name=name, preset=preset, parent_id=parent_id)
         return self.describe(agent)
 

@@ -24,15 +24,20 @@ class ModelCapabilitiesTests(unittest.TestCase):
             "provider/model", "https://openrouter.ai/api/v1", "secret"
         )
 
-        self.assertEqual(capabilities.input_modalities, ("text", "image", "audio"))
+        self.assertEqual(
+            capabilities.input_modalities, ("text", "image", "audio", "file")
+        )
         get.assert_called_once()
 
     @patch("jarvis.infrastructure.model_capabilities.requests.get", side_effect=OSError("offline"))
-    def test_uses_safe_text_only_fallback(self, get):
+    def test_falls_back_to_all_modalities_without_catalog(self, get):
         capabilities = discover_model_capabilities(
             "provider/model", "https://openrouter.ai/api/v1", "secret"
         )
-        self.assertEqual(capabilities.input_modalities, ("text",))
+        self.assertEqual(
+            capabilities.input_modalities,
+            ("text", "image", "audio", "video", "file"),
+        )
         self.assertIn("offline", capabilities.discovery_error)
 
     def test_prompt_explains_unsupported_native_modalities(self):
@@ -41,7 +46,7 @@ class ModelCapabilitiesTests(unittest.TestCase):
         prompt = ModelCapabilities("model", ("text", "image")).prompt_block()
 
         self.assertIn("Текущие поддерживаемые модальности: text, image", prompt)
-        self.assertIn("Нативно не поддерживаются: audio, video", prompt)
+        self.assertIn("Нативно не поддерживаются: audio, video, file", prompt)
 
 
 if __name__ == "__main__":

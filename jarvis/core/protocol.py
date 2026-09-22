@@ -34,7 +34,7 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject
 
 JSON = Any
 JSONSchema = dict[str, Any]
-INPUT_MODALITIES = ("text", "image", "audio", "video")
+INPUT_MODALITIES = ("text", "image", "audio", "video", "file")
 
 
 def make_id(prefix: str) -> str:
@@ -279,6 +279,7 @@ class InputPart:
     type: str
     mime_type: str
     data: str
+    name: str = ""
 
     def __post_init__(self) -> None:
         if self.type not in INPUT_MODALITIES or self.type == "text":
@@ -295,6 +296,13 @@ class InputPart:
             return {
                 "type": "input_audio",
                 "input_audio": {"data": self.data, "format": audio_format},
+            }
+        if self.type == "file":
+            extension = self.mime_type.split("/", 1)[-1].split(";", 1)[0]
+            filename = self.name or f"document.{extension}"
+            return {
+                "type": "file",
+                "file": {"filename": filename, "file_data": url},
             }
         return {"type": "video_url", "video_url": {"url": url}}
 

@@ -28,6 +28,7 @@ class Pipeline:
         self.mic = None
         self.segmenter = None
         self.worker = None
+        self.listener = None
         self.queue: "queue.Queue[dict | None]" = queue.Queue()
         self.cleanup_lock = threading.Lock()
         self.interrupt_speech: Callable[[], None] | None = None
@@ -91,12 +92,12 @@ class Pipeline:
                 FRAME_SIZE,
                 STT_INPUT_DEVICE,
             ).start()
-            listener = threading.Thread(
+            self.listener = threading.Thread(
                 target=self._listen,
                 name="jarvis-speech-listener",
                 daemon=True,
             )
-            listener.start()
+            self.listener.start()
 
     def _emit(self, kind: str, data: dict) -> None:
         with self.cleanup_lock:
@@ -108,15 +109,17 @@ class Pipeline:
                 pass
 
     def _listen(self) -> None:
-        while self.mic is not None:
+        while True:
+            mic = self.mic
+            segmenter = self.segmenter
+            if mic is None or segmenter is None:
+                return
             try:
-                frame = self.mic.frames.get(timeout=0.1)
+                frame = mic.frames.get(timeout=0.1)
             except queue.Empty:
                 continue
-            except AttributeError:
-                return
-            segment = self.segmenter.feed(frame)
-            if self.segmenter.consume_speech_started():
+            segment = segmenter.feed(frame)
+            if segmenter.consume_speech_started():
                 interrupt = self.interrupt_speech
                 if interrupt is not None:
                     try:
@@ -148,10 +151,13 @@ class Pipeline:
 
     def _cleanup_locked(self):
         mic, self.mic = self.mic, None
-        segmenter, self.segmenter = self.segmenter, None
         worker, self.worker = self.worker, None
+        listener, self.listener = self.listener, None
+        segmenter, self.segmenter = self.segmenter, None
         if mic is not None:
             mic.stop()
+        if listener is not None and listener is not threading.current_thread():
+            listener.join(timeout=2)
         if segmenter is not None:
             self._discard(segmenter.flush())
         self.queue.put(None)

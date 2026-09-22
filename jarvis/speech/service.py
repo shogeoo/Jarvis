@@ -62,17 +62,13 @@ class SpeechService:
                 detach.append(
                     pipe.attach(
                         "speech",
-                        lambda data: emit(
-                            {"text": data["text"], "error": None}
-                        ),
+                        lambda data: emit({"text": data["text"]}),
                     )
                 )
                 detach.append(
                     pipe.attach(
                         "error",
-                        lambda data: emit(
-                            {"text": "", "error": data["message"]}
-                        ),
+                        lambda data: self._log_stt_error(debug, data["message"]),
                     )
                 )
             except Exception as exc:  # noqa: BLE001
@@ -87,22 +83,23 @@ class SpeechService:
             print("Речь: инициализация завершена.", flush=True)
 
     def speak_result(self, text: str) -> dict[str, Any]:
-        text = (text or "").strip()
+        """Озвучить text. Результат — только статус; сбой является ошибкой."""
+
         if not self.available or self._speaker is None:
-            return {"spoken": False, "text": text, "error": "speech_unavailable"}
+            raise RuntimeError("speech_unavailable")
+        text = (text or "").strip()
+        if not text:
+            return {"status": "successful"}
+        speaker = self._speaker
         try:
-            result = self._speaker.submit(text).result()
+            result = speaker.submit(text).result()
         except SpeechInterrupted:
-            return {"spoken": False, "text": text, "error": "interrupted"}
+            return {"status": "interrupted"}
         except Exception as exc:  # noqa: BLE001
-            return {"spoken": False, "text": text, "error": str(exc)}
-        if isinstance(result, dict):
-            return {
-                "spoken": bool(result.get("spoken", True)),
-                "text": text,
-                "error": result.get("error"),
-            }
-        return {"spoken": True, "text": text, "error": None}
+            raise RuntimeError(f"speech_failed: {exc}") from exc
+        if isinstance(result, dict) and result.get("error"):
+            raise RuntimeError(f"speech_failed: {result['error']}")
+        return {"status": "successful"}
 
     def interrupt(self) -> None:
         with self._lock:
@@ -122,6 +119,14 @@ class SpeechService:
                 pass
         if speaker is not None:
             speaker.stop()
+
+    @staticmethod
+    def _log_stt_error(debug: Any, message: str) -> None:
+        """Фоновые ошибки STT видны только в логах, не модели."""
+
+        if debug is not None:
+            debug.log("speech_stt_error", error=message)
+        print(f"Ошибка речи: {message}", file=sys.stderr, flush=True)
 
     @staticmethod
     def _report(debug: Any, event: str, exc: Exception) -> None:
