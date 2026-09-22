@@ -3,11 +3,8 @@ __pycache__/
 *.pyc
 .idea/
 .env
-segments/
-models/silero_vad.onnx
-*.wav
 *.egg-info/
 build/
 dist/
-.jarvis/
-*.s2voice
+.assistant/
+:memory:.ses
