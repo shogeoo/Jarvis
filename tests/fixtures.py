@@ -153,9 +153,16 @@ def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     main = root / "presets" / "main"
     main.mkdir(parents=True, exist_ok=True)
     (main / "personprompt.txt").write_text("main\n", encoding="utf-8")
+    (main / "preset.json").write_text('{"protected": true}\n', encoding="utf-8")
     (main / "modules.json").write_text("[]\n", encoding="utf-8")
     (main / "actions.json").write_text('["say"]\n', encoding="utf-8")
     (main / "handlers.json").write_text('["tick"]\n', encoding="utf-8")
+    worker = root / "presets" / "worker"
+    worker.mkdir(parents=True, exist_ok=True)
+    (worker / "personprompt.txt").write_text("worker\n", encoding="utf-8")
+    (worker / "modules.json").write_text("[]\n", encoding="utf-8")
+    (worker / "actions.json").write_text('["say"]\n', encoding="utf-8")
+    (worker / "handlers.json").write_text('["tick"]\n', encoding="utf-8")
     return root
 
 

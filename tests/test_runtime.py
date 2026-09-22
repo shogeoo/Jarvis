@@ -318,12 +318,21 @@ class RuntimeTests(unittest.TestCase):
         client = _Client([_no_action("done-1")])
         manager = self.manager(client)
         first = manager.spawn_root(name="main", preset="main")
-        second_info = manager.spawn(parent_id=first.agent_id, name="other", preset="main")
+        second_info = manager.spawn(parent_id=first.agent_id, name="other", preset="worker")
         second = manager.require_agent(second_info["agent_id"])
         manager.enable_action(first.agent_id, "clock")
         self.assertIn("clock", first.standalone_actions())
         self.assertNotIn("clock", second.standalone_actions())
         self.assertEqual(self.presets.load("main").actions, ("say",))
+
+    def test_protected_preset_cannot_be_spawned(self):
+        manager = self.manager(_Client([_no_action("done-1")]))
+        agent = manager.spawn_root(name="main", preset="main")
+        with self.assertRaisesRegex(ValueError, "защищён"):
+            manager.spawn(parent_id=agent.agent_id, name="copy", preset="main")
+        self.assertEqual(
+            [item["agent_id"] for item in manager.list_agents()], ["main"]
+        )
 
     def test_main_uses_reserved_main_agent_id(self):
         manager = self.manager(_Client([_no_action("done-1")]))
@@ -359,7 +368,7 @@ class RuntimeTests(unittest.TestCase):
             first = self.manager(_Client([_no_action("done-1")]), memory=memory)
             root = first.spawn_root(name="main", preset="main")
             child_info = first.spawn(
-                parent_id=root.agent_id, name="worker", preset="main"
+                parent_id=root.agent_id, name="worker", preset="worker"
             )
             child = first.require_agent(child_info["agent_id"])
             self.publish(child, "child task")
@@ -371,7 +380,7 @@ class RuntimeTests(unittest.TestCase):
             recreated = second.require_agent(child_info["agent_id"])
             self.assertEqual(recreated.parent_id, root.agent_id)
             self.assertEqual(recreated.name, "worker")
-            self.assertEqual(recreated.preset, "main")
+            self.assertEqual(recreated.preset, "worker")
             self.assertIn(
                 "child task",
                 json.dumps(recreated.history, ensure_ascii=False),
@@ -383,11 +392,11 @@ class RuntimeTests(unittest.TestCase):
             manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
             root = manager.spawn_root(name="main", preset="main")
             child_info = manager.spawn(
-                parent_id=root.agent_id, name="worker", preset="main"
+                parent_id=root.agent_id, name="worker", preset="worker"
             )
-            self.assertIsNotNone(memory.load("main", child_info["agent_id"]))
+            self.assertIsNotNone(memory.load("worker", child_info["agent_id"]))
             manager.delete(agent_id=child_info["agent_id"], reason="test")
-            self.assertIsNone(memory.load("main", child_info["agent_id"]))
+            self.assertIsNone(memory.load("worker", child_info["agent_id"]))
 
     def test_enabled_capabilities_are_persisted(self):
         fixtures.write_echo_module(self.root)

@@ -8,7 +8,7 @@ from typing import Any
 import requests
 
 
-SUPPORTED_INPUT_MODALITIES = ("text", "image", "audio", "video")
+SUPPORTED_INPUT_MODALITIES = ("text", "image", "audio", "video", "file")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,14 +48,15 @@ def discover_model_capabilities(
 ) -> ModelCapabilities:
     """Получить input_modalities из ``GET /models``.
 
-    При недоступности каталога используется безопасный text-only режим: ядро
-    не передаст модели бинарные мультимодальные данные, если не знает, что она
-    их поддерживает.
+    Если провайдер не вернул список входных модальностей (нет base_url,
+    модели нет в каталоге, нет поля input_modalities, ошибка запроса),
+    считается, что модель поддерживает все модальности: ядро не станет
+    урезать возможности модели из-за неполного каталога.
     """
 
     model_name = model or "unknown"
     if not base_url:
-        return ModelCapabilities(model_name, ("text",), "LLM_BASE_URL не задан")
+        return ModelCapabilities(model_name, SUPPORTED_INPUT_MODALITIES, "LLM_BASE_URL не задан")
     endpoint = base_url.rstrip("/") + "/models"
     headers = {"Authorization": f"Bearer {api_key}" if api_key else ""}
     headers = {name: value for name, value in headers.items() if value}
@@ -79,6 +80,6 @@ def discover_model_capabilities(
         )
         if "text" not in modalities:
             modalities = ("text",) + modalities
-        return ModelCapabilities(model_name, modalities[:4])
+        return ModelCapabilities(model_name, modalities)
     except (OSError, ValueError, requests.RequestException) as exc:
-        return ModelCapabilities(model_name, ("text",), str(exc))
+        return ModelCapabilities(model_name, SUPPORTED_INPUT_MODALITIES, str(exc))

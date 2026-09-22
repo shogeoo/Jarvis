@@ -62,7 +62,7 @@ class ApplicationTests(unittest.TestCase):
                     other = app.agents.spawn(
                         parent_id=app.main_agent.agent_id,
                         name="other",
-                        preset="main",
+                        preset="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
                     disabled = app.capabilities.disable_for_edit(

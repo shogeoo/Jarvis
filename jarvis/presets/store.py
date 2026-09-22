@@ -9,7 +9,8 @@ from pathlib import Path
 
 
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_CAPABILITY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)?$")
+# Точка в корневом действии/handler запрещена: она означает единицу модуля.
+_CAPABILITY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
 @dataclass(frozen=True, slots=True)

@@ -46,10 +46,11 @@ cp .env.example .env
 .venv/bin/jarvis
 ```
 
-Каждая capability-единица в `.jarvis` самодостаточна: у неё свой `.env`,
-`requirements.txt` и `.venv`. Новые единицы создаёт module_manager-агент,
-который сам подготавливает окружение; готовые окружения создаются действием
-`module_manager.prepare_environment`.
+Каждая capability-единица в `.jarvis` самодостаточна: свой `.env`,
+`requirements.txt` и при необходимости `.venv`. Собственное окружение
+не обязательно: без него единица исполняется интерпретатором Jarvis. Новые
+единицы создаёт module_manager-агент (его инструменты будут предоставлены
+отдельно).
 
 ## Event/action цикл
 
@@ -92,7 +93,7 @@ cp .env.example .env
 Action не публикует события. Падение действия не вешает поток, но и не создаёт
 автоматического результата: результат обязано вернуть само действие.
 
-Снимок экрана — обычное действие `screenshots.capture`: PNG возвращается прямо
+Снимок экрана — обычное действие `screenshot`: PNG возвращается прямо
 в `ActionResult` отдельной `image_url`-частью того же сообщения, base64 в `data`
 нет. Модальности кроме текста между перезапусками не сохраняются.
 
@@ -151,16 +152,22 @@ memory/<preset_id>/<agent_id>/context.json
 агента удаляет его файлы памяти. Незавершённые действия при остановке просто
 удаляются из RAM и на диск не сохраняются.
 
-Main получает через действия `capability_control.*`:
+Управляющие действия есть только у main:
 
-- список всех capabilities на диске;
-- свой текущий активный список;
-- включение существующего модуля, действия или handler себе;
-- выключение capability у себя.
+- `list_capabilities` — все capabilities на диске;
+- `list_active_capabilities` — текущий активный список main;
+- `enable_capability` — включить модуль, действие или handler себе;
+- `disable_capability` — выключить capability у себя.
+
+Включение или выключение main записывает изменение в защищённый пресет main.
+Экземпляр пресета main может существовать только один — корневой агент;
+создать субагента с пресетом main нельзя.
 
 ## Создание и редактирование
 
-Module manager работает прямо в `.jarvis/`.
+Module manager работает прямо в `.jarvis/`; его рабочие инструменты будут
+предоставлены отдельно, сейчас пресет содержит только общение с родителем
+через `send_message_to_agent`.
 
 При редактировании он сначала глобально выключает capability: runtime, handlers,
 очереди и workers очищаются из RAM всех экземпляров, файлы остаются. После
@@ -174,13 +181,14 @@ Module manager работает прямо в `.jarvis/`.
 ## Формат capability
 
 Каждая capability-единица — самодостаточный каталог со своим entrypoint,
-`.env`, `requirements.txt` и `.venv`. Имя каталога задаёт ID, в коде ID
-не пишутся:
+`.env`, `requirements.txt` и при необходимости `.venv`. Имя каталога задаёт ID,
+в коде ID не пишутся. Точка в имени корневой единицы запрещена: точка
+используется только для единиц модуля (`<module_id>.<unit_id>`):
 
 ```text
 .jarvis/actions/notify_send/
   action.py            # run(data, context) + create_action()
-.jarvis/actions/screenshots.capture/
+.jarvis/actions/screenshot/
   action.py
 .jarvis/handlers/computer_is_on/
   handler.py           # start(context) + create_handler()
