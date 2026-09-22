@@ -1,15 +1,42 @@
-import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from jarvis.capabilities.manager import CapabilityManager
+from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
-from jarvis.core.runtime import EventBus
+from jarvis.core.runtime import ActionResultTracker, EventBus
 from jarvis.infrastructure.debug import Debugger
 from jarvis.presets import PresetStore
 
 import fixtures
+
+
+class _Agent:
+    agent_id = "agent-001"
+    name = "test"
+    preset = "test"
+
+    def __init__(self):
+        self.results = []
+
+    def enqueue_result(self, result):
+        self.results.append(result)
+
+
+class _Manager:
+    def __init__(self, agent):
+        self.agent = agent
+        self.debug = Debugger(enabled=False)
+        self.results = ActionResultTracker(debug=self.debug)
+
+    def deliver_result(self, result):
+        self.agent.enqueue_result(result)
+        return True
+
+    def report_capability_error(self, capability, error):
+        self.debug.log("capability_error", capability=capability, error=str(error))
 
 
 class CapabilityTests(unittest.TestCase):
@@ -26,27 +53,45 @@ class CapabilityTests(unittest.TestCase):
         )
         return manager, actions, events
 
+    def dispatch(self, manager, action_id, data, action_key="run-1"):
+        agent = _Agent()
+        fake = _Manager(agent)
+        manager.event_bus.manager = fake
+        manager.dispatch(
+            action=ActionRequest(action_id, data, action_key),
+            spec=manager.actions.require(action_id),
+            agent=agent,
+        )
+        deadline = time.time() + 5
+        while not agent.results and time.time() < deadline:
+            time.sleep(0.01)
+        return agent.results
+
     def test_standalone_action_loads_runs_and_unloads(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
             manager, actions, events = self.manager(root)
             try:
-                summary = manager.load_action("say", start_handlers=False)
+                summary = manager.load_action("say", start_handlers=True)
                 self.assertEqual(summary["id"], "say")
                 self.assertEqual(
                     summary["result_schema"]["properties"]["spoken"],
                     {"type": "boolean"},
-                )
-                spec = actions.require("say")
-                self.assertEqual(
-                    spec.run({"text": "ok"}, None),
-                    {"spoken": True, "text": "ok"},
                 )
                 self.assertIn(
                     "say", actions.for_capabilities(modules=set(), actions={"say"})
                 )
                 self.assertNotIn(
                     "say", actions.for_capabilities(modules=set(), actions=set())
+                )
+                results = self.dispatch(manager, "say", {"text": "ok"})
+                self.assertEqual(
+                    results[0].model_value(),
+                    {
+                        "type": "action_result",
+                        "action_id": "run-1",
+                        "data": {"spoken": True, "text": "ok"},
+                    },
                 )
             finally:
                 manager.shutdown()
@@ -57,19 +102,21 @@ class CapabilityTests(unittest.TestCase):
             fixtures.write_echo_module(root)
             manager, actions, events = self.manager(root)
             try:
-                summary = manager.load_module("echo", start_handlers=False)
+                summary = manager.load_module("echo", start_handlers=True)
                 self.assertEqual(summary["module_id"], "echo")
                 self.assertEqual(
                     [action["id"] for action in summary["actions"]],
                     ["echo.repeat"],
                 )
-                spec = actions.require("echo.repeat")
-                self.assertEqual(
-                    spec.run({"value": "ok"}, None), {"value": "ok"}
-                )
                 self.assertIn(
                     "echo.echoed",
                     events.for_capabilities(modules={"echo"}, handlers=set()),
+                )
+                results = self.dispatch(
+                    manager, "echo.repeat", {"value": "ok"}
+                )
+                self.assertEqual(
+                    results[0].model_value()["data"], {"value": "ok"}
                 )
             finally:
                 manager.shutdown()
@@ -90,7 +137,9 @@ class CapabilityTests(unittest.TestCase):
     def test_hardcoded_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
-            (root / "actions" / "bad.py").write_text(
+            fixtures.write_action(
+                root / "actions",
+                "bad",
                 "from dataclasses import replace\n"
                 "from jarvis.capabilities import action_definition\n"
                 "from jarvis.core.protocol import object_schema\n"
@@ -98,7 +147,6 @@ class CapabilityTests(unittest.TestCase):
                 "    return {}\n"
                 "def create_action():\n"
                 "    return replace(action_definition('t', {}, {}, run), id='bad')\n",
-                encoding="utf-8",
             )
             manager, actions, events = self.manager(root)
             try:
@@ -146,8 +194,7 @@ class CapabilityTests(unittest.TestCase):
             (module / "requirements.txt").write_text("requests>=2\n", encoding="utf-8")
             manager, actions, events = self.manager(root)
             with self.assertRaisesRegex(ValueError, "закреплены"):
-                manager.create_environment("echo")
-            self.assertFalse((module / ".venv").exists())
+                manager.create_environment("module", "echo")
 
 
 if __name__ == "__main__":

@@ -133,10 +133,10 @@ class RuntimeTests(unittest.TestCase):
         )
 
     def write_action(self, action_id, args_schema, result_schema, run_body):
-        path = self.root / "actions" / f"{action_id}.py"
-        path.write_text(
+        fixtures.write_action(
+            self.root / "actions",
+            action_id,
             _action_file(args_schema, result_schema, run_body),
-            encoding="utf-8",
         )
 
     def action_results(self, agent):
@@ -200,12 +200,33 @@ class RuntimeTests(unittest.TestCase):
         manager.enable_action(agent.agent_id, "fail")
         manager.enable_action(agent.agent_id, "next")
         self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        values = [
-            json.loads(message["content"])
-            for message in client.chat.completions.calls[1]["messages"]
-            if message["role"] == "user"
-        ]
+
+        def snapshot():
+            values = {}
+            for call in client.chat.completions.calls:
+                for message in call["messages"]:
+                    if message["role"] != "user":
+                        continue
+                    item = json.loads(message["content"])
+                    values[(item["type"], item.get("action_id"))] = item
+            values = list(values.values())
+            has_error = any(
+                item["type"] == "capability_error" for item in values
+            )
+            has_result = any(
+                item["type"] == "action_result"
+                and item["action_id"] == "next-1"
+                for item in values
+            )
+            return values if has_error and has_result else None
+
+        deadline = time.time() + 5
+        values = None
+        while time.time() < deadline and values is None:
+            values = snapshot()
+            if values is None:
+                time.sleep(0.01)
+        self.assertIsNotNone(values)
         error = next(item for item in values if item["type"] == "capability_error")
         self.assertEqual(error["data"]["capability"], "action:fail")
         results = [item for item in values if item["type"] == "action_result"]

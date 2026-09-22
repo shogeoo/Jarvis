@@ -18,7 +18,7 @@ class MemoryStoreTests(unittest.TestCase):
             "name": "main",
             "preset": "main",
             "parent_id": None,
-            "modules": ["speech_output", "agents"],
+            "modules": ["alpha", "beta"],
             "actions": ["say", "echo.repeat"],
             "handlers": ["tick", "echo.monitor"],
             "messages": [
@@ -32,7 +32,7 @@ class MemoryStoreTests(unittest.TestCase):
     def test_round_trip_keeps_metadata_and_messages(self):
         self.store.save(self.record())
         loaded = self.store.load("main", "main")
-        self.assertEqual(loaded["modules"], ["agents", "speech_output"])
+        self.assertEqual(loaded["modules"], ["alpha", "beta"])
         self.assertEqual(loaded["actions"], ["echo.repeat", "say"])
         self.assertEqual(loaded["handlers"], ["echo.monitor", "tick"])
         self.assertEqual(

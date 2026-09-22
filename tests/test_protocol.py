@@ -14,10 +14,10 @@ from jarvis.core.protocol import (
 
 class ProtocolTests(unittest.TestCase):
     def test_event_is_one_compact_model_value(self):
-        event = Event(type="speech", data={"text": "Привет"})
+        event = Event(type="sample", data={"text": "Привет"})
         self.assertEqual(
             json.loads(event.model_content()),
-            {"type": "speech", "data": {"text": "Привет"}},
+            {"type": "sample", "data": {"text": "Привет"}},
         )
 
     def test_multimodal_event_is_one_message_and_filters_unsupported_parts(self):
@@ -56,7 +56,7 @@ class ProtocolTests(unittest.TestCase):
                 {
                     "actions": [
                         {"action_id": "one", "type": "no_action", "data": {}},
-                        {"action_id": "two", "type": "speech", "data": {}},
+                        {"action_id": "two", "type": "sample", "data": {}},
                     ]
                 }
             )
@@ -69,7 +69,7 @@ class ProtocolTests(unittest.TestCase):
                     "required": [],
                     "additionalProperties": False,
                 },
-                "speech": {
+                "sample": {
                     "type": "object",
                     "properties": {"text": {"type": "string"}},
                     "required": ["text"],
@@ -82,7 +82,7 @@ class ProtocolTests(unittest.TestCase):
                 {
                     "actions": [
                         {"action_id": "one", "type": "no_action", "data": {}},
-                        {"action_id": "two", "type": "speech", "data": {}},
+                        {"action_id": "two", "type": "sample", "data": {}},
                     ]
                 },
                 schema,
@@ -95,12 +95,12 @@ class ProtocolTests(unittest.TestCase):
                     "actions": [
                         {
                             "action_id": "say-1",
-                            "type": "speech",
+                            "type": "sample",
                             "data": {"text": "one"},
                         },
                         {
                             "action_id": "say-1",
-                            "type": "speech",
+                            "type": "sample",
                             "data": {"text": "two"},
                         },
                     ]
@@ -110,7 +110,7 @@ class ProtocolTests(unittest.TestCase):
     def test_strict_action_schema_rejects_unknown_arguments(self):
         schema = response_format(
             {
-                "speech": {
+                "sample": {
                     "type": "object",
                     "properties": {"text": {"type": "string"}},
                     "required": ["text"],
@@ -124,7 +124,7 @@ class ProtocolTests(unittest.TestCase):
                     "actions": [
                         {
                             "action_id": "say-1",
-                            "type": "speech",
+                            "type": "sample",
                             "data": {"text": "x", "extra": 1},
                         }
                     ]

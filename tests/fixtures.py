@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 
@@ -92,8 +94,8 @@ def create_handler():
 ECHO_MODULE = """
 from jarvis.capabilities import module_definition
 
-from .actions.repeat import create_action as repeat
-from .handlers.monitor import create_handler as monitor
+from .actions.repeat.action import create_action as repeat
+from .handlers.monitor.handler import create_handler as monitor
 
 
 def create_module():
@@ -105,20 +107,49 @@ def create_module():
 """
 
 
+def link_environment(unit_dir: Path, python: str | None = None) -> Path:
+    """Создать .venv/bin/python единицы симлинком на текущий интерпретатор."""
+
+    bin_dir = Path(unit_dir) / ".venv" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    target = bin_dir / "python"
+    if not target.exists():
+        os.symlink(python or sys.executable, target)
+    return target
+
+
+def write_action(
+    actions_dir: Path, action_id: str, code: str, python: str | None = None
+) -> Path:
+    unit = Path(actions_dir) / action_id
+    unit.mkdir(parents=True, exist_ok=True)
+    (unit / "action.py").write_text(code, encoding="utf-8")
+    link_environment(unit, python)
+    return unit
+
+
+def write_handler(
+    handlers_dir: Path, handler_id: str, code: str, python: str | None = None
+) -> Path:
+    unit = Path(handlers_dir) / handler_id
+    unit.mkdir(parents=True, exist_ok=True)
+    (unit / "handler.py").write_text(code, encoding="utf-8")
+    link_environment(unit, python)
+    return unit
+
+
 def write_master_prompt(project_root: Path) -> Path:
     path = Path(project_root) / "master_prompt.txt"
     path.write_text("environment\n{modalities}\n", encoding="utf-8")
     return path
 
 
-def write_jarvis_root(root: Path) -> Path:
+def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     root = Path(root)
     actions = root / "actions"
     handlers = root / "handlers"
-    actions.mkdir(parents=True, exist_ok=True)
-    handlers.mkdir(parents=True, exist_ok=True)
-    (actions / "say.py").write_text(SAY_ACTION, encoding="utf-8")
-    (handlers / "tick.py").write_text(TICK_HANDLER, encoding="utf-8")
+    write_action(actions, "say", SAY_ACTION, python)
+    write_handler(handlers, "tick", TICK_HANDLER, python)
     main = root / "presets" / "main"
     main.mkdir(parents=True, exist_ok=True)
     (main / "personprompt.txt").write_text("main\n", encoding="utf-8")
@@ -128,13 +159,16 @@ def write_jarvis_root(root: Path) -> Path:
     return root
 
 
-def write_echo_module(root: Path) -> Path:
+def write_echo_module(root: Path, python: str | None = None) -> Path:
     module = Path(root) / "modules" / "echo"
     actions = module / "actions"
     handlers = module / "handlers"
     actions.mkdir(parents=True, exist_ok=True)
     handlers.mkdir(parents=True, exist_ok=True)
     (module / "module.py").write_text(ECHO_MODULE, encoding="utf-8")
-    (actions / "repeat.py").write_text(ECHO_ACTION, encoding="utf-8")
-    (handlers / "monitor.py").write_text(ECHO_HANDLER, encoding="utf-8")
+    (actions / "repeat").mkdir(exist_ok=True)
+    (actions / "repeat" / "action.py").write_text(ECHO_ACTION, encoding="utf-8")
+    (handlers / "monitor").mkdir(exist_ok=True)
+    (handlers / "monitor" / "handler.py").write_text(ECHO_HANDLER, encoding="utf-8")
+    link_environment(module, python)
     return module

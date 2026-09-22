@@ -130,13 +130,15 @@ class ActionRegistry:
             return dict(self._actions)
 
     def for_capabilities(
-        self, *, modules: set[str], actions: set[str]
+        self, *, modules: set[str], actions: set[str], primary: bool = False
     ) -> dict[str, ActionDefinition]:
         owners = {
             "core",
             *(f"module:{name}" for name in modules),
             *(f"action:{name}" for name in actions),
         }
+        if primary:
+            owners.add("core:speech")
         with self._lock:
             return {
                 name: spec
@@ -254,13 +256,15 @@ class EventRegistry:
             return dict(self._events)
 
     def for_capabilities(
-        self, *, modules: set[str], handlers: set[str]
+        self, *, modules: set[str], handlers: set[str], primary: bool = False
     ) -> dict[str, EventDefinition]:
         owners = {
             "core",
             *(f"module:{name}" for name in modules),
             *(f"handler:{name}" for name in handlers),
         }
+        if primary:
+            owners.add("core:speech")
         with self._lock:
             return {
                 event_type: definition

@@ -4,16 +4,17 @@
 
 ```text
 jarvis/core/             неизменяемый event/action runtime
-jarvis/capabilities/     SDK, loader и isolated worker
+jarvis/capabilities/     SDK, loader и unit-host единиц
+jarvis/speech/           встроенная речь: TTS-сервер, STT, VAD
 jarvis/presets/          стартовые конфигурации экземпляров
 jarvis/infrastructure/   LLM-конфигурация и диагностика
 jarvis/application.py    composition root
 master_prompt.txt        общее описание среды для всех агентов
 
 .jarvis/                  отдельный git-репозиторий runtime-данных
-.jarvis/actions/<action_id>.py
-.jarvis/handlers/<handler_id>.py
-.jarvis/modules/<module_id>/module.py + actions/ + handlers/
+.jarvis/actions/<action_id>/action.py
+.jarvis/handlers/<handler_id>/handler.py
+.jarvis/modules/<module_id>/module.py + actions/<id>/ + handlers/<id>/
 .jarvis/presets/<preset>/
 .jarvis/runtime/
 ```
@@ -101,7 +102,7 @@ Preset содержит три JSON-перечисления (`modules.json`, `a
 4. На следующем модельном цикле system message этого агента получает контракт.
 
 Модуль включается только целиком; часть модуля включить нельзя. Отдельно
-включаются только корневые one-file действия и handlers.
+включаются только корневые действия и handlers.
 
 Выключение удаляет capability только у выбранного экземпляра. Когда capability
 больше не включена ни у кого, loader очищает её registry, очередь, handlers, потоки,
@@ -184,42 +185,49 @@ Personprompt задаёт личность и цель, а мастер-пром
 
 ## Зависимости и процессы
 
-Поле `execution` в `module_definition()` поддерживает два режима.
+Любая единица — действие, handler или модуль — исполняется отдельным процессом
+из своего `.venv` внутри своего каталога. Ядро не импортирует код единиц: оно
+запускает unit-host из окружения единицы, получает JSON-каталог и обменивается
+actions, events и результатами по JSON Lines.
 
-`in_process` предназначен для доверенного кода без конфликтующих зависимостей.
-Он импортируется в процесс Jarvis и может получать внутренние менеджеры через
-HandlerContext и ActionContext.
+Файл `requirements.txt` рядом с entrypoint описывает зависимости. Версии
+сторонних пакетов должны быть закреплены через `==`. Если зависимостей нет,
+`.venv` всё равно создаётся. Зависимости единицы никогда не добавляются в
+`sys.path` Jarvis.
 
-`isolated` предназначен для обычных интеграций:
-
-```python
-return module_definition(
-    "...",
-    (send_message.create_action(),),
-    (new_message.create_handler(),),
-    execution="isolated",
-)
-```
-
-Файл `requirements.txt` рядом описывает зависимости. Внутри каталога создаётся отдельная `.venv`. Версии сторонних пакетов должны
-быть закреплены через `==`. Worker запускается Python этого окружения. Основной
-процесс получает описание, отправляет actions и принимает events по JSON Lines.
-Зависимости worker никогда не добавляются в `sys.path` Jarvis.
-
-Неожиданный выход worker создаёт `module_error` для main. Выключение отправляет
-shutdown, затем при необходимости завершает всю принадлежащую worker группу
-процессов.
+Управляющие вызовы к живому состоянию ядра (агенты, capability_control,
+файловый workspace) единица делает JSON-RPC-запросами; ответ приходит в тот же
+процесс. Неожиданный выход процесса создаёт `capability_error` (для модуля —
+`module_error`). Выключение отправляет shutdown, затем при необходимости
+завершает всю группу процессов единицы.
 
 ## Стандартные возможности
 
 - `agents.*` — экземпляры, сообщения и файловые presets;
 - `capability_control.*` — просмотр и доступ текущего экземпляра;
 - `module_manager.*` — редактирование, тестирование и выключение кода;
-- `speech_input` — входная речь: handlers `microphone` и `errors` на общем пайплайне;
-- `speech_output` — озвучка с обязательным результатом после воспроизведения;
 - `screenshots.capture` — снимок возвращается прямо в результате действия
   отдельной image-частью, base64 в `data` нет;
 - `notify_send` — простое корневое действие десктопных уведомлений.
+
+## Встроенная речь
+
+STT и TTS — захардкоженный слой ядра `jarvis/speech`, а не capability:
+в списках действий, handlers и модулей он не отображается. Доступны только
+primary-агенту (`main`):
+
+- действие `speech` — озвучить text и вернуть обязательный результат
+  `{spoken, text, error}`;
+- событие `speech_detected` — распознанная реплика `{text, error}`.
+
+При старте Jarvis слой речи инициализируется блокирующе до восстановления
+агентов: поднимает дочерний s2-сервер в VRAM (умирает вместе с Jarvis благодаря
+PDEATHSIG), создаёт профиль голоса при необходимости, грузит whisper и VAD,
+запускает поток микрофона. Настройки захардкожены в `jarvis/speech/config.py`;
+референсы голоса лежат в `jarvis/speech/assets/voices`, сгенерированный
+`.s2voice` — в `.jarvis/runtime/voices`. Начало речи пользователя прерывает
+текущую озвучку (barge-in). Сбой инициализации не останавливает Jarvis:
+речь помечается недоступной, `speech` возвращает ошибку.
 
 ## Долговременная память
 
