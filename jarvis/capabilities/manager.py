@@ -1276,7 +1276,7 @@ class _AgentApi:
         target = manager.require_agent(target_id)
         manager.bus.publish(
             Event(
-                type="agents.message",
+                type="message_from_agent",
                 data={
                     "from_agent_id": sender.agent_id,
                     "from_name": sender.name,

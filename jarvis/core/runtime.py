@@ -14,6 +14,9 @@ from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
 from ..capabilities.api import ActionDefinition, EventDefinition
 from ..presets import PresetStore
+
+
+PRIMARY_AGENT_NAME = "Jarvis"
 from .lifecycle import ProcessManager
 from .prompts import agent_system_prompt
 from .protocol import (
@@ -78,7 +81,7 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
-            type="agents.message",
+            type="message_from_agent",
             description=(
                 "Адресное сообщение от другого агента. from_agent_id и from_name "
                 "являются метаданными отправителя; text содержит прямую речь "
@@ -526,12 +529,14 @@ class Agent:
         for item in batch:
             if isinstance(item, ActionResult):
                 self.history.append(item.model_message())
-                self.manager.debug.result(item)
+                self.manager.debug.result(item, agent_id=self.agent_id)
             else:
                 self.history.append(
                     item.model_message(self.manager.model_capabilities)
                 )
-                self.manager.debug.input(item, self.manager.model_capabilities)
+                self.manager.debug.input(
+                    item, self.manager.model_capabilities, agent_id=self.agent_id
+                )
         self._persist_context()
 
         try:
@@ -609,7 +614,9 @@ class Agent:
         self.history.append(
             event.model_message(self.manager.model_capabilities)
         )
-        self.manager.debug.input(event, self.manager.model_capabilities)
+        self.manager.debug.input(
+            event, self.manager.model_capabilities, agent_id=self.agent_id
+        )
         self._persist_context()
 
     def _model_failure(self, exc: Exception) -> None:
@@ -708,9 +715,11 @@ class AgentManager:
         return True
 
     def spawn_root(self, *, name: str, preset: str) -> Agent:
-        """Создать первый экземпляр без родителя."""
+        """Создать первый экземпляр без родителя. Имя main — константа."""
 
-        return self._spawn(name=name, preset=preset, parent_id=None, primary=True)
+        return self._spawn(
+            name=PRIMARY_AGENT_NAME, preset=preset, parent_id=None, primary=True
+        )
 
     def restore(self, *, name: str, preset: str) -> Agent:
         """Поднять экземпляры из памяти или создать новый корневой агент."""
@@ -736,7 +745,7 @@ class AgentManager:
                 (record for record in records if record["parent_id"] is None),
                 {
                     "agent_id": "main",
-                    "name": default_name,
+                    "name": PRIMARY_AGENT_NAME,
                     "preset": default_preset,
                     "parent_id": None,
                     "modules": [],
@@ -745,6 +754,7 @@ class AgentManager:
                     "messages": [],
                 },
             )
+        primary = {**primary, "name": PRIMARY_AGENT_NAME}
         try:
             main_agent = self._spawn_record(primary, primary=True)
         except Exception as exc:  # noqa: BLE001
