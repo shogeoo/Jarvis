@@ -40,7 +40,7 @@ class ApplicationTests(unittest.TestCase):
                 memory = MemoryStore(Path(temporary))
                 app = JarvisApplication(config, memory=memory).start()
                 try:
-                    self.assertEqual(app.main_agent.name, "main")
+                    self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
                     self.assertIn('"type": "say"', system_prompt)

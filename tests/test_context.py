@@ -15,12 +15,12 @@ class MemoryStoreTests(unittest.TestCase):
     def record(self, **overrides):
         record = {
             "agent_id": "main",
-            "name": "main",
+            "name": "Jarvis",
             "preset": "main",
             "parent_id": None,
             "modules": ["alpha", "beta"],
-            "actions": ["say", "echo.repeat"],
-            "handlers": ["tick", "echo.monitor"],
+            "actions": ["say", "echo"],
+            "handlers": ["tick", "monitor"],
             "messages": [
                 {"role": "user", "content": '{"type":"x","data":{}}'},
                 {"role": "assistant", "content": '{"actions":[]}'},
@@ -33,8 +33,8 @@ class MemoryStoreTests(unittest.TestCase):
         self.store.save(self.record())
         loaded = self.store.load("main", "main")
         self.assertEqual(loaded["modules"], ["alpha", "beta"])
-        self.assertEqual(loaded["actions"], ["echo.repeat", "say"])
-        self.assertEqual(loaded["handlers"], ["echo.monitor", "tick"])
+        self.assertEqual(loaded["actions"], ["echo", "say"])
+        self.assertEqual(loaded["handlers"], ["monitor", "tick"])
         self.assertEqual(
             loaded["messages"], self.record()["messages"]
         )
@@ -70,43 +70,66 @@ class MemoryStoreTests(unittest.TestCase):
             loaded["messages"], [{"role": "user", "content": "kept"}]
         )
 
-    def test_modalities_do_not_survive_restart(self):
-        self.store.save(
-            self.record(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": '{"type":"screenshot","data":{}}',
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": "data:image/png;base64,AAAA"},
-                            },
-                        ],
-                    }
-                ],
-            )
-        )
-        loaded = self.store.load("main", "main")
-        self.assertEqual(
-            loaded["messages"],
-            [
+    def test_modalities_survive_restart_with_original_names(self):
+        record = self.record(
+            messages=[
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
                             "text": '{"type":"screenshot","data":{}}',
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/png;base64,AAAA",
+                                "name": "2026-09-20-005028_jarvis.png",
+                            },
+                        },
+                        {
+                            "type": "file",
+                            "file": {
+                                "filename": "отчёт.pdf",
+                                "file_data": "data:application/pdf;base64,QUJD",
+                            },
+                        },
+                    ],
+                }
+            ]
+        )
+        self.store.save(record)
+        parts = self.root / "main" / "parts"
+        self.assertEqual(
+            sorted(item.name for item in parts.iterdir()),
+            ["2026-09-20-005028_jarvis.png", "отчёт.pdf"],
+        )
+        self.assertEqual((parts / "отчёт.pdf").read_bytes(), b"ABC")
+        raw = (self.root / "main" / "context.json").read_text(encoding="utf-8")
+        self.assertNotIn("base64", raw)
+        self.assertIn('"file": "parts/2026-09-20-005028_jarvis.png"', raw)
+
+        loaded = self.store.load("main", "main")
+        self.assertEqual(loaded["messages"], record["messages"])
+
+    def test_unnamed_parts_get_content_addressed_names(self):
+        record = self.record(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,AAAA"},
                         }
                     ],
                 }
-            ],
+            ]
         )
-        raw = (self.root / "main" / "context.json").read_text(encoding="utf-8")
-        self.assertNotIn("base64", raw)
+        self.store.save(record)
+        loaded = self.store.load("main", "main")
+        self.assertEqual(loaded["messages"], record["messages"])
+        self.assertTrue(self.root.joinpath("main", "parts").is_dir())
 
     def test_missing_files_are_ignored(self):
         self.assertEqual(self.store.load_all(), [])

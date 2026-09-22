@@ -290,13 +290,16 @@ class InputPart:
     def api_value(self) -> dict[str, Any]:
         url = f"data:{self.mime_type};base64,{self.data}"
         if self.type == "image":
-            return {"type": "image_url", "image_url": {"url": url}}
+            inner: dict[str, Any] = {"url": url}
+            if self.name:
+                inner["name"] = self.name
+            return {"type": "image_url", "image_url": inner}
         if self.type == "audio":
             audio_format = self.mime_type.split("/", 1)[-1].split(";", 1)[0]
-            return {
-                "type": "input_audio",
-                "input_audio": {"data": self.data, "format": audio_format},
-            }
+            inner = {"data": self.data, "format": audio_format}
+            if self.name:
+                inner["name"] = self.name
+            return {"type": "input_audio", "input_audio": inner}
         if self.type == "file":
             extension = self.mime_type.split("/", 1)[-1].split(";", 1)[0]
             filename = self.name or f"document.{extension}"
@@ -304,7 +307,10 @@ class InputPart:
                 "type": "file",
                 "file": {"filename": filename, "file_data": url},
             }
-        return {"type": "video_url", "video_url": {"url": url}}
+        inner = {"url": url}
+        if self.name:
+            inner["name"] = self.name
+        return {"type": "video_url", "video_url": inner}
 
 
 @dataclass(frozen=True, slots=True)

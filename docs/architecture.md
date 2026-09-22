@@ -20,7 +20,7 @@ master_prompt.txt        общее описание среды для всех 
 ```
 
 Ядро резервирует `no_action`, `structure_error`, `module_error`,
-`capability_error`, `agents.message` и строгий тип результата `action_result`.
+`capability_error`, `message_from_agent` и строгий тип результата `action_result`.
 Все остальные actions и events приходят из динамически загруженных деклараций.
 
 ## Цикл агента
@@ -84,7 +84,7 @@ Handler — код, который мониторит среду на опред
 у которых сейчас включён соответствующий handler или модуль целиком.
 `target=agent_id` создаёт адресное событие.
 
-Handler внешнего опроса использует broadcast. `agents.message` использует
+Handler внешнего опроса использует broadcast. `message_from_agent` использует
 адресную доставку конкретному `agent_id`.
 
 ## Состояние capabilities экземпляра
@@ -244,14 +244,18 @@ PDEATHSIG), создаёт профиль голоса при необходим
 ```text
 memory/<preset_id>/agent.json
 memory/<preset_id>/context.json
+memory/<preset_id>/parts/
 memory/<preset_id>/<agent_id>/agent.json
 memory/<preset_id>/<agent_id>/context.json
+memory/<preset_id>/<agent_id>/parts/
 ```
 
 Корневой агент пресета хранится без подпапки `agent_id`. `agent.json` описывает
 экземпляр (имя, preset, родитель, набор capabilities), `context.json` содержит
-только историю сообщений без system message. Модальности кроме текста
-вырезаются при записи.
+только историю сообщений без system message. Все пять модальностей переживают
+перезапуск: бинарные части (image, audio, video, file) лежат в `parts/` под
+тем же именем, которое дал автор части, а в `context.json` остаётся ссылка
+`jarvis_part`, разворачиваемая при загрузке.
 
 ```text
 agent: event / assistant / module change
