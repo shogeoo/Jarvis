@@ -1,0 +1,14 @@
+[
+  "delete_agent",
+  "disable_capability",
+  "enable_capability",
+  "interrupt_agent",
+  "list_active_capabilities",
+  "list_agent_presets",
+  "list_agents",
+  "list_capabilities",
+  "send_notification",
+  "take_screenshot",
+  "send_message_to_agent",
+  "spawn_agent"
+]
