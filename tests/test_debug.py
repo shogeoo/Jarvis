@@ -47,14 +47,24 @@ class DebugTests(unittest.TestCase):
         self.assertNotIn("base64", output.getvalue())
         self.assertNotIn("image_url", output.getvalue())
 
-    def test_unstructured_model_output_is_never_printed_raw_without_json(self):
+    def test_broken_model_output_is_silent_structure_error_shows_instead(self):
         output = io.StringIO()
         debug = Debugger(stream=output)
-        debug.model("main", '{"actions":[{"action_id":"a","type":"no_action"')
-        self.assertEqual(
-            output.getvalue(),
-            '{"actions":[{"action_id":"a","type":"no_action"' + "\n",
+        debug.model("main", "Привет чем могу помочь?")
+        self.assertEqual(output.getvalue(), "")
+
+        event = Event(
+            type="structure_error",
+            data={
+                "code": "json",
+                "message": "Невалидный JSON",
+                "response": "Привет чем могу помочь?",
+            },
         )
+        debug.input(event, agent_id="main")
+        text = output.getvalue()
+        self.assertIn('"type": "structure_error"', text)
+        self.assertIn('"response": "Привет чем могу помочь?"', text)
 
     def test_structure_error_is_red(self):
         output = _Tty()
