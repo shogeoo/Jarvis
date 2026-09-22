@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from openai import OpenAI
 
+from .core.protocol import Event
 from .core.prompts import read_master_prompt
 from .core.registry import ActionRegistry, EventRegistry
 from .core.runtime import AgentManager, EventBus, register_core_protocol
@@ -13,6 +14,7 @@ from .infrastructure.debug import Debugger
 from .infrastructure.model_capabilities import discover_model_capabilities
 from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
+from .speech import service as speech_service
 
 
 class JarvisApplication:
@@ -67,11 +69,27 @@ class JarvisApplication:
         )
 
     def start(self) -> "JarvisApplication":
+        speech_service.start(
+            self.config.jarvis_dir,
+            emit=self._emit_speech,
+            debug=self.debug,
+        )
         self.main_agent = self.agents.restore(name="main", preset="main")
         return self
 
+    def _emit_speech(self, data: dict) -> None:
+        self.bus.publish(
+            Event(
+                type="speech_detected",
+                data=data,
+                source="core:speech",
+                handler_id="core:speech",
+            )
+        )
+
     def stop(self) -> None:
         self.agents.begin_shutdown()
+        speech_service.shutdown()
         self.capabilities.shutdown()
         self.client.close()
         self.agents.shutdown()

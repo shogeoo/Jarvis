@@ -16,11 +16,11 @@ import fixtures
 
 
 class ApplicationTests(unittest.TestCase):
-    @patch.dict(os.environ, {"STT_ENABLED": "false", "TTS_ENABLED": "false"})
+    @patch("jarvis.application.speech_service")
     @patch("jarvis.application.discover_model_capabilities")
     @patch("jarvis.application.OpenAI")
     def test_default_layout_starts_and_stops_without_hardware(
-        self, openai, discover
+        self, openai, discover, speech
     ):
         client = Mock()
         openai.return_value = client

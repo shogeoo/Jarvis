@@ -1,8 +1,12 @@
 """Публичный API действий, handlers, событий и результатов.
 
 Идентификаторы в коде не пишутся: фабрики возвращают определения без ID,
-а загрузчик назначает ID из имени файла. Источник определения фиксируется
-автоматически для сверки «один файл — одна единица».
+а загрузчик назначает ID из имени каталога единицы. Источник определения
+фиксируется автоматически для сверки «один каталог — одна единица».
+
+Каждая единица (действие, handler или модуль) — самодостаточный каталог со
+своим кодом, ``.env``, ``requirements.txt`` и ``.venv``. Поэтому у каждой
+единицы может быть свой ``prepare`` (до старта) и ``teardown`` (при остановке).
 """
 
 from __future__ import annotations
@@ -58,6 +62,8 @@ class ActionDefinition:
     run: ActionHandler
     source: str = ""
     owner: str = ""
+    prepare: LifecycleHook | None = None
+    teardown: LifecycleHook | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +75,8 @@ class HandlerDefinition:
     stop: HandlerStop | None = None
     source: str = ""
     owner: str = ""
+    prepare: LifecycleHook | None = None
+    teardown: LifecycleHook | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +84,6 @@ class ModuleDefinition:
     description: str
     actions: tuple[ActionDefinition, ...]
     handlers: tuple[HandlerDefinition, ...]
-    execution: str = "in_process"
     prepare: LifecycleHook | None = None
     teardown: LifecycleHook | None = None
 
@@ -94,8 +101,11 @@ def action_definition(
     args_schema: JSONSchema,
     result_schema: JSONSchema,
     run: ActionHandler,
+    *,
+    prepare: LifecycleHook | None = None,
+    teardown: LifecycleHook | None = None,
 ) -> ActionDefinition:
-    """Объявить одно действие в одном файле. ID назначит загрузчик."""
+    """Объявить одно действие в одном каталоге. ID назначит загрузчик."""
 
     return ActionDefinition(
         id="",
@@ -104,6 +114,8 @@ def action_definition(
         result_schema=result_schema,
         run=run,
         source=_caller_source(),
+        prepare=prepare,
+        teardown=teardown,
     )
 
 
@@ -113,6 +125,8 @@ def handler_definition(
     start: HandlerStart,
     *,
     stop: HandlerStop | None = None,
+    prepare: LifecycleHook | None = None,
+    teardown: LifecycleHook | None = None,
 ) -> HandlerDefinition:
     """Объявить один handler с ровно одним событием. ID назначит загрузчик."""
 
@@ -123,6 +137,8 @@ def handler_definition(
         start=start,
         stop=stop,
         source=_caller_source(),
+        prepare=prepare,
+        teardown=teardown,
     )
 
 
@@ -131,7 +147,6 @@ def module_definition(
     actions: Iterable[ActionDefinition],
     handlers: Iterable[HandlerDefinition],
     *,
-    execution: str = "in_process",
     prepare: LifecycleHook | None = None,
     teardown: LifecycleHook | None = None,
 ) -> ModuleDefinition:
@@ -141,7 +156,6 @@ def module_definition(
         description=description,
         actions=tuple(actions),
         handlers=tuple(handlers),
-        execution=execution,
         prepare=prepare,
         teardown=teardown,
     )

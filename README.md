@@ -16,34 +16,40 @@ jarvis/
   application.py
   cli.py
   core/                 # протокол, агенты, пачки и маршрутизация
-  capabilities/         # публичный SDK, загрузчик и isolated worker
+  capabilities/         # публичный SDK, загрузчик и unit-host единиц
+  speech/               # встроенный слой речи: TTS, STT, VAD, конфиг и ассеты
   presets/              # файловые стартовые конфигурации
   infrastructure/       # конфигурация и модельный API
 master_prompt.txt       # общее описание среды: одинаково для всех агентов
 
 .jarvis/                # отдельный git-репозиторий runtime-данных
-  actions/              # простые действия: один .py файл — одно действие
-  handlers/             # простые handlers: один .py файл — один handler
-  modules/              # сложные системы: module_id как контейнер общих зависимостей
+  actions/<id>/         # действие: action.py, .env, requirements.txt, .venv
+  handlers/<id>/        # handler: handler.py, .env, requirements.txt, .venv
+  modules/<id>/         # сложная система: module.py и вложенные единицы
   presets/              # personprompt и стартовые capabilities экземпляров
-  runtime/              # логи и временные данные
+  runtime/              # логи, сгенерированный голос и временные данные
   memory/               # долговременные контексты экземпляров агентов
 ```
 
-`jarvis/core` не содержит STT, TTS, управления агентами или описаний конкретных
-возможностей. Эти возможности находятся в `.jarvis/`.
+Управление агентами и описания конкретных возможностей находятся в `.jarvis/`.
+Речь — исключение: STT и TTS слишком базовые и слишком сложные, поэтому они
+захардкожены в ядре (`jarvis/speech`) и не являются capability-единицами:
+их нет в списках действий, handlers и модулей. У main-агента просто есть
+действие `speech` и событие `speech_detected`.
 
 ## Установка
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[cuda]'
+.venv/bin/pip install -e .
 cp .env.example .env
 .venv/bin/jarvis
 ```
 
-Для STT на CPU используется extra `speech` и `STT_DEVICE=cpu`. Микрофон требует
-`parec`, воспроизведение — `ffplay`.
+Каждая capability-единица в `.jarvis` самодостаточна: у неё свой `.env`,
+`requirements.txt` и `.venv`. Новые единицы создаёт module_manager-агент,
+который сам подготавливает окружение; готовые окружения создаются действием
+`module_manager.prepare_environment`.
 
 ## Event/action цикл
 
@@ -167,33 +173,38 @@ Module manager работает прямо в `.jarvis/`.
 
 ## Формат capability
 
-Простые действия и handlers лежат напрямую в `.jarvis/` — один Python-файл
-строго на одно действие или один handler. Имя файла задаёт ID, в коде ID
+Каждая capability-единица — самодостаточный каталог со своим entrypoint,
+`.env`, `requirements.txt` и `.venv`. Имя каталога задаёт ID, в коде ID
 не пишутся:
 
 ```text
-.jarvis/actions/notify_send.py
-.jarvis/actions/agents.spawn.py
-.jarvis/handlers/computer_is_on.py
+.jarvis/actions/notify_send/
+  action.py            # run(data, context) + create_action()
+.jarvis/actions/screenshots.capture/
+  action.py
+.jarvis/handlers/computer_is_on/
+  handler.py           # start(context) + create_handler()
 ```
 
-Каждый файл описывает JSON-контракт: описание, строгую схему аргументов, а для
-действия — обязательную строгую схему результата, и реализует результат хоть
-как-то. Один handler публикует ровно одно событие.
+Каждый entrypoint описывает JSON-контракт: описание, строгую схему аргументов,
+а для действия — обязательную строгую схему результата. Один handler публикует
+ровно одно событие. Единица исполняется отдельным процессом из своего `.venv`;
+управляющие вызовы к живому состоянию ядра идут по JSON-RPC.
 
-Сложные системы лежат в `.jarvis/modules/<module_id>/` — контейнер общих
-зависимостей, состояния, SDK, конфигов и отдельного виртуального окружения.
-В корне модуля обязательный `module.py` — entrypoint: он импортирует unit-файлы,
-агрегирует их определения и держит shared-состояние. Внутри те же папки
-`actions/` и `handlers/` с правилом «один файл — одна единица», а вне их может
-быть общий код. Никаких JSON-файлов у модулей нет:
+Сложные системы, где действия и handlers работают сообща, лежат в
+`.jarvis/modules/<module_id>/`. В корне обязательный `module.py`, внутри —
+каталоги `actions/<id>/` и `handlers/<id>/` с тем же правилом «один каталог —
+одна единица», плюс общий код модуля:
 
 ```text
 .jarvis/modules/telegram/
   module.py
-  actions/send_message.py
-  handlers/new_message.py
+  actions/send_message/
+    action.py
+  handlers/new_message/
+    handler.py
   shared.py
+  .env
   requirements.txt
   .venv/
 ```
@@ -205,30 +216,20 @@ Module manager работает прямо в `.jarvis/`.
 Загрузчик строит из деклараций JSON-каталог system message. Без этого каталога
 модель не знает о существовании возможностей.
 
-Активы (голоса, модели) — часть действия: лежат внутри каталога модуля,
+Активы (голоса, модели) — часть единицы: лежат внутри её каталога,
 а не в корне проекта.
 
 ## Изоляция зависимостей
 
-Модуль со сторонними пакетами указывает это в `module.py`:
+Любая единица может объявить сторонние pip-зависимости в `requirements.txt`
+рядом с entrypoint. Module manager создаёт `.venv` внутри каталога единицы и
+устанавливает версии, закреплённые через `==`. Процесс единицы запускается
+Python этого окружения и общается с ядром по JSON Lines. Его `site-packages`
+никогда не добавляется в основной процесс.
 
-```python
-return module_definition(
-    "...",
-    (send_message.create_action(),),
-    (new_message.create_handler(),),
-    execution="isolated",
-)
-```
-
-Файл `requirements.txt` рядом описывает зависимости. Module manager создаёт
-`.venv` внутри каталога и устанавливает версии,
-закреплённые через `==`. Worker запускается Python этого окружения и общается с
-ядром по JSON Lines. Его `site-packages` никогда не добавляется в основной
-процесс.
-
-Доверенные встроенные модули без сторонних конфликтующих зависимостей могут
-использовать `execution: in_process`.
+Если зависимостей нет, `.venv` всё равно создаётся: единица исполняется из
+своего окружения. Ядро не импортирует код единиц и не хранит их настройки:
+всё своё единица держит в своём каталоге и своём `.env`.
 
 ## System message
 

@@ -107,6 +107,48 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         ),
         owner="core",
     )
+    actions.register(
+        ActionDefinition(
+            id="speech",
+            description=(
+                "Озвучить text и вернуть обязательный результат: spoken после "
+                "воспроизведения, error при сбое, отключении или прерывании."
+            ),
+            args_schema=object_schema({"text": {"type": "string"}}),
+            result_schema=object_schema(
+                {
+                    "spoken": {"type": "boolean"},
+                    "text": {"type": "string"},
+                    "error": {"type": ["string", "null"]},
+                }
+            ),
+            run=_speech_action_run,
+            owner="core:speech",
+        )
+    )
+    events.register(
+        EventDefinition(
+            type="speech_detected",
+            description=(
+                "Речь пользователя с микрофона. text содержит распознанную "
+                "реплику; error содержит фоновую ошибку микрофона, VAD или "
+                "распознавания, и тогда text пуст."
+            ),
+            data_schema=object_schema(
+                {
+                    "text": {"type": "string"},
+                    "error": {"type": ["string", "null"]},
+                }
+            ),
+        ),
+        owner="core:speech",
+    )
+
+
+def _speech_action_run(data, context):
+    from ..speech import service
+
+    return service.speak_result(data["text"])
 
 
 class EventBus:
@@ -271,6 +313,7 @@ class Agent:
         manager: "AgentManager",
         *,
         parent_id: str | None = None,
+        primary: bool = False,
         enabled_modules: set[str] | None = None,
         enabled_actions: set[str] | None = None,
         enabled_handlers: set[str] | None = None,
@@ -281,6 +324,7 @@ class Agent:
         self.preset = preset
         self.parent_id = parent_id
         self.manager = manager
+        self.primary = primary
         self._enabled_modules = set(enabled_modules or ())
         self._enabled_actions = set(enabled_actions or ())
         self._enabled_handlers = set(enabled_handlers or ())
@@ -356,6 +400,8 @@ class Agent:
         self._persist_context()
 
     def accepts_event(self, event: Event) -> bool:
+        if event.handler_id == "core:speech":
+            return self.primary
         snapshot = self.capabilities_snapshot()
         if event.handler_id is not None and event.handler_id in snapshot["handlers"]:
             return True
@@ -399,10 +445,12 @@ class Agent:
                 f"{sorted(missing)}"
             )
         actions = self.manager.actions.for_capabilities(
-            modules=snapshot["modules"], actions=snapshot["actions"]
+            modules=snapshot["modules"], actions=snapshot["actions"],
+            primary=self.primary,
         )
         events = self.manager.events.for_capabilities(
-            modules=snapshot["modules"], handlers=snapshot["handlers"]
+            modules=snapshot["modules"], handlers=snapshot["handlers"],
+            primary=self.primary,
         )
         self.history[0] = {
             "role": "system",
@@ -822,6 +870,7 @@ class AgentManager:
                 preset,
                 self,
                 parent_id=parent_id,
+                primary=primary,
                 enabled_modules=initial["modules"],
                 enabled_actions=initial["actions"],
                 enabled_handlers=initial["handlers"],
