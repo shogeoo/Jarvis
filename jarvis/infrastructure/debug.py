@@ -21,13 +21,15 @@ _ERROR_EVENT_TYPES = frozenset(
 class Debugger:
     """Печатает только протокольный JSON event-action формата.
 
-    Вход: ровно {"type":..., "data":...} как его задаёт модуль.
-    Результат: ровно {"type":"action_result", "action_id":..., "data":...}.
-    Выход: content assistant message, всегда отформатированный как JSON —
-    печатать сырую строку без структуры недопустимо. Невалидный JSON
-    (обычно сломанный ответ модели) печатается красным как есть: это
-    ошибка протокола. structure_error, module_error и capability_error
-    подсвечиваются красным.
+    Печатается ровно то, что видит модель в своём контексте, и строго
+    как JSON-структура: вход — {"type":..., "data":...} как его задаёт
+    модуль, результат — {"type":"action_result", "action_id":...,
+    "data":...}, выход — content assistant message.
+
+    Сломанный (невалидный) ответ модели в консоль не выводится вовсе:
+    модель видит только structure_error, содержащий его текст.
+    structure_error, module_error и capability_error подсвечиваются
+    красным.
 
     Между любыми двумя JSON-блоками — пустая строка. Всё, что связано
     с main, печатается зелёным; субагенты (включая их handlers и
@@ -78,23 +80,24 @@ class Debugger:
         """
 
     def message(self, content: Any, *, agent_id: str = "main") -> None:
-        """Вывести блок строго как отформатированный JSON."""
+        """Вывести блок строго как отформатированный JSON.
+
+        Печатается ровно то, что видит модель. Сломанный (невалидный)
+        ответ модели в консоль не выводится вовсе: вместо него ядро
+        доставляет structure_error, содержащий его текст.
+        """
 
         if not self.enabled:
             return
-        error = False
         if isinstance(content, str):
             try:
                 content = json.loads(content)
             except json.JSONDecodeError:
-                error = True
-        if isinstance(content, str):
-            rendered = content
-        else:
-            rendered = json.dumps(content, ensure_ascii=False, indent=2)
-            error = isinstance(content, dict) and (
-                content.get("type") in _ERROR_EVENT_TYPES
-            )
+                return
+        rendered = json.dumps(content, ensure_ascii=False, indent=2)
+        error = isinstance(content, dict) and (
+            content.get("type") in _ERROR_EVENT_TYPES
+        )
         self._write(agent_id, error=error, rendered=rendered)
 
     def input(self, event: Any, capabilities: Any = None, agent_id: str = "main") -> None:
