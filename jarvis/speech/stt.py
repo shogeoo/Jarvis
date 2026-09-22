@@ -9,6 +9,7 @@ from typing import Callable
 
 from .config import (
     STT_CHUNK_SILENCE,
+    STT_COMPUTE_TYPE,
     STT_DEVICE,
     STT_INPUT_DEVICE,
     STT_KEEP_AUDIO,
