@@ -6,7 +6,7 @@ def run(data, context):
     kind, capability_id = data["kind"], data["id"]
     if kind == "module" and capability_id == context.module_id:
         raise ValueError("Исполняемая capability не может выключить сама себя")
-    if kind == "action" and capability_id == context.action_type:
+    if kind == "action" and capability_id == context.action_id:
         raise ValueError("Исполняемое действие не может выключить само себя")
     return context.agent_manager.disable(
         agent_id=context.agent_id,

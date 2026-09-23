@@ -22,8 +22,8 @@ class DebugTests(unittest.TestCase):
                 InputPart("image", "image/png", "aGVsbG8="),
             ),
         )
-        assistant_output = '{"actions":[{"action_id":"say-1","type":"no_action","data":{}}]}'
-        action_result = ActionResult(action_id="say-1", data={"spoken": True})
+        assistant_output = '{"actions":[{"action_id":"no_action","call_id":"say-1","data":{}}]}'
+        action_result = ActionResult(call_id="say-1", data={"spoken": True})
 
         debug.input(event, agent_id="main")
         debug.model("main", assistant_output)
@@ -81,7 +81,7 @@ class DebugTests(unittest.TestCase):
         output = _Tty()
         debug = Debugger(stream=output)
         event = Event(type="tick.event", data={"text": "ok"})
-        action_result = ActionResult(action_id="r-1", data={"value": 1})
+        action_result = ActionResult(call_id="r-1", data={"value": 1})
 
         debug.input(event, agent_id="agent-001")
         debug.result(action_result, agent_id="agent-001")
@@ -95,7 +95,7 @@ class DebugTests(unittest.TestCase):
     def test_main_output_is_green_on_terminal(self):
         output = _Tty()
         debug = Debugger(stream=output)
-        debug.result(ActionResult(action_id="r-1", data={}), agent_id="main")
+        debug.result(ActionResult(call_id="r-1", data={}), agent_id="main")
         self.assertIn("\033[32m", output.getvalue())
 
     def test_subagent_error_is_red_even_for_subagent(self):

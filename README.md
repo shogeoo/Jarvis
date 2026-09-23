@@ -2,8 +2,8 @@
 
 Jarvis — event-thinking-action система без tool calling. Каждое событие
 передаётся модели отдельным `user` message в строгом JSON, а ответ содержит
-строгий массив actions с выбранными моделью `action_id`. Каждое действие
-возвращает обязательный `ActionResult`, связанный с ним через `action_id`.
+строгий массив actions с выбранными моделью `action_id` и уникальными `call_id`.
+Каждое действие возвращает обязательный `ActionResult`, связанный с ним через `call_id`.
 
 Долговременная память реализована: контекст каждого экземпляра агента
 сохраняется в `.jarvis/memory/` и восстанавливается при следующем запуске, пока
@@ -65,12 +65,13 @@ cp .env.example .env
 ```json
 {
   "actions": [
-    {"action_id":"say-1","type":"say","data":{"text":"Добрый вечер."}}
+    {"action_id":"say","call_id":"act-1","data":{"text":"Добрый вечер."}}
   ]
 }
 ```
 
-`action_id` придумывает модель; повтор в одном ответе — `structure_error`.
+`action_id` выбирается из каталога, а `call_id` придумывает модель. `call_id`
+нельзя повторять за всю жизнь контекста агента, включая ошибочные ответы.
 
 Ядро проверяет весь ответ и по порядку передаёт actions соответствующим
 исполнителям. Передача не ждёт результата операции. После передачи всего
@@ -81,7 +82,7 @@ cp .env.example .env
 ```json
 {
   "type":"action_result",
-  "action_id":"say-1",
+  "call_id":"act-1",
   "data":{"spoken":true}
 }
 ```
@@ -97,7 +98,8 @@ Action не публикует события. Падение действия �
 в `ActionResult` отдельной `image_url`-частью того же сообщения, base64 в `data`
 нет.
 
-`no_action` является единственным встроенным action и не может сочетаться с
+`no_action` является единственным встроенным action и тоже требует уникальный
+`call_id`; он не может сочетаться с
 другими actions. Неправильный JSON, повтор `action_id` вызывают `structure_error`;
 внешняя пачка ждёт исправления. Необработанное падение кода создаёт для main:
 
@@ -135,12 +137,11 @@ Action не публикует события. Падение действия �
 ## Долговременная память
 
 ```text
-memory/<preset_id>/agent.json
-memory/<preset_id>/context.json
-memory/<preset_id>/parts/
-memory/<preset_id>/<agent_id>/agent.json
-memory/<preset_id>/<agent_id>/context.json
-memory/<preset_id>/<agent_id>/parts/
+memory/<preset_id>/current.json -> generations/<generation>/
+memory/<preset_id>/generations/<generation>/agent.json
+memory/<preset_id>/generations/<generation>/context.json
+memory/<preset_id>/generations/<generation>/parts/
+memory/<preset_id>/<agent_id>/current.json -> generations/<generation>/
 ```
 
 Корневой агент пресета хранится без подпапки `agent_id`. `agent.json` описывает
@@ -158,7 +159,7 @@ memory/<preset_id>/<agent_id>/parts/
 
 Управляющие действия есть только у main:
 
-- `list_capabilities` — все capabilities на диске;
+- `list_available_capabilities` — capabilities на диске, ещё не назначенные агенту;
 - `list_active_capabilities` — текущий активный список main;
 - `enable_capability` — включить модуль, действие или handler себе;
 - `disable_capability` — выключить capability у себя.

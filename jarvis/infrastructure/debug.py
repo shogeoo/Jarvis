@@ -21,7 +21,7 @@ class Debugger:
 
     Печатается ровно то, что видит модель в своём контексте, и строго
     как JSON-структура: вход — {"type":..., "data":...} как его задаёт
-    модуль, результат — {"type":"action_result", "action_id":...,
+    модуль, результат — {"type":"action_result", "call_id":...,
     "data":...}, выход — content assistant message.
 
     Сломанный (невалидный) ответ модели в консоль не выводится вовсе:
@@ -103,7 +103,7 @@ class Debugger:
         self.message(event.model_value(), agent_id=agent_id)
 
     def result(self, result: Any, agent_id: str = "main") -> None:
-        """Вывести результат действия как событие: type/action_id/data."""
+        """Вывести результат действия как событие: type/call_id/data."""
 
         self.message(result.model_value(), agent_id=agent_id)
 

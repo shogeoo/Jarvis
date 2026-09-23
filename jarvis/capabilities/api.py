@@ -219,8 +219,8 @@ class ActionContext:
     """Служебный конверт передачи действия коду capability."""
 
     agent_id: str
+    call_id: str
     action_id: str
-    action_type: str
     capability_id: str
     module_id: str | None
     complete: ResultCallback

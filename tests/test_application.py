@@ -105,7 +105,7 @@ class ApplicationTests(unittest.TestCase):
                         results[0],
                         {
                             "type": "action_result",
-                            "action_id": "say-1",
+                            "call_id": "say-1",
                             "data": {"spoken": True, "text": "test"},
                         },
                     )

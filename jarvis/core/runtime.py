@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import secrets
+import sys
 import threading
+import time
 import traceback
 from typing import Any
 
@@ -95,6 +98,7 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
                 {
                     "capability": {"type": "string"},
                     "error": {"type": "string"},
+                    "call_id": {"type": ["string", "null"]},
                 }
             ),
         ),
@@ -178,8 +182,8 @@ class EventBus:
             delivered = False
             for agent in recipients:
                 if agent is not None:
-                    agent.enqueue(event)
-                    delivered = True
+                    accepted = agent.enqueue(event)
+                    delivered = (accepted is not False) or delivered
         if not delivered:
             self.debug.log(
                 "event_dropped",
@@ -196,45 +200,45 @@ class PendingAction:
         self,
         *,
         agent_id: str,
+        call_id: str,
         action_id: str,
-        action_type: str,
         result_schema: dict[str, Any],
     ):
         self.agent_id = agent_id
+        self.call_id = call_id
         self.action_id = action_id
-        self.action_type = action_type
         self.result_schema = result_schema
 
 
 class ActionResultTracker:
-    """Связывает авторские результаты с действиями по action_id."""
+    """Связывает авторские результаты с действиями по call_id."""
 
     def __init__(self, *, debug: Debugger | None = None):
         self.debug = debug or Debugger(enabled=False)
         self._lock = threading.RLock()
         self._pending: dict[tuple[str, str], PendingAction] = {}
 
-    def has_pending(self, agent_id: str, action_id: str) -> bool:
+    def has_pending(self, agent_id: str, call_id: str) -> bool:
         with self._lock:
-            return (agent_id, action_id) in self._pending
+            return (agent_id, call_id) in self._pending
 
     def begin(
         self,
         *,
         agent_id: str,
+        call_id: str,
         action_id: str,
-        action_type: str,
         result_schema: dict[str, Any],
     ) -> None:
         with self._lock:
-            if (agent_id, action_id) in self._pending:
+            if (agent_id, call_id) in self._pending:
                 raise ValueError(
-                    f"action_id повторяется в ответе: {action_id!r}"
+                    f"call_id повторяется в ответе: {call_id!r}"
                 )
-            self._pending[(agent_id, action_id)] = PendingAction(
+            self._pending[(agent_id, call_id)] = PendingAction(
                 agent_id=agent_id,
+                call_id=call_id,
                 action_id=action_id,
-                action_type=action_type,
                 result_schema=result_schema,
             )
 
@@ -243,17 +247,17 @@ class ActionResultTracker:
         manager: "AgentManager",
         *,
         agent_id: str,
-        action_id: str,
+        call_id: str,
         data: dict[str, Any],
         parts: tuple = (),
     ) -> bool:
         with self._lock:
-            pending = self._pending.pop((agent_id, action_id), None)
+            pending = self._pending.get((agent_id, call_id))
         if pending is None:
             self.debug.log(
                 "action_result_rejected",
                 agent_id=agent_id,
-                action_id=action_id,
+                call_id=call_id,
                 reason="unknown_or_completed",
             )
             return False
@@ -261,25 +265,37 @@ class ActionResultTracker:
             validate_json(
                 data,
                 pending.result_schema,
-                where=f"результат {pending.action_type}",
+                where=f"результат {pending.action_id}",
             )
         except ValueError as exc:
             self.debug.log(
                 "action_result_rejected",
                 agent_id=agent_id,
-                action_id=action_id,
+                call_id=call_id,
                 reason="invalid_schema",
                 error=str(exc),
             )
+            manager.fail_call(agent_id, call_id, f"Некорректный результат {pending.action_id}: {exc}")
             return False
+        with self._lock:
+            if self._pending.pop((agent_id, call_id), None) is not pending:
+                return False
         result = ActionResult(
-            action_id=action_id, data=data, agent_id=agent_id, parts=tuple(parts)
+            call_id=call_id, data=data, agent_id=agent_id, parts=tuple(parts)
         )
         return manager.deliver_result(result)
 
-    def discard(self, agent_id: str, action_id: str) -> None:
+    def discard(self, agent_id: str, call_id: str) -> PendingAction | None:
         with self._lock:
-            self._pending.pop((agent_id, action_id), None)
+            return self._pending.pop((agent_id, call_id), None)
+
+    def for_agent(self, agent_id: str) -> list[PendingAction]:
+        with self._lock:
+            return [item for item in self._pending.values() if item.agent_id == agent_id]
+
+    def for_capability(self, action_ids: set[str], agent_ids: set[str] | None = None) -> list[PendingAction]:
+        with self._lock:
+            return [item for item in self._pending.values() if item.action_id in action_ids and (agent_ids is None or item.agent_id in agent_ids)]
 
     def discard_agent(self, agent_id: str) -> None:
         with self._lock:
@@ -306,6 +322,9 @@ class Agent:
         enabled_modules: set[str] | None = None,
         enabled_actions: set[str] | None = None,
         enabled_handlers: set[str] | None = None,
+        disabled_modules: set[str] | None = None,
+        disabled_actions: set[str] | None = None,
+        disabled_handlers: set[str] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
     ):
         self.agent_id = agent_id
@@ -317,6 +336,9 @@ class Agent:
         self._enabled_modules = set(enabled_modules or ())
         self._enabled_actions = set(enabled_actions or ())
         self._enabled_handlers = set(enabled_handlers or ())
+        self._disabled_modules = set(disabled_modules or ())
+        self._disabled_actions = set(disabled_actions or ())
+        self._disabled_handlers = set(disabled_handlers or ())
         self._capabilities_lock = threading.RLock()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": ""},
@@ -327,6 +349,29 @@ class Agent:
         self._thread: threading.Thread | None = None
         self._state = "created"
         self._state_lock = threading.Lock()
+        self._generation = 0
+        self._generation_lock = threading.RLock()
+        self._used_call_ids = self._scan_call_ids(self.history)
+
+    @staticmethod
+    def _scan_call_ids(messages: list[dict[str, Any]]) -> set[str]:
+        used = set()
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            try:
+                value = json.loads(message.get("content") or "")
+            except (ValueError, TypeError):
+                content = message.get("content")
+                if isinstance(content, str):
+                    for match in re.finditer(r'"call_id"\s*:\s*"([^"\\]+)"', content):
+                        used.add(match.group(1))
+                continue
+            if isinstance(value, dict) and isinstance(value.get("actions"), list):
+                for action in value["actions"]:
+                    if isinstance(action, dict) and isinstance(action.get("call_id"), str):
+                        used.add(action["call_id"])
+        return used
 
     @property
     def state(self) -> str:
@@ -358,34 +403,61 @@ class Agent:
                 "handlers": set(self._enabled_handlers),
             }
 
+    def known_snapshot(self) -> dict[str, set[str]]:
+        snapshot = self.capabilities_snapshot()
+        with self._capabilities_lock:
+            snapshot["modules"].update(self._disabled_modules)
+            snapshot["actions"].update(self._disabled_actions)
+            snapshot["handlers"].update(self._disabled_handlers)
+        return snapshot
+
+    def disabled_snapshot(self) -> dict[str, set[str]]:
+        with self._capabilities_lock:
+            return {"modules": set(self._disabled_modules), "actions": set(self._disabled_actions), "handlers": set(self._disabled_handlers)}
+
+    def is_enabled_action(self, action_id: str) -> bool:
+        if action_id in {"no_action", "speech"}:
+            return True
+        snapshot = self.capabilities_snapshot()
+        return action_id in snapshot["actions"] or any(
+            action_id in self.manager.capabilities.module_action_ids(module_id)
+            for module_id in snapshot["modules"]
+        )
+
     def enable_module(self, module_id: str) -> None:
         with self._capabilities_lock:
             self._enabled_modules.add(module_id)
+            self._disabled_modules.discard(module_id)
         self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
         with self._capabilities_lock:
             self._enabled_modules.discard(module_id)
+            self._disabled_modules.add(module_id)
         self._persist_context()
 
     def enable_action(self, action_id: str) -> None:
         with self._capabilities_lock:
             self._enabled_actions.add(action_id)
+            self._disabled_actions.discard(action_id)
         self._persist_context()
 
     def disable_action(self, action_id: str) -> None:
         with self._capabilities_lock:
             self._enabled_actions.discard(action_id)
+            self._disabled_actions.add(action_id)
         self._persist_context()
 
     def enable_handler(self, handler_id: str) -> None:
         with self._capabilities_lock:
             self._enabled_handlers.add(handler_id)
+            self._disabled_handlers.discard(handler_id)
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
         with self._capabilities_lock:
             self._enabled_handlers.discard(handler_id)
+            self._disabled_handlers.add(handler_id)
         self._persist_context()
 
     def accepts_event(self, event: Event) -> bool:
@@ -402,6 +474,7 @@ class Agent:
         """Снимок экземпляра для долговременной памяти."""
 
         snapshot = self.capabilities_snapshot()
+        disabled = self.disabled_snapshot()
         return {
             "agent_id": self.agent_id,
             "name": self.name,
@@ -410,6 +483,9 @@ class Agent:
             "modules": sorted(snapshot["modules"]),
             "actions": sorted(snapshot["actions"]),
             "handlers": sorted(snapshot["handlers"]),
+            "disabled_modules": sorted(disabled["modules"]),
+            "disabled_actions": sorted(disabled["actions"]),
+            "disabled_handlers": sorted(disabled["handlers"]),
             "messages": list(self.history[1:]),
         }
 
@@ -422,12 +498,8 @@ class Agent:
     ) -> tuple[dict[str, ActionDefinition], dict[str, EventDefinition]]:
         preset = self.manager.presets.load(self.preset)
         if snapshot is None:
-            snapshot = {
-                "modules": set(preset.modules),
-                "actions": set(preset.actions),
-                "handlers": set(preset.handlers),
-            }
-        missing = self.manager.capabilities.missing(snapshot)
+            snapshot = self.known_snapshot()
+        missing = self.manager.capabilities.missing(self.capabilities_snapshot())
         if missing:
             raise ValueError(
                 f"Пресет {self.preset} ссылается на незагруженные capabilities: "
@@ -437,6 +509,7 @@ class Agent:
             modules=snapshot["modules"], actions=snapshot["actions"],
             primary=self.primary,
         )
+        actions.update(self.manager.capabilities.known_action_definitions(snapshot))
         events = self.manager.events.for_capabilities(
             modules=snapshot["modules"], handlers=snapshot["handlers"],
             primary=self.primary,
@@ -448,7 +521,7 @@ class Agent:
                 self.manager.master_prompt,
                 actions,
                 events,
-                self.manager.capabilities.catalog(snapshot),
+                self.manager.capabilities.catalog(snapshot, describe_unloaded=True),
                 model_capabilities=self.manager.model_capabilities,
             ),
         }
@@ -461,19 +534,33 @@ class Agent:
         self._set_state("waiting")
         self._thread = threading.Thread(
             target=self._run,
+            args=(self._generation,),
             name=f"jarvis-agent-{self.agent_id}",
             daemon=True,
         )
         self._thread.start()
         return self
 
-    def enqueue(self, event: Event) -> None:
+    def enqueue(self, event: Event) -> bool:
         if not self._stop.is_set():
             self._events.put(event)
+            return True
+        return False
 
     def enqueue_result(self, result: ActionResult) -> None:
         if not self._stop.is_set():
             self._events.put(result)
+
+    def interrupt(self) -> None:
+        with self._generation_lock:
+            self._generation += 1
+            generation = self._generation
+            self._thread = threading.Thread(
+                target=self._run, args=(generation,),
+                name=f"jarvis-agent-{self.agent_id}-{generation}", daemon=True,
+            )
+            self._thread.start()
+            self._set_state("waiting")
 
     def stop(self, *, wait: bool = True, timeout: float = 10.0) -> None:
         self._stop.set()
@@ -482,10 +569,13 @@ class Agent:
             self._thread.join(timeout=timeout)
         self._set_state("stopped")
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
+    def _run(self, generation: int) -> None:
+        while not self._stop.is_set() and generation == self._generation:
             first = self._events.get()
             if first is None:
+                return
+            if generation != self._generation:
+                self._requeue_front([first])
                 return
             batch = [first]
             while True:
@@ -497,24 +587,36 @@ class Agent:
                     self._stop.set()
                     break
                 batch.append(event)
+            if generation != self._generation:
+                self._requeue_front(batch)
+                return
             if not self._stop.is_set():
-                self._turn(batch)
+                self._turn(batch, generation)
 
-    def _turn(self, batch: list[Event | ActionResult]) -> None:
+    def _requeue_front(self, items: list[Event | ActionResult]) -> None:
+        with self._events.mutex:
+            for item in reversed(items):
+                self._events.queue.appendleft(item)
+            self._events.not_empty.notify_all()
+
+    def _turn(self, batch: list[Event | ActionResult], generation: int) -> None:
         """Обработать пачку, удерживая новые события до корректного ответа."""
 
         try:
-            snapshot = self.capabilities_snapshot()
+            snapshot = self.known_snapshot()
         except Exception as exc:  # noqa: BLE001
             self._model_failure(exc)
             return
-        self._run_turn(batch, snapshot)
+        self._run_turn(batch, snapshot, generation)
 
     def _run_turn(
-        self, batch: list[Event | ActionResult], snapshot: dict[str, set[str]]
+        self, batch: list[Event | ActionResult], snapshot: dict[str, set[str]], generation: int
     ) -> None:
         """Выполнить один цикл на неизменяемом снимке capabilities."""
 
+        if generation != self._generation:
+            self._requeue_front(batch)
+            return
         self._set_state("thinking", event_count=len(batch))
         for item in batch:
             if isinstance(item, ActionResult):
@@ -536,7 +638,8 @@ class Agent:
             return
         schemas = {name: spec.args_schema for name, spec in specs.items()}
 
-        while not self._stop.is_set():
+        failures = 0
+        while not self._stop.is_set() and generation == self._generation:
             try:
                 response = self.manager.client.chat.completions.create(
                     model=self.manager.model,
@@ -547,8 +650,26 @@ class Agent:
                 refusal = getattr(message, "refusal", None)
                 content = message.content or ""
             except Exception as exc:  # noqa: BLE001
-                self._model_failure(exc)
+                if generation != self._generation:
+                    return
+                failures += 1
+                self.manager.debug.log("model_request_error", agent_id=self.agent_id, error=str(exc), attempt=failures)
+                if failures >= 5:
+                    self._model_failure(exc)
+                    return
+                delay = min(0.25 * 2 ** (failures - 1), 4.0)
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline and generation == self._generation and not self._stop.is_set():
+                    time.sleep(min(0.05, deadline - time.monotonic()))
+                continue
+
+            if generation != self._generation:
                 return
+
+            # Every call_id appearing in any model response is permanently reserved.
+            appeared = self._scan_call_ids([{"role": "assistant", "content": content}])
+            repeated = appeared & self._used_call_ids
+            self._used_call_ids.update(appeared)
 
             self.history.append({"role": "assistant", "content": content})
             self._persist_context()
@@ -562,6 +683,8 @@ class Agent:
                 continue
 
             try:
+                if repeated:
+                    raise ValueError(f"call_id уже использован в context: {sorted(repeated)!r}")
                 value = json.loads(content)
                 validate_json(
                     value,
@@ -570,22 +693,22 @@ class Agent:
                 )
                 actions = parse_actions(value)
                 for action in actions:
-                    if action.type not in specs:
+                    if action.action_id not in specs:
                         raise ValueError(
-                            f"Действие недоступно этому агенту: {action.type}"
+                            f"Действие недоступно этому агенту: {action.action_id}"
                         )
                     if self.manager.results.has_pending(
-                        self.agent_id, action.action_id
+                        self.agent_id, action.call_id
                     ):
                         raise ValueError(
-                            f"action_id повторяется в ответе: {action.action_id!r}"
+                            f"call_id повторяется в ответе: {action.call_id!r}"
                         )
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 code = "invalid_json" if isinstance(exc, json.JSONDecodeError) else "invalid_structure"
                 self._append_structure_error(code, str(exc), content)
                 continue
 
-            if len(actions) == 1 and actions[0].type == "no_action":
+            if len(actions) == 1 and actions[0].action_id == "no_action":
                 self._set_state("waiting")
                 return
             self._set_state("acting", action_count=len(actions))
@@ -626,7 +749,7 @@ class Agent:
         for action in actions:
             if self._stop.is_set() or self.manager.stopping.is_set():
                 break
-            spec = specs[action.type]
+            spec = specs[action.action_id]
             try:
                 self.manager.capabilities.dispatch(
                     action=action,
@@ -635,7 +758,7 @@ class Agent:
                 )
             except Exception as exc:  # noqa: BLE001
                 capability = spec.owner.split("|")[0]
-                self.manager.report_capability_error(capability, exc)
+                self.manager.report_capability_error(capability, exc, agent_id=self.agent_id, call_id=action.call_id)
 
 class AgentManager:
     """Управляет равноправными экземплярами агентов."""
@@ -697,7 +820,7 @@ class AgentManager:
         if agent is None:
             self.debug.log(
                 "action_result_dropped",
-                action_id=result.action_id,
+                call_id=result.call_id,
                 reason="unknown_agent",
             )
             return False
@@ -711,17 +834,20 @@ class AgentManager:
             name=PRIMARY_AGENT_NAME, preset=preset, parent_id=None, primary=True
         )
 
-    def restore(self, *, name: str, preset: str) -> Agent:
+    def restore(self, *, name: str, preset: str) -> Agent | None:
         """Поднять экземпляры из памяти или создать новый корневой агент."""
 
         records = self.memory.load_all() if self.memory is not None else []
+        if not records and self.memory is not None and self.memory.has_existing_state():
+            print("Jarvis restore failed: сохранённая память есть, но не содержит целого состояния; данные сохранены", file=sys.stderr, flush=True)
+            return None
         if not records:
             return self.spawn_root(name=name, preset=preset)
         return self._restore(records, default_name=name, default_preset=preset)
 
     def _restore(
         self, records: list[dict[str, Any]], *, default_name: str, default_preset: str
-    ) -> Agent:
+    ) -> Agent | None:
         primary = next(
             (
                 record
@@ -733,17 +859,12 @@ class AgentManager:
         if primary is None:
             primary = next(
                 (record for record in records if record["parent_id"] is None),
-                {
-                    "agent_id": "main",
-                    "name": PRIMARY_AGENT_NAME,
-                    "preset": default_preset,
-                    "parent_id": None,
-                    "modules": [],
-                    "actions": [],
-                    "handlers": [],
-                    "messages": [],
-                },
+                None,
             )
+        if primary is None:
+            self.debug.log("memory_restore_failed", error="Нет сохранённого корневого агента")
+            print("Jarvis restore failed: нет целого корневого агента; сохранённые данные оставлены", file=sys.stderr, flush=True)
+            return None
         primary = {**primary, "name": PRIMARY_AGENT_NAME}
         try:
             main_agent = self._spawn_record(primary, primary=True)
@@ -752,12 +873,10 @@ class AgentManager:
                 "memory_restore_failed",
                 agent_id=primary.get("agent_id"),
                 error=str(exc),
+                traceback=traceback.format_exc(),
             )
-            if self.memory is not None:
-                self.memory.delete(
-                    primary.get("preset", "main"), primary.get("agent_id", "main")
-                )
-            return self.spawn_root(name=default_name, preset=default_preset)
+            print(f"Jarvis restore failed for {primary.get('agent_id')}: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            return None
 
         spawned = {main_agent.agent_id}
         remaining = [
@@ -775,7 +894,9 @@ class AgentManager:
                             "memory_restore_failed",
                             agent_id=record["agent_id"],
                             error=str(exc),
+                            traceback=traceback.format_exc(),
                         )
+                        print(f"Jarvis restore failed for {record['agent_id']}: {traceback.format_exc()}", file=sys.stderr, flush=True)
                     else:
                         spawned.add(record["agent_id"])
                     remaining.remove(record)
@@ -786,8 +907,7 @@ class AgentManager:
                 agent_id=record["agent_id"],
                 reason="missing_parent",
             )
-            if self.memory is not None:
-                self.memory.delete(record["preset"], record["agent_id"])
+            print(f"Jarvis restore skipped {record['agent_id']}: parent {record['parent_id']} отсутствует", file=sys.stderr, flush=True)
         return main_agent
 
     def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
@@ -796,35 +916,26 @@ class AgentManager:
             "actions": set(record.get("actions") or ()),
             "handlers": set(record.get("handlers") or ()),
         }
-        if any(snapshot.values()):
-            try:
-                self.capabilities.load_snapshot(snapshot, start_handlers=False)
-            except Exception as exc:  # noqa: BLE001
-                self.debug.log(
-                    "memory_capabilities_fallback",
-                    agent_id=record["agent_id"],
-                    error=str(exc),
-                )
-                snapshot = {}
         return self._spawn(
             name=record["name"],
             preset=record["preset"],
             parent_id=record["parent_id"],
             primary=primary,
             agent_id=record["agent_id"],
-            capabilities_override=snapshot or None,
+            capabilities_override=snapshot,
+            disabled_override={
+                "modules": set(record.get("disabled_modules") or ()),
+                "actions": set(record.get("disabled_actions") or ()),
+                "handlers": set(record.get("disabled_handlers") or ()),
+            },
             restored_messages=record["messages"],
+            persist_initial=False,
         )
 
     def spawn(self, *, parent_id: str, name: str, preset: str) -> dict[str, Any]:
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
         selected = self.presets.load(preset)
-        if selected.protected:
-            raise ValueError(
-                f"Пресет {preset} защищён: у него может существовать только "
-                "корневой экземпляр"
-            )
         agent = self._spawn(name=name, preset=preset, parent_id=parent_id)
         return self.describe(agent)
 
@@ -837,13 +948,18 @@ class AgentManager:
         primary: bool = False,
         agent_id: str | None = None,
         capabilities_override: dict[str, set[str]] | None = None,
+        disabled_override: dict[str, set[str]] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
+        persist_initial: bool = True,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Имя агента не должно быть пустым")
         selected = self.presets.load(preset)
+        with self._lock:
+            if selected.protected and any(agent.preset == preset for agent in self.agents.values()):
+                raise ValueError(f"Пресет {preset} защищён: его экземпляр уже существует")
         if capabilities_override is not None:
             initial = {
                 "modules": set(capabilities_override.get("modules", ())),
@@ -852,10 +968,21 @@ class AgentManager:
             }
         else:
             initial = {
-                "modules": set(selected.modules),
-                "actions": set(selected.actions),
-                "handlers": set(selected.handlers),
+                "modules": set(selected.modules) - set(selected.disabled_modules),
+                "actions": set(selected.actions) - set(selected.disabled_actions),
+                "handlers": set(selected.handlers) - set(selected.disabled_handlers),
             }
+            disabled_override = {
+                "modules": set(selected.disabled_modules),
+                "actions": set(selected.disabled_actions),
+                "handlers": set(selected.disabled_handlers),
+            }
+        global_disabled = self.capabilities.global_disabled()
+        disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
+        for key in initial:
+            affected = initial[key] & global_disabled[key]
+            initial[key] -= affected
+            disabled_override.setdefault(key, set()).update(affected)
         self.capabilities.load_snapshot(initial, start_handlers=False)
         with self._lock:
             if primary:
@@ -876,6 +1003,9 @@ class AgentManager:
                 enabled_modules=initial["modules"],
                 enabled_actions=initial["actions"],
                 enabled_handlers=initial["handlers"],
+                disabled_modules=(disabled_override or {}).get("modules"),
+                disabled_actions=(disabled_override or {}).get("actions"),
+                disabled_handlers=(disabled_override or {}).get("handlers"),
                 restored_messages=restored_messages,
             )
             self.agents[resolved_id] = agent
@@ -893,7 +1023,8 @@ class AgentManager:
             self.bus.unbind(resolved_id)
             self.capabilities.release_snapshot(initial, agents=self.agents_snapshot())
             raise
-        self.persist_agent(agent)
+        if persist_initial:
+            self.persist_agent(agent)
         return agent
 
     def agents_snapshot(self) -> list[Agent]:
@@ -911,6 +1042,7 @@ class AgentManager:
             self.debug.log(
                 "memory_save_error", agent_id=agent.agent_id, error=str(exc)
             )
+            print(f"Jarvis persistence failed for {agent.agent_id}: {traceback.format_exc()}", file=sys.stderr, flush=True)
 
     def require_agent(self, agent_id: str) -> Agent:
         agent = self.agents.get(agent_id)
@@ -918,27 +1050,37 @@ class AgentManager:
             raise ValueError(f"Агент не найден: {agent_id}")
         return agent
 
-    def interrupt(self, *, agent_id: str, reason: str) -> dict[str, Any]:
+    def interrupt(self, *, agent_id: str, reason: str, requester_id: str | None = None) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
-        agent.stop(wait=False)
-        return {"agent_id": agent_id, "state": "stopped", "reason": reason}
+        if self.presets.load(agent.preset).protected and requester_id != agent_id:
+            raise ValueError(f"Защищённый агент {agent_id} не может быть прерван извне")
+        agent.interrupt()
+        return {"agent_id": agent_id, "state": "waiting", "reason": reason}
 
     def delete(self, *, agent_id: str, reason: str) -> dict[str, Any]:
-        with self._lock:
-            agent = self.agents.pop(agent_id, None)
-        if agent is None:
-            raise ValueError(f"Агент не найден: {agent_id}")
-        if agent_id == self.primary_agent_id:
-            self.primary_agent_id = None
-        snapshot = agent.capabilities_snapshot()
-        agent.stop(wait=False)
-        self.bus.unbind(agent_id)
-        self.results.discard_agent(agent_id)
-        self.capabilities.release_snapshot(
-            snapshot, agents=self.agents_snapshot()
-        )
-        if self.memory is not None:
-            self.memory.delete(agent.preset, agent_id)
+        self.require_agent(agent_id)
+        ordered = []
+        def walk(current: str) -> None:
+            for child in self.agents_snapshot():
+                if child.parent_id == current:
+                    walk(child.agent_id)
+            ordered.append(current)
+        walk(agent_id)
+        for candidate in ordered:
+            if self.presets.load(self.require_agent(candidate).preset).protected:
+                raise ValueError(f"Защищённый агент {candidate} не может быть удалён")
+        for candidate in ordered:
+            with self._lock:
+                agent = self.agents.pop(candidate)
+            snapshot = agent.capabilities_snapshot()
+            agent.stop(wait=False)
+            self.bus.unbind(candidate)
+            for pending in self.results.for_agent(candidate):
+                self.capabilities.cancel_call(candidate, pending.call_id)
+            self.results.discard_agent(candidate)
+            self.capabilities.release_snapshot(snapshot, agents=self.agents_snapshot())
+            if self.memory is not None:
+                self.memory.delete(agent.preset, candidate)
         return {"agent_id": agent_id, "deleted": True, "reason": reason}
 
     @staticmethod
@@ -1001,6 +1143,8 @@ class AgentManager:
 
     def disable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        for pending in self.results.for_capability(self.capabilities.module_action_ids(module_id), {agent_id}):
+            self.disable_call(agent_id, pending.call_id)
         agent.disable_module(module_id)
         if not self.agents_with_module(module_id):
             self.capabilities.unload_module(module_id)
@@ -1021,6 +1165,8 @@ class AgentManager:
 
     def disable_action(self, agent_id: str, action_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        for pending in self.results.for_capability({action_id}, {agent_id}):
+            self.disable_call(agent_id, pending.call_id)
         agent.disable_action(action_id)
         if not self.agents_with_action(action_id):
             self.capabilities.unload_action(action_id)
@@ -1123,12 +1269,27 @@ class AgentManager:
                 raise
         return restored
 
+    def fail_call(self, agent_id: str, call_id: str, error: Exception | str) -> None:
+        pending = self.results.discard(agent_id, call_id)
+        if pending is not None:
+            self.report_capability_error(f"action:{pending.action_id}", error, agent_id=agent_id, call_id=call_id)
+
+    def disable_call(self, agent_id: str, call_id: str) -> None:
+        pending = self.results.discard(agent_id, call_id)
+        if pending is not None:
+            self.capabilities.cancel_execution(agent_id, call_id, pending.action_id)
+            self.deliver_result(ActionResult(
+                call_id=call_id, agent_id=agent_id,
+                data={"error": "disabled", "message": "Действие временно отключено"},
+            ))
+
     def report_capability_error(
-        self, capability: str, error: Exception | str
+        self, capability: str, error: Exception | str,
+        *, agent_id: str | None = None, call_id: str | None = None,
     ) -> None:
-        target = self.primary_agent_id
+        target = agent_id
         event_type = "capability_error"
-        data = {"capability": capability, "error": str(error)}
+        data = {"capability": capability, "error": str(error), "call_id": call_id}
         if target is None:
             self.debug.log(event_type, **data)
             return

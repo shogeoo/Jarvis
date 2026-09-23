@@ -21,6 +21,9 @@ class AgentPreset:
     actions: tuple[str, ...]
     handlers: tuple[str, ...]
     protected: bool = False
+    disabled_modules: tuple[str, ...] = ()
+    disabled_actions: tuple[str, ...] = ()
+    disabled_handlers: tuple[str, ...] = ()
 
 
 class PresetStore:
@@ -88,7 +91,31 @@ class PresetStore:
             tuple(raw_actions),
             tuple(raw_handlers),
             metadata.get("protected", False),
+            tuple(self._read_optional_list(path, "disabled_modules", _NAME)),
+            tuple(self._read_optional_list(path, "disabled_actions", _CAPABILITY)),
+            tuple(self._read_optional_list(path, "disabled_handlers", _CAPABILITY)),
         )
+
+    @staticmethod
+    def _read_optional_list(path: Path, name: str, pattern) -> list[str]:
+        file = path / f"{name}.json"
+        if not file.exists():
+            return []
+        values = json.loads(file.read_text(encoding="utf-8"))
+        if not isinstance(values, list) or not all(isinstance(item, str) and pattern.fullmatch(item) for item in values):
+            raise ValueError(f"Некорректный {name}.json")
+        return values
+
+    def set_disabled(self, name: str, kind: str, capability_id: str, disabled: bool) -> None:
+        self.validate_capability(kind, capability_id)
+        preset = self.load(name)
+        key = {"module": "disabled_modules", "action": "disabled_actions", "handler": "disabled_handlers"}[kind]
+        values = set(getattr(preset, key))
+        if disabled:
+            values.add(capability_id)
+        else:
+            values.discard(capability_id)
+        (self.path(name) / f"{key}.json").write_text(json.dumps(sorted(values), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def list(self) -> list[AgentPreset]:
         if not self.root.exists():

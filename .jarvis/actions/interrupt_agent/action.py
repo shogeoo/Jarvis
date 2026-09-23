@@ -4,7 +4,7 @@ from jarvis.core.protocol import object_schema
 
 def run(data, context):
     return context.agent_manager.interrupt(
-        agent_id=data["agent_id"], reason=data["reason"]
+        agent_id=data["agent_id"], reason=data["reason"], requester_id=context.agent_id
     )
 
 

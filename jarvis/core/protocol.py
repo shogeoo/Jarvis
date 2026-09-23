@@ -8,7 +8,7 @@ OpenAI одно событие всегда занимает одно сообщ
 
 Ответ агента имеет единственную форму::
 
-    {"actions": [{"type": "example.handle", "data": {"text": "..."}}]}
+    {"actions": [{"action_id": "example.handle", "call_id": "act-1", "data": {"text": "..."}}]}
 
 Технические идентификаторы, источник и адресат живут во внутреннем
 конверте ``Event``. Они не заставляют модель генерировать маршрутизацию и
@@ -85,15 +85,15 @@ def actions_response_schema(action_schemas: Mapping[str, JSONSchema]) -> JSONSch
 
     variants = []
     no_action_variant = None
-    for action_type, data_schema in sorted(action_schemas.items()):
+    for action_id, data_schema in sorted(action_schemas.items()):
         variant = object_schema(
             {
-                "action_id": {"type": "string"},
-                "type": {"type": "string", "enum": [action_type]},
+                "action_id": {"type": "string", "enum": [action_id]},
+                "call_id": {"type": "string"},
                 "data": data_schema,
             }
         )
-        if action_type == "no_action":
+        if action_id == "no_action":
             no_action_variant = variant
         else:
             variants.append(variant)
@@ -332,7 +332,8 @@ class Event:
 
     def model_value(self) -> dict[str, Any]:
         """Представление события в одном сообщении контекста модели."""
-
+        if self.handler_id is not None and self.handler_id != "core:speech":
+            return {"handler_id": self.handler_id, "data": self.data}
         return {"type": self.type, "data": self.data}
 
     def model_content(self) -> str:
@@ -373,19 +374,19 @@ class Event:
 class ActionRequest:
     """Одно действие, извлечённое из ответа агента."""
 
-    type: str
-    data: dict[str, Any]
     action_id: str
+    data: dict[str, Any]
+    call_id: str
 
     def model_value(self) -> dict[str, Any]:
-        return {"action_id": self.action_id, "type": self.type, "data": self.data}
+        return {"action_id": self.action_id, "call_id": self.call_id, "data": self.data}
 
 
 @dataclass(frozen=True, slots=True)
 class ActionResult:
     """Обязательный результат конкретного действия для его инициатора."""
 
-    action_id: str
+    call_id: str
     data: dict[str, Any]
     agent_id: str | None = None
     type: str = "action_result"
@@ -399,7 +400,7 @@ class ActionResult:
 
         return {
             "type": self.type,
-            "action_id": self.action_id,
+            "call_id": self.call_id,
             "data": self.data,
         }
 
@@ -418,7 +419,7 @@ class ActionResult:
     def debug_value(self) -> dict[str, Any]:
         return {
             "type": self.type,
-            "action_id": self.action_id,
+            "call_id": self.call_id,
             "data": self.data,
             "agent_id": self.agent_id,
             "parts": len(self.parts),
@@ -441,33 +442,33 @@ def parse_actions(value: Any) -> list[ActionRequest]:
         raise ValueError("Ответ агента должен содержать непустой массив actions")
 
     actions: list[ActionRequest] = []
-    seen_action_ids: set[str] = set()
+    seen_call_ids: set[str] = set()
     for index, raw in enumerate(raw_actions):
-        if not isinstance(raw, dict) or set(raw) != {"action_id", "type", "data"}:
+        if not isinstance(raw, dict) or set(raw) != {"action_id", "call_id", "data"}:
             raise ValueError(
-                f"Действие #{index + 1} должно содержать только action_id, type и data"
+                f"Действие #{index + 1} должно содержать только action_id, call_id и data"
             )
         if (
-            not isinstance(raw["action_id"], str)
-            or not raw["action_id"].strip()
+            not isinstance(raw["call_id"], str)
+            or not raw["call_id"].strip()
         ):
-            raise ValueError(f"У действия #{index + 1} некорректный action_id")
-        if raw["action_id"] in seen_action_ids:
+            raise ValueError(f"У действия #{index + 1} некорректный call_id")
+        if raw["call_id"] in seen_call_ids:
             raise ValueError(
-                f"action_id повторяется в ответе: {raw['action_id']!r}"
+                f"call_id повторяется в ответе: {raw['call_id']!r}"
             )
-        seen_action_ids.add(raw["action_id"])
-        if not isinstance(raw["type"], str) or not raw["type"]:
-            raise ValueError(f"У действия #{index + 1} некорректный type")
+        seen_call_ids.add(raw["call_id"])
+        if not isinstance(raw["action_id"], str) or not raw["action_id"]:
+            raise ValueError(f"У действия #{index + 1} некорректный action_id")
         if not isinstance(raw["data"], dict):
             raise ValueError(f"У действия #{index + 1} data должен быть объектом")
         actions.append(
             ActionRequest(
-                type=raw["type"], data=raw["data"], action_id=raw["action_id"]
+                action_id=raw["action_id"], data=raw["data"], call_id=raw["call_id"]
             )
         )
 
-    no_action_count = sum(action.type == "no_action" for action in actions)
+    no_action_count = sum(action.action_id == "no_action" for action in actions)
     if no_action_count and (no_action_count != 1 or len(actions) != 1):
         raise ValueError("no_action должен быть единственным действием в ответе")
     return actions

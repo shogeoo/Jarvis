@@ -24,6 +24,9 @@ class _Agent:
     def enqueue_result(self, result):
         self.results.append(result)
 
+    def is_enabled_action(self, action_id):
+        return True
+
 
 class _Manager:
     def __init__(self, agent):
@@ -89,7 +92,7 @@ class CapabilityTests(unittest.TestCase):
                     results[0].model_value(),
                     {
                         "type": "action_result",
-                        "action_id": "run-1",
+                        "call_id": "run-1",
                         "data": {"spoken": True, "text": "ok"},
                     },
                 )

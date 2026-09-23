@@ -6,7 +6,7 @@
   "list_active_capabilities",
   "list_agent_presets",
   "list_agents",
-  "list_capabilities",
+  "list_available_capabilities",
   "send_notification",
   "take_screenshot",
   "send_message_to_agent",

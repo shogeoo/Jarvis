@@ -7,7 +7,7 @@ def run(data, context):
         sender_id=context.agent_id,
         target_id=data["agent_id"],
         text=data["text"],
-        action_type=context.action_type,
+        action_id=context.action_id,
         module_id=context.module_id,
     )
 
