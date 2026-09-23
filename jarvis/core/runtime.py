@@ -1058,14 +1058,14 @@ class AgentManager:
             raise ValueError(f"Агент не найден: {agent_id}")
         return agent
 
-    def interrupt(self, *, agent_id: str, reason: str, requester_id: str | None = None) -> dict[str, Any]:
+    def interrupt(self, *, agent_id: str, requester_id: str | None = None) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
         if self.presets.load(agent.preset).protected and requester_id != agent_id:
             raise ValueError(f"Защищённый агент {agent_id} не может быть прерван извне")
         agent.interrupt()
-        return {"agent_id": agent_id, "state": "waiting", "reason": reason}
+        return {"agent_id": agent_id, "state": "waiting"}
 
-    def delete(self, *, agent_id: str, reason: str) -> dict[str, Any]:
+    def delete(self, *, agent_id: str) -> dict[str, Any]:
         self.require_agent(agent_id)
         ordered = []
         def walk(current: str) -> None:
@@ -1089,7 +1089,7 @@ class AgentManager:
             self.capabilities.release_snapshot(snapshot, agents=self.agents_snapshot())
             if self.memory is not None:
                 self.memory.delete(agent.preset, candidate)
-        return {"agent_id": agent_id, "deleted": True, "reason": reason}
+        return {"agent_id": agent_id, "deleted": True}
 
     @staticmethod
     def describe(agent: Agent) -> dict[str, Any]:

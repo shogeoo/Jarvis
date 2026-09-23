@@ -401,7 +401,7 @@ class RuntimeTests(unittest.TestCase):
                 parent_id=root.agent_id, name="worker", preset="worker"
             )
             self.assertIsNotNone(memory.load("worker", child_info["agent_id"]))
-            manager.delete(agent_id=child_info["agent_id"], reason="test")
+            manager.delete(agent_id=child_info["agent_id"])
             self.assertIsNone(memory.load("worker", child_info["agent_id"]))
 
     def test_enabled_capabilities_are_persisted(self):
@@ -485,7 +485,7 @@ class RuntimeTests(unittest.TestCase):
         agent = manager.require_agent(child["agent_id"])
         self.publish(agent, "first")
         self.assertTrue(entered.wait(2))
-        manager.interrupt(agent_id=agent.agent_id, reason="test")
+        manager.interrupt(agent_id=agent.agent_id)
         self.publish(agent, "second")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         release.set()
@@ -497,13 +497,13 @@ class RuntimeTests(unittest.TestCase):
         manager = self.manager(_Client([_no_action("done")]))
         root = manager.spawn_root(name="main", preset="main")
         with self.assertRaisesRegex(ValueError, "Защищённый"):
-            manager.delete(agent_id="main", reason="no")
+            manager.delete(agent_id="main")
         with self.assertRaisesRegex(ValueError, "Защищённый"):
-            manager.interrupt(agent_id="main", reason="no", requester_id="another")
+            manager.interrupt(agent_id="main", requester_id="another")
         parent = manager.spawn(parent_id="main", name="parent", preset="worker")["agent_id"]
         child = manager.spawn(parent_id=parent, name="child", preset="worker")["agent_id"]
         grandchild = manager.spawn(parent_id=child, name="grandchild", preset="worker")["agent_id"]
-        manager.delete(agent_id=parent, reason="cleanup")
+        manager.delete(agent_id=parent)
         self.assertEqual(set(manager.agents), {"main"})
         self.assertNotIn(child, manager.bus._agents)
         self.assertNotIn(grandchild, manager.bus._agents)
@@ -521,7 +521,7 @@ class RuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "защищён"):
             manager.spawn(parent_id="main", name="duplicate", preset="special")
         with self.assertRaisesRegex(ValueError, "Защищённый"):
-            manager.delete(agent_id=special_id, reason="no")
+            manager.delete(agent_id=special_id)
 
     def test_restore_failure_preserves_memory_and_does_not_replace_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -617,13 +617,29 @@ class RuntimeTests(unittest.TestCase):
         manager.enable_action("main", "interrupt_agent")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("interrupt_agent", {"agent_id": child_id, "reason": "test"}, "interrupt-1"),
+            action=ActionRequest("interrupt_agent", {"agent_id": child_id}, "interrupt-1"),
             spec=manager.actions.require("interrupt_agent"), agent=main,
         )
         self.assertTrue(_wait(lambda: any(item["call_id"] == "interrupt-1" for item in self.action_results(main))))
         result = next(item for item in self.action_results(main) if item["call_id"] == "interrupt-1")
         self.assertEqual(result["data"]["state"], "waiting")
         self.assertIn(child_id, manager.agents)
+
+    def test_delete_action_rpc_needs_only_agent_id(self):
+        self.install_project_action("delete_agent")
+        manager = self.manager(_Client([_no_action("done")]))
+        main = manager.spawn_root(name="main", preset="main")
+        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
+        manager.enable_action("main", "delete_agent")
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(
+            action=ActionRequest("delete_agent", {"agent_id": child_id}, "delete-1"),
+            spec=manager.actions.require("delete_agent"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "delete-1" for item in self.action_results(main))))
+        result = next(item for item in self.action_results(main) if item["call_id"] == "delete-1")
+        self.assertEqual(result["data"], {"agent_id": child_id, "deleted": True})
+        self.assertNotIn(child_id, manager.agents)
 
     def test_global_disable_then_enable_reloads_changed_action(self):
         self.install_project_action("set_capability_enabled")

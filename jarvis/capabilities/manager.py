@@ -1429,14 +1429,14 @@ class _AgentApi:
     def spawn(self, parent_id: str, name: str, preset: str) -> dict[str, Any]:
         return self._manager.spawn(parent_id=parent_id, name=name, preset=preset)
 
-    def delete(self, agent_id: str, reason: str) -> dict[str, Any]:
-        return self._manager.delete(agent_id=agent_id, reason=reason)
+    def delete(self, agent_id: str) -> dict[str, Any]:
+        return self._manager.delete(agent_id=agent_id)
 
     def interrupt(
-        self, agent_id: str, reason: str, requester_id: str | None = None
+        self, agent_id: str, requester_id: str | None = None
     ) -> dict[str, Any]:
         return self._manager.interrupt(
-            agent_id=agent_id, reason=reason, requester_id=requester_id
+            agent_id=agent_id, requester_id=requester_id
         )
 
     def list_agents(self) -> list[dict[str, Any]]:

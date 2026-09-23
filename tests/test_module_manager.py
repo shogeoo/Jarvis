@@ -15,11 +15,45 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ModuleManagerContractTests(unittest.TestCase):
-    def test_execute_command_runs_and_captures_both_streams(self):
-        path = ROOT / ".jarvis" / "actions" / "execute_command" / "action.py"
-        spec = importlib.util.spec_from_file_location("test_execute_command_action", path)
+    def test_module_manager_prompt_contains_self_sufficient_sdk_contract(self):
+        prompt = PresetStore(ROOT / ".jarvis" / "presets").load("module_manager").person_prompt
+        for marker in (
+            "НЕ читай исходники ядра Jarvis",
+            "action_definition",
+            "handler_definition",
+            "module_definition",
+            "context.emit",
+            "object_schema",
+            "create_module",
+            "set_capability_enabled",
+            "ДОЖДИСЬ action_result",
+        ):
+            self.assertIn(marker, prompt)
+
+    def _load_action(self, action_id):
+        path = ROOT / ".jarvis" / "actions" / action_id / "action.py"
+        spec = importlib.util.spec_from_file_location(f"test_{action_id}_action", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
+
+    def test_file_actions_accept_paths_outside_jarvis(self):
+        reader = self._load_action("read_file")
+        writer = self._load_action("write_file")
+        editor = self._load_action("edit_file")
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "nested" / "outside.txt"
+            context = SimpleNamespace()
+            self.assertTrue(writer.run({"path": str(target), "content": "one\ntwo\nthree\n"}, context)["written"])
+            self.assertEqual(
+                reader.run({"path": str(target), "start_line": 2, "end_line": 3}, context)["content"],
+                "2: two\n3: three",
+            )
+            self.assertTrue(editor.run({"path": str(target), "start_line": 2, "end_line": 2, "content": "changed"}, context)["edited"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "one\nchanged\nthree\n")
+
+    def test_execute_command_runs_and_captures_both_streams(self):
+        module = self._load_action("execute_command")
         with tempfile.TemporaryDirectory() as temporary:
             context = SimpleNamespace(config=SimpleNamespace(project_root=Path(temporary)))
             result = module.run(
@@ -30,6 +64,14 @@ class ModuleManagerContractTests(unittest.TestCase):
                 context,
             )
             self.assertEqual(result, {"exit_code": 7, "stdout": "out", "stderr": "err"})
+
+    def test_execute_command_accepts_cwd_outside_project(self):
+        module = self._load_action("execute_command")
+        with tempfile.TemporaryDirectory() as temporary:
+            context = SimpleNamespace(config=SimpleNamespace(project_root=ROOT))
+            result = module.run({"command": "pwd", "cwd": temporary}, context)
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["stdout"].strip(), temporary)
 
     def test_module_manager_has_only_its_management_actions_by_default(self):
         presets = PresetStore(ROOT / ".jarvis" / "presets")

@@ -15,9 +15,7 @@ def run(data, context):
     project_root = Path(context.config.project_root).resolve()
     cwd = project_root
     if data.get("cwd"):
-        cwd = (project_root / data["cwd"]).resolve()
-        if cwd != project_root and project_root not in cwd.parents:
-            raise ValueError("cwd is outside the project")
+        cwd = (project_root / Path(data["cwd"]).expanduser()).resolve()
     def child_setup():
         os.setsid()
         ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGKILL)

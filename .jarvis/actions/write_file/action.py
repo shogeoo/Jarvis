@@ -1,13 +1,13 @@
 from jarvis.capabilities import action_definition
-from jarvis.capabilities.scope import scope_path
+from pathlib import Path
 from jarvis.core.protocol import object_schema
 
 
 def run(data, context):
-    path = scope_path(context.capabilities.root, data["path"])
+    path = Path(data["path"]).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(data["content"], encoding="utf-8")
-    return {"path": str(path.relative_to(context.capabilities.root)), "written": True}
+    return {"path": str(path), "written": True}
 
 
 def create_action():
