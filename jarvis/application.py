@@ -12,6 +12,7 @@ from .infrastructure.config import Config
 from .infrastructure.context import MemoryStore
 from .infrastructure.debug import Debugger
 from .infrastructure.model_capabilities import discover_model_capabilities
+from .infrastructure.runtime_layout import ensure_runtime_layout
 from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
 from .speech import service as speech_service
@@ -22,6 +23,7 @@ class JarvisApplication:
         if not config.llm_enabled:
             raise RuntimeError("LLM_MODEL не задан")
         self.config = config
+        ensure_runtime_layout(config.jarvis_dir)
         self.debug = Debugger(enabled=True)
         self.memory = memory or MemoryStore(config.jarvis_dir / "memory")
         self.actions = ActionRegistry()
