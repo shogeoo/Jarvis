@@ -463,6 +463,14 @@ class Agent:
     def accepts_event(self, event: Event) -> bool:
         if event.handler_id == "core:speech":
             return self.primary
+        if event.handler_id is not None and self.manager.capabilities.is_globally_paused(
+            "handler", event.handler_id
+        ):
+            return False
+        if event.module_id is not None and self.manager.capabilities.is_globally_paused(
+            "module", event.module_id
+        ):
+            return False
         snapshot = self.capabilities_snapshot()
         if event.handler_id is not None and event.handler_id in snapshot["handlers"]:
             return True
@@ -499,7 +507,9 @@ class Agent:
         preset = self.manager.presets.load(self.preset)
         if snapshot is None:
             snapshot = self.known_snapshot()
-        missing = self.manager.capabilities.missing(self.capabilities_snapshot())
+        missing = self.manager.capabilities.missing(
+            self.manager.capabilities.runnable_snapshot(self.capabilities_snapshot())
+        )
         if missing:
             raise ValueError(
                 f"Пресет {self.preset} ссылается на незагруженные capabilities: "
@@ -694,10 +704,7 @@ class Agent:
                 actions = parse_actions(value)
                 global_changes: set[tuple[str, str]] = set()
                 for action in actions:
-                    if action.action_id in {
-                        "disable_capability_globally",
-                        "enable_capability_globally",
-                    }:
+                    if action.action_id == "toggle_capability":
                         target = (action.data["kind"], action.data["id"])
                         if target in global_changes:
                             raise ValueError(
@@ -988,13 +995,10 @@ class AgentManager:
                 "actions": set(selected.disabled_actions),
                 "handlers": set(selected.disabled_handlers),
             }
-        global_disabled = self.capabilities.global_disabled()
         disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
-        for key in initial:
-            affected = initial[key] & global_disabled[key]
-            initial[key] -= affected
-            disabled_override.setdefault(key, set()).update(affected)
-        self.capabilities.load_snapshot(initial, start_handlers=False)
+        self.capabilities.load_snapshot(
+            self.capabilities.runnable_snapshot(initial), start_handlers=False
+        )
         with self._lock:
             if primary:
                 resolved_id = "main"
@@ -1025,7 +1029,9 @@ class AgentManager:
                 self.primary_agent_id = resolved_id
         try:
             agent.start()
-            self.capabilities.start_snapshot(initial)
+            self.capabilities.start_snapshot(
+                self.capabilities.runnable_snapshot(initial)
+            )
         except Exception:
             with self._lock:
                 self.agents.pop(resolved_id, None)
@@ -1141,6 +1147,9 @@ class AgentManager:
 
     def enable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        if self.capabilities.is_globally_paused("module", module_id):
+            agent.enable_module(module_id)
+            return {"agent_id": agent_id, "module_id": module_id, "enabled": True, "globally_paused": True}
         self.capabilities.load_module(module_id, start_handlers=False)
         agent.enable_module(module_id)
         try:
@@ -1163,6 +1172,9 @@ class AgentManager:
 
     def enable_action(self, agent_id: str, action_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        if self.capabilities.is_globally_paused("action", action_id):
+            agent.enable_action(action_id)
+            return {"agent_id": agent_id, "action_id": action_id, "enabled": True, "globally_paused": True}
         self.capabilities.load_action(action_id, start_handlers=False)
         agent.enable_action(action_id)
         try:
@@ -1185,6 +1197,9 @@ class AgentManager:
 
     def enable_handler(self, agent_id: str, handler_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        if self.capabilities.is_globally_paused("handler", handler_id):
+            agent.enable_handler(handler_id)
+            return {"agent_id": agent_id, "handler_id": handler_id, "enabled": True, "globally_paused": True}
         self.capabilities.load_handler(handler_id, start_handlers=False)
         agent.enable_handler(handler_id)
         try:
@@ -1203,76 +1218,16 @@ class AgentManager:
             self.capabilities.unload_handler(handler_id)
         return {"agent_id": agent_id, "handler_id": handler_id, "enabled": False}
 
-    def disable_capability_everywhere(
-        self, *, kind: str, capability_id: str
-    ) -> list[str]:
-        if kind == "module":
-            targets = self.agents_with_module(capability_id)
-            disable = lambda agent_id: self.disable_module(agent_id, capability_id)
-            unload = lambda: self.capabilities.unload_module(capability_id)
-        elif kind == "action":
-            targets = self.agents_with_action(capability_id)
-            disable = lambda agent_id: self.disable_action(agent_id, capability_id)
-            unload = lambda: self.capabilities.unload_action(capability_id)
-        elif kind == "handler":
-            targets = self.agents_with_handler(capability_id)
-            disable = lambda agent_id: self.disable_handler(agent_id, capability_id)
-            unload = lambda: self.capabilities.unload_handler(capability_id)
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        for agent_id in targets:
-            disable(agent_id)
-        unload()
-        return targets
+    def agents_assigned_and_enabled(self, kind: str, capability_id: str) -> list[Agent]:
+        result = []
+        for agent in self.agents_snapshot():
+            snapshot = agent.capabilities_snapshot()
+            if capability_id in snapshot.get({"module": "modules", "action": "actions", "handler": "handlers"}[kind], set()):
+                result.append(agent)
+        return result
 
-    def restore_capability(
-        self, *, kind: str, capability_id: str, agent_ids: list[str]
-    ) -> list[str]:
-        if kind == "module":
-            self.capabilities.load_module(capability_id, start_handlers=False)
-            enable = lambda agent: agent.enable_module(capability_id)
-            start = lambda: self.capabilities.start_module(capability_id)
-            rollback = lambda agent_id: self.require_agent(agent_id).disable_module(
-                capability_id
-            )
-            unused = lambda: not self.agents_with_module(capability_id)
-            unload = lambda: self.capabilities.unload_module(capability_id)
-        elif kind == "action":
-            self.capabilities.load_action(capability_id, start_handlers=False)
-            enable = lambda agent: agent.enable_action(capability_id)
-            start = lambda: self.capabilities.start_action(capability_id)
-            rollback = lambda agent_id: self.require_agent(agent_id).disable_action(
-                capability_id
-            )
-            unused = lambda: not self.agents_with_action(capability_id)
-            unload = lambda: self.capabilities.unload_action(capability_id)
-        elif kind == "handler":
-            self.capabilities.load_handler(capability_id, start_handlers=False)
-            enable = lambda agent: agent.enable_handler(capability_id)
-            start = lambda: self.capabilities.start_handler(capability_id)
-            rollback = lambda agent_id: self.require_agent(agent_id).disable_handler(
-                capability_id
-            )
-            unused = lambda: not self.agents_with_handler(capability_id)
-            unload = lambda: self.capabilities.unload_handler(capability_id)
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        restored = []
-        for agent_id in agent_ids:
-            agent = self.agents.get(agent_id)
-            if agent is not None:
-                enable(agent)
-                restored.append(agent_id)
-        if restored:
-            try:
-                start()
-            except Exception:
-                for agent_id in restored:
-                    rollback(agent_id)
-                if unused():
-                    unload()
-                raise
-        return restored
+    def toggle_capability(self, kind: str, capability_id: str) -> dict[str, Any]:
+        return self.capabilities.toggle_global_state(kind=kind, capability_id=capability_id)
 
     def fail_call(self, agent_id: str, call_id: str, error: Exception | str) -> None:
         pending = self.results.discard(agent_id, call_id)
@@ -1280,12 +1235,24 @@ class AgentManager:
             self.report_capability_error(f"action:{pending.action_id}", error, agent_id=agent_id, call_id=call_id)
 
     def disable_call(self, agent_id: str, call_id: str) -> None:
+        self._finish_stopped_call(
+            agent_id, call_id, status="disabled",
+            info="Action is locally disabled.",
+        )
+
+    def pause_call(self, agent_id: str, call_id: str) -> None:
+        self._finish_stopped_call(
+            agent_id, call_id, status="paused",
+            info="Capability is globally paused.",
+        )
+
+    def _finish_stopped_call(self, agent_id: str, call_id: str, *, status: str, info: str) -> None:
         pending = self.results.discard(agent_id, call_id)
         if pending is not None:
             self.capabilities.cancel_execution(agent_id, call_id, pending.action_id)
             self.deliver_result(ActionResult(
                 call_id=call_id, agent_id=agent_id,
-                data={"status": "disabled", "info": "Action was disabled before completion."},
+                data={"status": status, "info": info},
             ))
 
     def report_capability_error(

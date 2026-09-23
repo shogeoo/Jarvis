@@ -89,10 +89,8 @@ class RuntimeTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / ".jarvis" / "actions" / action_id / "action.py"
         if source.is_file():
             code = source.read_text(encoding="utf-8")
-        elif action_id == "disable_capability_globally":
-            code = fixtures.global_control_action(False)
-        elif action_id == "enable_capability_globally":
-            code = fixtures.global_control_action(True)
+        elif action_id == "toggle_capability":
+            code = fixtures.toggle_capability_action()
         else:
             code = fixtures.CONTROL_ACTIONS[action_id]
         fixtures.write_action(self.root / "actions", action_id, code)
@@ -649,9 +647,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["data"], {"agent_id": child_id, "deleted": True})
         self.assertNotIn(child_id, manager.agents)
 
-    def test_global_disable_then_enable_reloads_changed_action(self):
-        self.install_project_action("disable_capability_globally")
-        self.install_project_action("enable_capability_globally")
+    def test_global_pause_then_resume_reloads_changed_action(self):
+        self.install_project_action("toggle_capability")
         value_schema = {
             "type": "object", "properties": {"value": {"type": "string"}},
             "required": ["value"], "additionalProperties": False,
@@ -660,33 +657,33 @@ class RuntimeTests(unittest.TestCase):
         manager = self.manager(_Client([_no_action("done")]))
         main = manager.spawn_root(name="main", preset="main")
         child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
-        manager.enable_action("main", "disable_capability_globally")
-        manager.enable_action("main", "enable_capability_globally")
+        manager.enable_action("main", "toggle_capability")
         manager.enable_action("main", "reloadable")
         manager.enable_action(child_id, "reloadable")
         old_host = manager.capabilities._actions["reloadable"].host
         old_process = old_host.process
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("disable_capability_globally", {"kind": "action", "id": "reloadable"}, "disable-1"),
-            spec=manager.actions.require("disable_capability_globally"), agent=main,
+            action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "pause-1"),
+            spec=manager.actions.require("toggle_capability"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "disable-1" for item in self.action_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.action_results(main))))
         self.assertNotIn("reloadable", manager.capabilities.loaded_actions())
         self.assertNotIn(old_host.key, manager.capabilities._hosts)
         self.assertIsNotNone(old_process.poll())
-        self.assertIn("reloadable", manager.capabilities.global_disabled()["actions"])
-        self.assertEqual(set(manager.capabilities._disabled_targets[("action", "reloadable")]), {"main", child_id})
+        self.assertIn("reloadable", manager.capabilities.global_paused()["actions"])
+        self.assertIn("reloadable", main.standalone_actions())
+        self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
 
         self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'new'}\n")
         manager.capabilities.dispatch(
-            action=ActionRequest("enable_capability_globally", {"kind": "action", "id": "reloadable"}, "enable-1"),
-            spec=manager.actions.require("enable_capability_globally"), agent=main,
+            action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "resume-1"),
+            spec=manager.actions.require("toggle_capability"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "enable-1" for item in self.action_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.action_results(main))))
         self.assertIn("reloadable", main.standalone_actions())
         self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
-        self.assertNotIn("reloadable", manager.capabilities.global_disabled()["actions"])
+        self.assertNotIn("reloadable", manager.capabilities.global_paused()["actions"])
         self.assertIsNot(manager.capabilities._actions["reloadable"].host, old_host)
         manager.capabilities.dispatch(
             action=ActionRequest("reloadable", {}, "reload-1"),
@@ -696,8 +693,8 @@ class RuntimeTests(unittest.TestCase):
         result = next(item for item in self.action_results(main) if item["call_id"] == "reload-1")
         self.assertEqual(result["data"], {"value": "new"})
 
-    def test_global_disable_cancels_running_action_before_reporting_completion(self):
-        self.install_project_action("disable_capability_globally")
+    def test_global_pause_cancels_running_action_before_reporting_completion(self):
+        self.install_project_action("toggle_capability")
         marker = self.root / "global-running.pid"
         schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
         self.write_action(
@@ -706,7 +703,7 @@ class RuntimeTests(unittest.TestCase):
         )
         manager = self.manager(_Client([_no_action("done")]))
         main = manager.spawn_root(name="main", preset="main")
-        manager.enable_action("main", "disable_capability_globally")
+        manager.enable_action("main", "toggle_capability")
         manager.enable_action("main", "global_slow")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
@@ -716,35 +713,33 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(_wait(marker.exists))
         pid = int(marker.read_text())
         manager.capabilities.dispatch(
-            action=ActionRequest("disable_capability_globally", {"kind": "action", "id": "global_slow"}, "disable-running-1"),
-            spec=manager.actions.require("disable_capability_globally"), agent=main,
+            action=ActionRequest("toggle_capability", {"kind": "action", "id": "global_slow"}, "pause-running-1"),
+            spec=manager.actions.require("toggle_capability"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "disable-running-1" for item in self.action_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.action_results(main))))
         results = [item for item in self.action_results(main) if item["call_id"] == "running-1"]
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["data"]["status"], "disabled")
+        self.assertEqual(results[0]["data"]["status"], "paused")
         self.assertNotIn("global_slow", manager.capabilities.loaded_actions())
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 
-    def test_global_disable_and_enable_same_batch_is_structure_error(self):
-        self.install_project_action("disable_capability_globally")
-        self.install_project_action("enable_capability_globally")
+    def test_global_toggle_same_capability_twice_in_batch_is_structure_error(self):
+        self.install_project_action("toggle_capability")
         client = _Client([
             '{"actions":['
-            '{"action_id":"disable_capability_globally","call_id":"off-1","data":{"kind":"action","id":"say"}},'
-            '{"action_id":"enable_capability_globally","call_id":"on-1","data":{"kind":"action","id":"say"}}]}',
+            '{"action_id":"toggle_capability","call_id":"toggle-1","data":{"kind":"action","id":"say"}},'
+            '{"action_id":"toggle_capability","call_id":"toggle-2","data":{"kind":"action","id":"say"}}]}',
             _no_action("done-1"),
         ])
         manager = self.manager(client)
         main = manager.spawn_root(name="main", preset="main")
-        manager.enable_action("main", "disable_capability_globally")
-        manager.enable_action("main", "enable_capability_globally")
+        manager.enable_action("main", "toggle_capability")
         self.publish(main, "check")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         self.assertIn("structure_error", str(main.history))
         self.assertIn("say", main.standalone_actions())
-        self.assertNotIn("say", manager.capabilities.global_disabled()["actions"])
+        self.assertNotIn("say", manager.capabilities.global_paused()["actions"])
 
 
 if __name__ == "__main__":

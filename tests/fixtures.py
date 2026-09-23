@@ -128,21 +128,17 @@ def create_action():
 }
 
 
-def global_control_action(enabled: bool) -> str:
-    return f'''
+def toggle_capability_action() -> str:
+    return '''
 from jarvis.capabilities import action_definition
 from jarvis.core.protocol import object_schema
 def run(data, context):
-    affected = context.agent_manager.set_global_capability(
-        kind=data["kind"], capability_id=data["id"], enabled={enabled}
-    )
-    return {{"kind": data["kind"], "id": data["id"], "enabled": {enabled}, "affected": affected}}
+    result = context.agent_manager.toggle_capability(kind=data["kind"], capability_id=data["id"])
+    return {"kind": data["kind"], "id": data["id"], **result}
 def create_action():
-    return action_definition("Global capability control",
-        object_schema({{"kind": {{"type": "string", "enum": ["module", "action", "handler"]}}, "id": {{"type": "string"}}}}),
-        object_schema({{"kind": {{"type": "string"}}, "id": {{"type": "string"}},
-            "enabled": {{"type": "boolean"}},
-            "affected": {{"type": "object", "x-jarvis-open-object": True, "additionalProperties": True}}}}), run)
+    return action_definition("Toggle global capability state",
+        object_schema({"kind": {"type": "string", "enum": ["module", "action", "handler"]}, "id": {"type": "string"}}),
+        object_schema({"kind": {"type": "string"}, "id": {"type": "string"}, "state": {"type": "string", "enum": ["paused", "running"]}, "affected_agent_ids": {"type": "array", "items": {"type": "string"}}}), run)
 '''
 
 

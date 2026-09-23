@@ -65,21 +65,16 @@ class ApplicationTests(unittest.TestCase):
                         preset="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
-                    disabled = app.capabilities.disable_for_edit(
-                        kind="action", capability_id="say"
-                    )
+                    paused = app.capabilities.toggle_global_state("action", "say")
+                    self.assertEqual(paused["state"], "paused")
                     self.assertEqual(
-                        set(disabled["disabled_for"]),
+                        set(paused["affected_agent_ids"]),
                         {app.main_agent.agent_id, other_agent.agent_id},
                     )
-                    self.assertNotIn("say", app.main_agent.standalone_actions())
-                    restored = app.capabilities.enable_after_edit(
-                        kind="action", capability_id="say"
-                    )
-                    self.assertEqual(
-                        set(restored["restored_for"]),
-                        {app.main_agent.agent_id, other_agent.agent_id},
-                    )
+                    self.assertIn("say", app.main_agent.standalone_actions())
+                    self.assertNotIn("say", app.capabilities.loaded_actions())
+                    running = app.capabilities.toggle_global_state("action", "say")
+                    self.assertEqual(running["state"], "running")
                     self.assertIn("say", app.main_agent.standalone_actions())
 
                     app.capabilities.dispatch(

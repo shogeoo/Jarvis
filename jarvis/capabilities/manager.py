@@ -124,20 +124,22 @@ class CapabilityManager:
         self.debug = debug or Debugger(enabled=False)
         self.services = services if services is not None else {}
         self._lock = threading.RLock()
+        self._global_toggle_lock = threading.RLock()
         self._hosts: dict[str, UnitHost] = {}
         self._actions: dict[str, LoadedAction] = {}
         self._handlers: dict[str, LoadedHandler] = {}
         self._modules: dict[str, LoadedModule] = {}
-        self._global_disabled_path = self.root / "disabled_capabilities.json"
+        self._global_state_path = self.root / "capability_state.json"
         try:
-            raw_disabled = json.loads(self._global_disabled_path.read_text(encoding="utf-8"))
+            raw_state = json.loads(self._global_state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            raw_disabled = {}
-        self._global_disabled = {kind: set(raw_disabled.get(kind, [])) for kind in ("modules", "actions", "handlers")}
-        self._disabled_targets: dict[tuple[str, str], list[str]] = {
-            tuple(key.split(":", 1)): list(value)
-            for key, value in raw_disabled.get("targets", {}).items()
+            raw_state = {}
+        old_paused = raw_state.get("paused", {})
+        self._global_paused = {
+            kind: set(old_paused.get(kind, raw_state.get(kind, [])))
+            for kind in ("modules", "actions", "handlers")
         }
+        self._save_global_state()
         self._agent_api = _AgentApi(self)
         self._closing = threading.Event()
         self._cancel_waiters: dict[tuple[str, str], threading.Event] = {}
@@ -225,7 +227,6 @@ class CapabilityManager:
 
     def missing(self, snapshot: dict[str, set[str]]) -> set[str]:
         loaded = self.loaded_snapshot()
-        global_disabled = self.global_disabled()
         missing: set[str] = set()
         for module_id in snapshot.get("modules", ()):
             if module_id not in loaded["modules"]:
@@ -240,14 +241,14 @@ class CapabilityManager:
 
     def list_existing(self) -> dict[str, Any]:
         loaded = self.loaded_snapshot()
-        global_disabled = self.global_disabled()
+        global_paused = self.global_paused()
         modules = [
             {
                 "id": path.name,
                 "description": self._describe("module", path.name)["description"],
                 "loaded": path.name in loaded["modules"],
-                "globally_enabled": path.name not in global_disabled["modules"],
-                "globally_disabled": path.name in global_disabled["modules"],
+                "globally_running": path.name not in global_paused["modules"],
+                "globally_paused": path.name in global_paused["modules"],
             }
             for path in self.discover_modules()
         ]
@@ -256,8 +257,8 @@ class CapabilityManager:
                 "id": path.name,
                 "description": self._describe("action", path.name)["actions"][0]["description"],
                 "loaded": path.name in loaded["actions"],
-                "globally_enabled": path.name not in global_disabled["actions"],
-                "globally_disabled": path.name in global_disabled["actions"],
+                "globally_running": path.name not in global_paused["actions"],
+                "globally_paused": path.name in global_paused["actions"],
             }
             for path in self.discover_actions()
         ]
@@ -266,8 +267,8 @@ class CapabilityManager:
                 "id": path.name,
                 "description": self._describe("handler", path.name)["handlers"][0]["description"],
                 "loaded": path.name in loaded["handlers"],
-                "globally_enabled": path.name not in global_disabled["handlers"],
-                "globally_disabled": path.name in global_disabled["handlers"],
+                "globally_running": path.name not in global_paused["handlers"],
+                "globally_paused": path.name in global_paused["handlers"],
             }
             for path in self.discover_handlers()
         ]
@@ -1016,6 +1017,16 @@ class CapabilityManager:
                 data={"status": "disabled", "info": "Action is currently disabled."},
             ))
             return
+        if self.is_globally_paused("action", action.action_id) or any(
+            self.is_globally_paused("module", module_id)
+            and action.action_id in self.module_action_ids(module_id)
+            for module_id in agent.modules()
+        ):
+            self._manager().deliver_result(ActionResult(
+                call_id=action.call_id, agent_id=agent.agent_id,
+                data={"status": "paused", "info": "Capability is globally paused."},
+            ))
+            return
         with self._lock:
             runtime = self._actions.get(action.action_id)
             core = False
@@ -1164,65 +1175,87 @@ class CapabilityManager:
             return
         self._stop_host(runtime.host)
 
-    def disable_for_edit(self, *, kind: str, capability_id: str) -> dict[str, Any]:
-        key = (kind, capability_id)
-        if key in self._disabled_targets:
-            return {
-                "kind": kind,
-                "capability_id": capability_id,
-                "disabled_for": list(self._disabled_targets[key]),
-            }
+    def is_globally_paused(self, kind: str, capability_id: str) -> bool:
+        key = {"module": "modules", "action": "actions", "handler": "handlers"}.get(kind)
+        if key is None:
+            raise ValueError(f"Неизвестный вид capability: {kind!r}")
+        with self._lock:
+            return capability_id in self._global_paused[key]
+
+    def global_paused(self) -> dict[str, set[str]]:
+        with self._lock:
+            return {key: set(value) for key, value in self._global_paused.items()}
+
+    def runnable_snapshot(self, snapshot: dict[str, set[str]]) -> dict[str, set[str]]:
+        paused = self.global_paused()
+        return {
+            "modules": set(snapshot.get("modules", ())) - paused["modules"],
+            "actions": set(snapshot.get("actions", ())) - paused["actions"],
+            "handlers": set(snapshot.get("handlers", ())) - paused["handlers"],
+        }
+
+    def _save_global_state(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        temporary = self._global_state_path.with_suffix(".tmp")
+        state = {"paused": {key: sorted(value) for key, value in self._global_paused.items()}}
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self._global_state_path)
+
+    def toggle_global_state(self, kind: str, capability_id: str) -> dict[str, Any]:
+        with self._global_toggle_lock:
+            return self._toggle_global_state_locked(kind, capability_id)
+
+    def _toggle_global_state_locked(self, kind: str, capability_id: str) -> dict[str, Any]:
+        kind_to_key = {"module": "modules", "action": "actions", "handler": "handlers"}
+        key = kind_to_key.get(kind)
+        if key is None:
+            raise ValueError(f"Неизвестный вид capability: {kind!r}")
+        self.validate(kind=kind, capability_id=capability_id)
         manager = self._manager()
         if manager is None:
             raise RuntimeError("Менеджер агентов не запущен")
-        targets = manager.disable_capability_everywhere(
-            kind=kind, capability_id=capability_id
-        )
-        self._global_disabled[{"module": "modules", "action": "actions", "handler": "handlers"}[kind]].add(capability_id)
-        self._disabled_targets[key] = targets
-        self._save_global_disabled()
-        return {
-            "kind": kind,
-            "capability_id": capability_id,
-            "disabled_for": targets,
+        affected = manager.agents_assigned_and_enabled(kind, capability_id)
+        agent_ids = [agent.agent_id for agent in affected]
+        if not self.is_globally_paused(kind, capability_id):
+            with self._lock:
+                self._global_paused[key].add(capability_id)
+                self._save_global_state()
+            if kind == "module":
+                action_ids = self.module_action_ids(capability_id)
+            elif kind == "action":
+                action_ids = {capability_id}
+            else:
+                action_ids = set()
+            if action_ids:
+                for agent in manager.agents_snapshot():
+                    for pending in manager.results.for_capability(action_ids, {agent.agent_id}):
+                        manager.pause_call(agent.agent_id, pending.call_id)
+            if kind == "module":
+                self.unload_module(capability_id)
+            elif kind == "action":
+                self.unload_action(capability_id)
+            else:
+                self.unload_handler(capability_id)
+            return {"state": "paused", "affected_agent_ids": agent_ids}
+
+        active_snapshots = [agent.capabilities_snapshot() for agent in affected]
+        combined = {
+            key_name: set().union(*(snapshot[key_name] for snapshot in active_snapshots))
+            if active_snapshots else set()
+            for key_name in ("modules", "actions", "handlers")
         }
-
-    def enable_after_edit(self, *, kind: str, capability_id: str) -> dict[str, Any]:
-        self.validate(kind=kind, capability_id=capability_id)
-        targets = self._disabled_targets.get((kind, capability_id), [])
-        restored = []
-        if targets:
-            manager = self._manager()
-            restored = manager.restore_capability(
-                kind=kind, capability_id=capability_id, agent_ids=targets
-            )
-        self._disabled_targets.pop((kind, capability_id), None)
-        self._global_disabled[{"module": "modules", "action": "actions", "handler": "handlers"}[kind]].discard(capability_id)
-        self._save_global_disabled()
-        return {
-            "kind": kind,
-            "capability_id": capability_id,
-            "restored_for": restored,
-        }
-
-    def _save_global_disabled(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        temporary = self._global_disabled_path.with_suffix(".tmp")
-        state = {key: sorted(value) for key, value in self._global_disabled.items()}
-        state["targets"] = {
-            f"{kind}:{capability_id}": sorted(agent_ids)
-            for (kind, capability_id), agent_ids in self._disabled_targets.items()
-        }
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self._global_disabled_path)
-
-    def global_disabled(self) -> dict[str, set[str]]:
-        return {key: set(value) for key, value in self._global_disabled.items()}
-
-    def set_global_enabled(self, *, kind: str, capability_id: str, enabled: bool) -> dict[str, Any]:
-        if enabled:
-            return self.enable_after_edit(kind=kind, capability_id=capability_id)
-        return self.disable_for_edit(kind=kind, capability_id=capability_id)
+        with self._lock:
+            self._global_paused[key].discard(capability_id)
+            self._save_global_state()
+        try:
+            runnable = self.runnable_snapshot(combined)
+            self.load_snapshot(runnable, start_handlers=True)
+        except Exception:
+            with self._lock:
+                self._global_paused[key].add(capability_id)
+                self._save_global_state()
+            raise
+        return {"state": "running", "affected_agent_ids": agent_ids}
 
     def signal(
         self, kind: str, unit_id: str, name: str, data: dict[str, Any] | None = None
@@ -1450,10 +1483,8 @@ class _AgentApi:
         snapshot = self._manager.require_agent(agent_id).known_snapshot()
         return {key: sorted(value) for key, value in snapshot.items()}
 
-    def set_global_capability(self, kind: str, capability_id: str, enabled: bool) -> dict[str, Any]:
-        return self._capabilities.set_global_enabled(
-            kind=kind, capability_id=capability_id, enabled=enabled
-        )
+    def toggle_capability(self, kind: str, capability_id: str) -> dict[str, Any]:
+        return self._capabilities.toggle_global_state(kind, capability_id)
 
     def deliver_message(
         self,

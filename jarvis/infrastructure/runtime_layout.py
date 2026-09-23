@@ -40,8 +40,36 @@ def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
         preset / "preset.json",
         json.dumps({"protected": protected}, ensure_ascii=False, indent=2) + "\n",
     )
-    for filename in ("disabled_actions.json", "disabled_handlers.json", "disabled_modules.json"):
-        _write_if_missing(preset / filename, _EMPTY_LIST)
+    disabled_path = preset / "disabled_capabilities.json"
+    try:
+        state = json.loads(disabled_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        state = {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    changed = not disabled_path.exists()
+    for key in ("modules", "actions", "handlers"):
+        legacy_path = preset / f"disabled_{key}.json"
+        try:
+            legacy = json.loads(legacy_path.read_text(encoding="utf-8")) if legacy_path.is_file() else []
+        except (OSError, json.JSONDecodeError):
+            legacy = []
+        current = state.get(key, [])
+        if not isinstance(current, list):
+            current = []
+            changed = True
+        merged = list(dict.fromkeys([*current, *(legacy if isinstance(legacy, list) else [])]))
+        if merged != current or key not in state:
+            state[key] = merged
+            changed = True
+    if changed:
+        temporary = disabled_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(disabled_path)
+    for key in ("modules", "actions", "handlers"):
+        (preset / f"disabled_{key}.json").unlink(missing_ok=True)
 
 
 def ensure_runtime_layout(root: Path) -> None:
@@ -67,14 +95,38 @@ def ensure_runtime_layout(root: Path) -> None:
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
 
-    _write_if_missing(
-        root / "disabled_capabilities.json",
-        json.dumps(
-            {"modules": [], "actions": [], "handlers": [], "targets": {}},
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n",
-    )
+    state_path = root / "capability_state.json"
+    legacy_path = root / "disabled_capabilities.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        state = {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    if not isinstance(state, dict):
+        state = {}
+    paused = state.get("paused", {})
+    if not isinstance(paused, dict):
+        paused = {}
+    try:
+        legacy = json.loads(legacy_path.read_text(encoding="utf-8")) if legacy_path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        legacy = {}
+    legacy_paused = legacy.get("paused", legacy) if isinstance(legacy, dict) else {}
+    merged_paused = {}
+    for key in ("modules", "actions", "handlers"):
+        current = paused.get(key, [])
+        old = legacy_paused.get(key, []) if isinstance(legacy_paused, dict) else []
+        merged_paused[key] = list(dict.fromkeys([
+            *(current if isinstance(current, list) else []),
+            *(old if isinstance(old, list) else []),
+        ]))
+    normalized = {"paused": merged_paused}
+    if normalized != state or legacy_path.exists():
+        temporary = state_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(state_path)
+    legacy_path.unlink(missing_ok=True)
 
     _ensure_preset(root, "main", protected=True)
     _ensure_preset(root, "module_manager")

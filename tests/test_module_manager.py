@@ -27,8 +27,7 @@ class ModuleManagerContractTests(unittest.TestCase):
             "context.emit",
             "object_schema",
             "create_module",
-            "disable_capability_globally",
-            "enable_capability_globally",
+            "toggle_capability",
             "ДОЖДИСЬ action_result",
         ):
             self.assertIn(marker, prompt)
@@ -92,8 +91,7 @@ class ModuleManagerContractTests(unittest.TestCase):
             "execute_command",
             "list_capabilities",
             "capability_info",
-            "disable_capability_globally",
-            "enable_capability_globally",
+            "toggle_capability",
         }
         self.assertEqual(set(module_manager.actions), expected)
         self.assertTrue((expected - {"send_message_to_agent"}).isdisjoint(main.actions))
@@ -111,8 +109,8 @@ class ModuleManagerContractTests(unittest.TestCase):
             existing = manager.list_existing()
             for item in existing["actions"]:
                 self.assertTrue(item["description"])
-                self.assertIn("globally_enabled", item)
-                self.assertIn("globally_disabled", item)
+                self.assertIn("globally_running", item)
+                self.assertIn("globally_paused", item)
         finally:
             manager.shutdown()
 
