@@ -22,7 +22,7 @@ jarvis/
   infrastructure/       # конфигурация и модельный API
 master_prompt.txt       # общее описание среды: одинаково для всех агентов
 
-.jarvis/                # отдельный git-репозиторий runtime-данных
+.jarvis/                # локальные runtime-данные, исключены из Git проекта
   actions/<id>/         # действие: action.py, .env, requirements.txt, .venv
   handlers/<id>/        # handler: handler.py, .env, requirements.txt, .venv
   modules/<id>/         # сложная система: module.py и вложенные единицы
@@ -46,6 +46,11 @@ python3 -m venv .venv
 cp .env.example .env
 .venv/bin/jarvis
 ```
+
+Каталог `.jarvis` не входит в этот Git-репозиторий. Перед запуском размести
+в нём свои presets и capabilities из отдельного хранилища; иначе стартовый
+пресет `main` отсутствует. Файлы `.jarvis` сохраняются локально при обновлении
+кода проекта.
 
 Каждая capability-единица в `.jarvis` самодостаточна: свой `.env`,
 `requirements.txt` и при необходимости `.venv`. Собственное окружение

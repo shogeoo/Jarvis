@@ -106,6 +106,45 @@ def create_module():
     )
 """
 
+CONTROL_ACTIONS = {
+    "delete_agent": '''
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+def run(data, context):
+    return context.agent_manager.delete(agent_id=data["agent_id"])
+def create_action():
+    return action_definition("Delete agent", object_schema({"agent_id": {"type": "string"}}),
+        object_schema({"agent_id": {"type": "string"}, "deleted": {"type": "boolean"}}), run)
+''',
+    "interrupt_agent": '''
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+def run(data, context):
+    return context.agent_manager.interrupt(agent_id=data["agent_id"], requester_id=context.agent_id)
+def create_action():
+    return action_definition("Interrupt agent", object_schema({"agent_id": {"type": "string"}}),
+        object_schema({"agent_id": {"type": "string"}, "state": {"type": "string"}}), run)
+''',
+}
+
+
+def global_control_action(enabled: bool) -> str:
+    return f'''
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+def run(data, context):
+    affected = context.agent_manager.set_global_capability(
+        kind=data["kind"], capability_id=data["id"], enabled={enabled}
+    )
+    return {{"kind": data["kind"], "id": data["id"], "enabled": {enabled}, "affected": affected}}
+def create_action():
+    return action_definition("Global capability control",
+        object_schema({{"kind": {{"type": "string", "enum": ["module", "action", "handler"]}}, "id": {{"type": "string"}}}}),
+        object_schema({{"kind": {{"type": "string"}}, "id": {{"type": "string"}},
+            "enabled": {{"type": "boolean"}},
+            "affected": {{"type": "object", "x-jarvis-open-object": True, "additionalProperties": True}}}}), run)
+'''
+
 
 def link_environment(unit_dir: Path, python: str | None = None) -> Path:
     """Создать .venv/bin/python единицы симлинком на текущий интерпретатор."""

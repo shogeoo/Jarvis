@@ -12,9 +12,11 @@ from jarvis.presets import PresetStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_PRESENT = (ROOT / ".jarvis" / "presets").is_dir()
 
 
 class ModuleManagerContractTests(unittest.TestCase):
+    @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_module_manager_prompt_contains_self_sufficient_sdk_contract(self):
         prompt = PresetStore(ROOT / ".jarvis" / "presets").load("module_manager").person_prompt
         for marker in (
@@ -25,7 +27,8 @@ class ModuleManagerContractTests(unittest.TestCase):
             "context.emit",
             "object_schema",
             "create_module",
-            "set_capability_enabled",
+            "disable_capability_globally",
+            "enable_capability_globally",
             "ДОЖДИСЬ action_result",
         ):
             self.assertIn(marker, prompt)
@@ -37,6 +40,7 @@ class ModuleManagerContractTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_file_actions_accept_paths_outside_jarvis(self):
         reader = self._load_action("read_file")
         writer = self._load_action("write_file")
@@ -52,6 +56,7 @@ class ModuleManagerContractTests(unittest.TestCase):
             self.assertTrue(editor.run({"path": str(target), "start_line": 2, "end_line": 2, "content": "changed"}, context)["edited"])
             self.assertEqual(target.read_text(encoding="utf-8"), "one\nchanged\nthree\n")
 
+    @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_execute_command_runs_and_captures_both_streams(self):
         module = self._load_action("execute_command")
         with tempfile.TemporaryDirectory() as temporary:
@@ -65,6 +70,7 @@ class ModuleManagerContractTests(unittest.TestCase):
             )
             self.assertEqual(result, {"exit_code": 7, "stdout": "out", "stderr": "err"})
 
+    @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_execute_command_accepts_cwd_outside_project(self):
         module = self._load_action("execute_command")
         with tempfile.TemporaryDirectory() as temporary:
@@ -73,6 +79,7 @@ class ModuleManagerContractTests(unittest.TestCase):
             self.assertEqual(result["exit_code"], 0)
             self.assertEqual(result["stdout"].strip(), temporary)
 
+    @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_module_manager_has_only_its_management_actions_by_default(self):
         presets = PresetStore(ROOT / ".jarvis" / "presets")
         module_manager = presets.load("module_manager")
@@ -85,11 +92,13 @@ class ModuleManagerContractTests(unittest.TestCase):
             "execute_command",
             "list_capabilities",
             "capability_info",
-            "set_capability_enabled",
+            "disable_capability_globally",
+            "enable_capability_globally",
         }
         self.assertEqual(set(module_manager.actions), expected)
         self.assertTrue((expected - {"send_message_to_agent"}).isdisjoint(main.actions))
 
+    @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_capability_metadata_is_complete_without_loading_runtime(self):
         manager = CapabilityManager(
             EventBus(EventRegistry(), debug=Debugger(enabled=False)),

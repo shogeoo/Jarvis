@@ -694,11 +694,14 @@ class Agent:
                 actions = parse_actions(value)
                 global_changes: set[tuple[str, str]] = set()
                 for action in actions:
-                    if action.action_id == "set_capability_enabled":
+                    if action.action_id in {
+                        "disable_capability_globally",
+                        "enable_capability_globally",
+                    }:
                         target = (action.data["kind"], action.data["id"])
                         if target in global_changes:
                             raise ValueError(
-                                "set_capability_enabled for one capability must be called in separate responses; wait for action_result"
+                                "Global disable and enable for one capability must be called in separate responses; wait for action_result"
                             )
                         global_changes.add(target)
                     if action.action_id not in specs:

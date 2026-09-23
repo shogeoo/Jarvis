@@ -11,7 +11,7 @@ jarvis/infrastructure/   LLM-конфигурация и диагностика
 jarvis/application.py    composition root
 master_prompt.txt        общее описание среды для всех агентов
 
-.jarvis/                  отдельный git-репозиторий runtime-данных
+.jarvis/                  локальное хранилище вне Git этого проекта
 .jarvis/actions/<action_id>/action.py
 .jarvis/handlers/<handler_id>/handler.py
 .jarvis/modules/<module_id>/module.py + actions/<id>/ + handlers/<id>/
