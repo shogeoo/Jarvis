@@ -186,7 +186,7 @@ class Speaker:
 
     # --- server ------------------------------------------------------
     def _log_path(self) -> Path:
-        return self.cfg.runtime_dir / "tts-server.log"
+        return self.cfg.runtime_dir / "logs" / "tts-server.log"
 
     def _base_cmd(self) -> list[str]:
         cmd = [self._resolve_binary(), "--model", str(self.cfg.tts_model)]

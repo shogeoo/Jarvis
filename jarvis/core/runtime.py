@@ -1280,7 +1280,7 @@ class AgentManager:
             self.capabilities.cancel_execution(agent_id, call_id, pending.action_id)
             self.deliver_result(ActionResult(
                 call_id=call_id, agent_id=agent_id,
-                data={"error": "disabled", "message": "Действие временно отключено"},
+                data={"status": "disabled", "info": "Action was disabled before completion."},
             ))
 
     def report_capability_error(

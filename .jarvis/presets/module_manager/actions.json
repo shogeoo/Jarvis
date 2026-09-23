@@ -1,3 +1,10 @@
 [
-  "send_message_to_agent"
+  "capability_info",
+  "edit_file",
+  "execute_command",
+  "list_capabilities",
+  "read_file",
+  "send_message_to_agent",
+  "set_capability_enabled",
+  "write_file"
 ]

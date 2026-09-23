@@ -2,12 +2,12 @@
 
 Раскладка::
 
-    memory/<preset_id>/agent.json
-    memory/<preset_id>/context.json
-    memory/<preset_id>/parts/            # бинарные части корневого агента
-    memory/<preset_id>/<agent_id>/agent.json
-    memory/<preset_id>/<agent_id>/context.json
-    memory/<preset_id>/<agent_id>/parts/
+    memory/<preset_id>/current/agent.json
+    memory/<preset_id>/current/context.json
+    memory/<preset_id>/current/parts/
+    memory/<preset_id>/last/agent.json
+    memory/<preset_id>/last/context.json
+    memory/<preset_id>/last/parts/
 
 Корневой агент preset (``main``) хранится без подпапки ``agent_id``.
 ``agent.json`` описывает экземпляр, ``context.json`` содержит историю
@@ -319,7 +319,7 @@ class MemoryStore:
         preset = record.get("preset") or "main"
         directory = self.agent_dir(preset, agent_id)
         generation = uuid.uuid4().hex
-        staged = directory / "generations" / generation
+        staged = directory / f".staging-{generation}"
         self._write_json(
             staged / "agent.json",
             {
@@ -342,7 +342,13 @@ class MemoryStore:
             staged / "context.json",
             _externalize_modalities(messages, staged / "parts"),
         )
-        self._write_json(directory / "current.json", {"generation": generation})
+        current = directory / "current"
+        last = directory / "last"
+        if last.exists():
+            shutil.rmtree(last)
+        if current.exists():
+            os.replace(current, last)
+        os.replace(staged, current)
 
     def load(self, preset: str, agent_id: str) -> dict[str, Any] | None:
         directory = self.agent_dir(preset, agent_id)
@@ -354,13 +360,13 @@ class MemoryStore:
         return self._clean(preset, agent_id, current, metadata, messages)
 
     def _current_dir(self, directory: Path) -> Path:
-        pointer = self._read_json(directory / "current.json")
-        if not isinstance(pointer, dict):
-            return directory
-        generation = pointer.get("generation")
-        if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{32}", generation):
-            return directory / "invalid-generation"
-        return directory / "generations" / generation
+        current = directory / "current"
+        if (current / "agent.json").is_file() and (current / "context.json").is_file():
+            return current
+        last = directory / "last"
+        if (last / "agent.json").is_file() and (last / "context.json").is_file():
+            return last
+        return directory / "invalid-state"
 
     def load_all(self) -> list[dict[str, Any]]:
         if not self.root.exists():
@@ -402,13 +408,10 @@ class MemoryStore:
             return
         try:
             if agent_id == "main":
-                for name in ("agent.json", "context.json", "current.json"):
-                    try:
-                        (directory / name).unlink()
-                    except FileNotFoundError:
-                        pass
-                shutil.rmtree(directory / "parts", ignore_errors=True)
-                shutil.rmtree(directory / "generations", ignore_errors=True)
+                shutil.rmtree(directory / "current", ignore_errors=True)
+                shutil.rmtree(directory / "last", ignore_errors=True)
+                for staging in directory.glob(".staging-*"):
+                    shutil.rmtree(staging, ignore_errors=True)
             else:
                 shutil.rmtree(directory, ignore_errors=True)
         except OSError:

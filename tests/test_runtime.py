@@ -466,7 +466,7 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertTrue(_wait(lambda: any(r["call_id"] == "disabled-1" for r in self.action_results(agent))))
         result = next(r for r in self.action_results(agent) if r["call_id"] == "disabled-1")
-        self.assertEqual(result["data"]["error"], "disabled")
+        self.assertEqual(result["data"], {"status": "disabled", "info": "Action is currently disabled."})
 
     def test_interrupt_ignores_late_response_and_accepts_new_event(self):
         entered, release = threading.Event(), threading.Event()
@@ -527,12 +527,12 @@ class RuntimeTests(unittest.TestCase):
                 "parent_id": None, "modules": [], "actions": ["missing_action"],
                 "handlers": [], "messages": [{"role": "user", "content": "saved"}],
             })
-            before = (Path(temporary) / "main" / "current.json").read_bytes()
+            before = (Path(temporary) / "main" / "current" / "agent.json").read_bytes()
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
             self.assertIsNone(manager.restore(name="main", preset="main"))
             self.assertEqual(manager.agents, {})
             self.assertEqual(memory.load("main", "main")["actions"], ["missing_action"])
-            self.assertEqual((Path(temporary) / "main" / "current.json").read_bytes(), before)
+            self.assertEqual((Path(temporary) / "main" / "current" / "agent.json").read_bytes(), before)
 
     def test_disable_running_action_kills_execution_and_returns_one_disabled_result(self):
         marker = self.root / "running.pid"
@@ -554,7 +554,8 @@ class RuntimeTests(unittest.TestCase):
         manager.disable_action("main", "slow")
         self.assertTrue(_wait(lambda: any(r["call_id"] == "slow-1" for r in self.action_results(agent))))
         results = [r for r in self.action_results(agent) if r["call_id"] == "slow-1"]
-        self.assertEqual([r["data"]["error"] for r in results], ["disabled"])
+        self.assertEqual([r["data"]["status"] for r in results], ["disabled"])
+        self.assertEqual(results[0]["data"]["info"], "Action was disabled before completion.")
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
 

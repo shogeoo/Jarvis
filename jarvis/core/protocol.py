@@ -188,6 +188,8 @@ def validate_strict_schema(schema: JSONSchema, *, where: str = "schema") -> None
     validate_schema(schema, where=where)
     if not isinstance(schema, dict):
         raise ValueError(f"Некорректная {where}: схема должна быть объектом")
+    if schema.get("x-jarvis-open-object") is True:
+        return
     schema_type = schema.get("type")
     if schema_type == "object":
         properties = schema.get("properties")

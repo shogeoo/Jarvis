@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .idea/
 .env
+.jarvis/runtime/logs/
 *.egg-info/
 build/
 dist/

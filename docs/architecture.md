@@ -16,7 +16,8 @@ master_prompt.txt        общее описание среды для всех 
 .jarvis/handlers/<handler_id>/handler.py
 .jarvis/modules/<module_id>/module.py + actions/<id>/ + handlers/<id>/
 .jarvis/presets/<preset>/
-.jarvis/runtime/
+.jarvis/runtime/logs/    логи всех unit-host и TTS
+.jarvis/runtime/          сгенерированный голос и временные данные
 ```
 
 Ядро резервирует `no_action`, `structure_error`,
@@ -114,7 +115,7 @@ Preset на диске меняет только `main`. При следующе
 
 Назначенная capability остаётся известной агенту после disable. Disabled action
 остаётся в JSON-каталоге, но не запускается и возвращает один результат с
-`data.error = "disabled"`. Disabled handler остаётся известным в каталоге и не
+`data.status = "disabled"` и англоязычным `data.info`. Disabled handler остаётся известным в каталоге и не
 публикует события. Локальное отключение меняет один экземпляр; глобальное
 отключение module_manager хранится отдельно и действует для всех агентов.
 
@@ -228,8 +229,10 @@ actions, events и результатами по JSON Lines.
   отдельной image-частью, base64 в `data` нет;
 - `send_notification` — десктопные уведомления.
 
-Пресет `module_manager` пока не имеет собственных инструментов (кроме
-`send_message_to_agent`) — они будут предоставлены отдельно.
+Пресет `module_manager` получает `send_message_to_agent`, чтение и редактирование
+файлов, синхронное выполнение bash-команд, полную информацию о capabilities и
+глобальное управление их enabled-состоянием. Эти actions не назначаются main и
+другим пресетам по умолчанию.
 
 ## Встроенная речь
 
@@ -254,12 +257,12 @@ PDEATHSIG), создаёт профиль голоса при необходим
 ## Долговременная память
 
 ```text
-memory/<preset_id>/agent.json
-memory/<preset_id>/context.json
-memory/<preset_id>/parts/
-memory/<preset_id>/<agent_id>/agent.json
-memory/<preset_id>/<agent_id>/context.json
-memory/<preset_id>/<agent_id>/parts/
+memory/<preset_id>/current/agent.json
+memory/<preset_id>/current/context.json
+memory/<preset_id>/current/parts/
+memory/<preset_id>/last/agent.json
+memory/<preset_id>/last/context.json
+memory/<preset_id>/last/parts/
 ```
 
 Корневой агент пресета хранится без подпапки `agent_id`. `agent.json` описывает
@@ -274,13 +277,13 @@ agent: event / assistant / module change
         ↓
 история + метаданные
         ↓
-атомарная запись agent.json + context.json
+атомарная публикация current; прежний current становится last
 ```
 
-`AgentManager.restore` читает все записи, поднимает `main`, затем восстанавливает
-субагентов в порядке «родитель раньше ребёнка» с прежними `agent_id`, preset,
-capabilities и контекстом. Записи с отсутствующим родителем пропускаются и удаляются.
-Битые файлы игнорируются. `delete` агента удаляет его файлы. Незавершённые
+`AgentManager.restore` читает `current`, а при его повреждении — `last`, поднимает
+`main`, затем восстанавливает субагентов в порядке «родитель раньше ребёнка» с
+прежними `agent_id`, preset, capabilities и контекстом. Записи с отсутствующим
+родителем пропускаются и сохраняются. Битые файлы не удаляются. `delete` агента удаляет его файлы. Незавершённые
 действия при остановке удаляются из RAM и на диск не сохраняются;
 пока файлы не удалены, контекст переживает перезапуск.
 

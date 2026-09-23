@@ -222,6 +222,7 @@ class CapabilityManager:
 
     def missing(self, snapshot: dict[str, set[str]]) -> set[str]:
         loaded = self.loaded_snapshot()
+        global_disabled = self.global_disabled()
         missing: set[str] = set()
         for module_id in snapshot.get("modules", ()):
             if module_id not in loaded["modules"]:
@@ -236,31 +237,47 @@ class CapabilityManager:
 
     def list_existing(self) -> dict[str, Any]:
         loaded = self.loaded_snapshot()
+        global_disabled = self.global_disabled()
         modules = [
             {
-                "module_id": path.name,
-                "description": self._loaded_description("module", path.name),
+                "id": path.name,
+                "description": self._describe("module", path.name)["description"],
                 "loaded": path.name in loaded["modules"],
+                "globally_enabled": path.name not in global_disabled["modules"],
+                "globally_disabled": path.name in global_disabled["modules"],
             }
             for path in self.discover_modules()
         ]
         actions = [
             {
-                "action_id": path.name,
-                "description": self._loaded_description("action", path.name),
+                "id": path.name,
+                "description": self._describe("action", path.name)["actions"][0]["description"],
                 "loaded": path.name in loaded["actions"],
+                "globally_enabled": path.name not in global_disabled["actions"],
+                "globally_disabled": path.name in global_disabled["actions"],
             }
             for path in self.discover_actions()
         ]
         handlers = [
             {
-                "handler_id": path.name,
-                "description": self._loaded_description("handler", path.name),
+                "id": path.name,
+                "description": self._describe("handler", path.name)["handlers"][0]["description"],
                 "loaded": path.name in loaded["handlers"],
+                "globally_enabled": path.name not in global_disabled["handlers"],
+                "globally_disabled": path.name in global_disabled["handlers"],
             }
             for path in self.discover_handlers()
         ]
         return {"modules": modules, "actions": actions, "handlers": handlers}
+
+    def capability_info(self, *, kind: str, capability_id: str) -> dict[str, Any]:
+        if kind == "module":
+            return self._describe("module", capability_id)
+        if kind == "action":
+            return self._describe("action", capability_id)
+        if kind == "handler":
+            return self._describe("handler", capability_id)
+        raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
     def list_available(self, known: dict[str, set[str]]) -> dict[str, Any]:
         result = {"modules": [], "actions": [], "handlers": []}
@@ -381,7 +398,7 @@ class CapabilityManager:
         )
 
     def _host_log(self, host: UnitHost):
-        log_dir = (self.config.jarvis_dir if self.config else DEFAULT_ROOT) / "runtime"
+        log_dir = (self.config.jarvis_dir if self.config else DEFAULT_ROOT) / "runtime" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         return open(log_dir / f"{host.kind}-{host.unit_id}.log", "ab")
 
@@ -988,7 +1005,7 @@ class CapabilityManager:
         if not agent.is_enabled_action(action.action_id):
             self._manager().deliver_result(ActionResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
-                data={"error": "disabled", "message": "Действие временно отключено"},
+                data={"status": "disabled", "info": "Action is currently disabled."},
             ))
             return
         with self._lock:
@@ -1188,6 +1205,25 @@ class CapabilityManager:
 
     def global_disabled(self) -> dict[str, set[str]]:
         return {key: set(value) for key, value in self._global_disabled.items()}
+
+    def set_global_enabled(self, *, kind: str, capability_id: str, enabled: bool) -> dict[str, Any]:
+        if enabled:
+            result = self.enable_after_edit(kind=kind, capability_id=capability_id)
+            key = {"module": "modules", "action": "actions", "handler": "handlers"}[kind]
+            restored = list(result.get("restored_for", []))
+            for agent in self._manager().agents_snapshot():
+                if agent.agent_id in restored or capability_id not in agent.disabled_snapshot()[key]:
+                    continue
+                if kind == "module":
+                    self._manager().enable_module(agent.agent_id, capability_id)
+                elif kind == "action":
+                    self._manager().enable_action(agent.agent_id, capability_id)
+                else:
+                    self._manager().enable_handler(agent.agent_id, capability_id)
+                restored.append(agent.agent_id)
+            result["restored_for"] = restored
+            return result
+        return self.disable_for_edit(kind=kind, capability_id=capability_id)
 
     def signal(
         self, kind: str, unit_id: str, name: str, data: dict[str, Any] | None = None
@@ -1410,6 +1446,11 @@ class _AgentApi:
     def known_snapshot(self, agent_id: str) -> dict[str, list[str]]:
         snapshot = self._manager.require_agent(agent_id).known_snapshot()
         return {key: sorted(value) for key, value in snapshot.items()}
+
+    def set_global_capability(self, kind: str, capability_id: str, enabled: bool) -> dict[str, Any]:
+        return self._capabilities.set_global_enabled(
+            kind=kind, capability_id=capability_id, enabled=enabled
+        )
 
     def deliver_message(
         self,

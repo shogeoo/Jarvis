@@ -27,7 +27,8 @@ master_prompt.txt       # общее описание среды: одинако
   handlers/<id>/        # handler: handler.py, .env, requirements.txt, .venv
   modules/<id>/         # сложная система: module.py и вложенные единицы
   presets/              # personprompt и стартовые capabilities экземпляров
-  runtime/              # логи, сгенерированный голос и временные данные
+  runtime/logs/         # логи actions, handlers, modules и TTS
+  runtime/              # сгенерированный голос и временные данные
   memory/               # долговременные контексты экземпляров агентов
 ```
 
@@ -49,8 +50,8 @@ cp .env.example .env
 Каждая capability-единица в `.jarvis` самодостаточна: свой `.env`,
 `requirements.txt` и при необходимости `.venv`. Собственное окружение
 не обязательно: без него единица исполняется интерпретатором Jarvis. Новые
-единицы создаёт module_manager-агент (его инструменты будут предоставлены
-отдельно).
+единицы создаёт module_manager-агент через встроенные actions чтения, записи,
+редактирования файлов, bash-выполнения и управления capabilities.
 
 ## Event/action цикл
 
@@ -137,11 +138,12 @@ Action не публикует события. Падение действия �
 ## Долговременная память
 
 ```text
-memory/<preset_id>/current.json -> generations/<generation>/
-memory/<preset_id>/generations/<generation>/agent.json
-memory/<preset_id>/generations/<generation>/context.json
-memory/<preset_id>/generations/<generation>/parts/
-memory/<preset_id>/<agent_id>/current.json -> generations/<generation>/
+memory/<preset_id>/current/agent.json
+memory/<preset_id>/current/context.json
+memory/<preset_id>/current/parts/
+memory/<preset_id>/last/agent.json
+memory/<preset_id>/last/context.json
+memory/<preset_id>/last/parts/
 ```
 
 Корневой агент пресета хранится без подпапки `agent_id`. `agent.json` описывает
@@ -152,7 +154,9 @@ memory/<preset_id>/<agent_id>/current.json -> generations/<generation>/
 ссылка `jarvis_part`.
 
 Контекст записывается после каждого нового события и каждого ответа модели, а
-также при изменении набора capabilities. При старте `main` и все сохранённые
+также при изменении набора capabilities. На диске остаются только полностью
+сохранённые `current` и `last`; более старые состояния удаляются автоматически.
+При старте `main` и все сохранённые
 субагенты пересоздаются с прежними идентификаторами и контекстами. Удаление
 агента удаляет его файлы памяти. Незавершённые действия при остановке просто
 удаляются из RAM и на диск не сохраняются.
