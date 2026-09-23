@@ -12,7 +12,7 @@ def run(data, context):
 def create_action():
     open_object = {"type": "object", "x-jarvis-open-object": True, "additionalProperties": True}
     return action_definition(
-        "Globally enable or disable a capability for all agents through the core CapabilityManager API.",
+        "Globally enable or disable a capability through CapabilityManager. For reload: disable it, wait for this action_result, edit and validate files, then enable it in a later model response. Never disable and enable the same capability in one batch.",
         object_schema(
             {
                 "kind": {"type": "string", "enum": ["module", "action", "handler"]},

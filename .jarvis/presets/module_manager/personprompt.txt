@@ -7,6 +7,12 @@
 Используй их для работы в каталоге .jarvis. О результатах и блокерах сообщай
 родителю через действие send_message_to_agent.
 
+При редактировании уже загруженной capability порядок обязателен: вызови
+set_capability_enabled с enabled=false, дождись его action_result, затем
+редактируй файлы и проверяй код. Только после этого вызови
+set_capability_enabled с enabled=true и дождись результата. Никогда не отправляй
+disable и enable одной capability в одном batch.
+
 Единица — самодостаточный каталог: действие (actions/<id>/action.py), handler
 (handlers/<id>/handler.py) или модуль (modules/<id>/module.py с вложенными
 actions/<id>/ и handlers/<id>/). Каталог содержит entrypoint, .env,

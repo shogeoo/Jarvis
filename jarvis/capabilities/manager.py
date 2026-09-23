@@ -128,13 +128,16 @@ class CapabilityManager:
         self._actions: dict[str, LoadedAction] = {}
         self._handlers: dict[str, LoadedHandler] = {}
         self._modules: dict[str, LoadedModule] = {}
-        self._disabled_targets: dict[tuple[str, str], list[str]] = {}
         self._global_disabled_path = self.root / "disabled_capabilities.json"
         try:
             raw_disabled = json.loads(self._global_disabled_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             raw_disabled = {}
         self._global_disabled = {kind: set(raw_disabled.get(kind, [])) for kind in ("modules", "actions", "handlers")}
+        self._disabled_targets: dict[tuple[str, str], list[str]] = {
+            tuple(key.split(":", 1)): list(value)
+            for key, value in raw_disabled.get("targets", {}).items()
+        }
         self._agent_api = _AgentApi(self)
         self._closing = threading.Event()
         self._cancel_waiters: dict[tuple[str, str], threading.Event] = {}
@@ -503,7 +506,12 @@ class CapabilityManager:
                 message = json.loads(line)
                 kind = message.get("kind")
                 if kind == "rpc":
-                    self._handle_rpc(host, message)
+                    threading.Thread(
+                        target=self._handle_rpc,
+                        args=(host, message),
+                        name=f"jarvis-rpc-{host.unit_id}",
+                        daemon=True,
+                    ).start()
                 elif kind == "capability_error":
                     self._fail_call(host, message.get("agent_id"), message.get("call_id"), message.get("error", ""))
                 elif kind == "action_result":
@@ -1171,8 +1179,8 @@ class CapabilityManager:
             kind=kind, capability_id=capability_id
         )
         self._global_disabled[{"module": "modules", "action": "actions", "handler": "handlers"}[kind]].add(capability_id)
-        self._save_global_disabled()
         self._disabled_targets[key] = targets
+        self._save_global_disabled()
         return {
             "kind": kind,
             "capability_id": capability_id,
@@ -1200,7 +1208,12 @@ class CapabilityManager:
     def _save_global_disabled(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self._global_disabled_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps({key: sorted(value) for key, value in self._global_disabled.items()}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        state = {key: sorted(value) for key, value in self._global_disabled.items()}
+        state["targets"] = {
+            f"{kind}:{capability_id}": sorted(agent_ids)
+            for (kind, capability_id), agent_ids in self._disabled_targets.items()
+        }
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self._global_disabled_path)
 
     def global_disabled(self) -> dict[str, set[str]]:
@@ -1208,21 +1221,7 @@ class CapabilityManager:
 
     def set_global_enabled(self, *, kind: str, capability_id: str, enabled: bool) -> dict[str, Any]:
         if enabled:
-            result = self.enable_after_edit(kind=kind, capability_id=capability_id)
-            key = {"module": "modules", "action": "actions", "handler": "handlers"}[kind]
-            restored = list(result.get("restored_for", []))
-            for agent in self._manager().agents_snapshot():
-                if agent.agent_id in restored or capability_id not in agent.disabled_snapshot()[key]:
-                    continue
-                if kind == "module":
-                    self._manager().enable_module(agent.agent_id, capability_id)
-                elif kind == "action":
-                    self._manager().enable_action(agent.agent_id, capability_id)
-                else:
-                    self._manager().enable_handler(agent.agent_id, capability_id)
-                restored.append(agent.agent_id)
-            result["restored_for"] = restored
-            return result
+            return self.enable_after_edit(kind=kind, capability_id=capability_id)
         return self.disable_for_edit(kind=kind, capability_id=capability_id)
 
     def signal(
@@ -1433,8 +1432,12 @@ class _AgentApi:
     def delete(self, agent_id: str, reason: str) -> dict[str, Any]:
         return self._manager.delete(agent_id=agent_id, reason=reason)
 
-    def interrupt(self, agent_id: str, reason: str) -> dict[str, Any]:
-        return self._manager.interrupt(agent_id=agent_id, reason=reason)
+    def interrupt(
+        self, agent_id: str, reason: str, requester_id: str | None = None
+    ) -> dict[str, Any]:
+        return self._manager.interrupt(
+            agent_id=agent_id, reason=reason, requester_id=requester_id
+        )
 
     def list_agents(self) -> list[dict[str, Any]]:
         return self._manager.list_agents()

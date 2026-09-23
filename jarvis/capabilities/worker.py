@@ -89,7 +89,10 @@ def _import_file(path: Path, dotted: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[dotted] = module
     try:
-        spec.loader.exec_module(module)
+        # Load the current source even when a quick edit kept the same mtime/size
+        # and an older timestamp-based .pyc still exists.
+        source = path.read_bytes()
+        exec(compile(source, str(path), "exec"), module.__dict__)
     except Exception:
         _forget_import(dotted)
         raise

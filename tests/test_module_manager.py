@@ -1,6 +1,8 @@
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.registry import ActionRegistry, EventRegistry
@@ -13,6 +15,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ModuleManagerContractTests(unittest.TestCase):
+    def test_execute_command_runs_and_captures_both_streams(self):
+        path = ROOT / ".jarvis" / "actions" / "execute_command" / "action.py"
+        spec = importlib.util.spec_from_file_location("test_execute_command_action", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            context = SimpleNamespace(config=SimpleNamespace(project_root=Path(temporary)))
+            result = module.run(
+                {
+                    "command": "printf 'out'; printf 'err' >&2; exit 7",
+                    "cwd": None,
+                },
+                context,
+            )
+            self.assertEqual(result, {"exit_code": 7, "stdout": "out", "stderr": "err"})
+
     def test_module_manager_has_only_its_management_actions_by_default(self):
         presets = PresetStore(ROOT / ".jarvis" / "presets")
         module_manager = presets.load("module_manager")

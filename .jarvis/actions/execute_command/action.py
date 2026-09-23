@@ -27,7 +27,8 @@ def run(data, context):
         shell=True,
         executable="/bin/bash",
         cwd=cwd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         preexec_fn=child_setup,
     )

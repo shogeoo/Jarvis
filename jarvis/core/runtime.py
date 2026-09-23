@@ -692,7 +692,15 @@ class Agent:
                     where=f"ответ агента {self.agent_id}",
                 )
                 actions = parse_actions(value)
+                global_changes: set[tuple[str, str]] = set()
                 for action in actions:
+                    if action.action_id == "set_capability_enabled":
+                        target = (action.data["kind"], action.data["id"])
+                        if target in global_changes:
+                            raise ValueError(
+                                "set_capability_enabled for one capability must be called in separate responses; wait for action_result"
+                            )
+                        global_changes.add(target)
                     if action.action_id not in specs:
                         raise ValueError(
                             f"Действие недоступно этому агенту: {action.action_id}"
@@ -1197,21 +1205,15 @@ class AgentManager:
     ) -> list[str]:
         if kind == "module":
             targets = self.agents_with_module(capability_id)
-            disable = lambda agent_id: self.require_agent(agent_id).disable_module(
-                capability_id
-            )
+            disable = lambda agent_id: self.disable_module(agent_id, capability_id)
             unload = lambda: self.capabilities.unload_module(capability_id)
         elif kind == "action":
             targets = self.agents_with_action(capability_id)
-            disable = lambda agent_id: self.require_agent(agent_id).disable_action(
-                capability_id
-            )
+            disable = lambda agent_id: self.disable_action(agent_id, capability_id)
             unload = lambda: self.capabilities.unload_action(capability_id)
         elif kind == "handler":
             targets = self.agents_with_handler(capability_id)
-            disable = lambda agent_id: self.require_agent(agent_id).disable_handler(
-                capability_id
-            )
+            disable = lambda agent_id: self.disable_handler(agent_id, capability_id)
             unload = lambda: self.capabilities.unload_handler(capability_id)
         else:
             raise ValueError(f"Неизвестный вид capability: {kind!r}")
