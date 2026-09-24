@@ -66,8 +66,8 @@ class ModuleManagerContractTests(unittest.TestCase):
             context = SimpleNamespace()
             self.assertTrue(writer.run({"path": str(target), "content": "one\ntwo\nthree\n"}, context)["written"])
             self.assertEqual(
-                reader.run({"path": str(target), "start_line": 2, "end_line": 3}, context)["content"],
-                "2: two\n3: three",
+                reader.run({"file_path": str(target), "start_line": 2, "end_line": 3}, context)["content"],
+                "2\ttwo\n3\tthree\n",
             )
             self.assertTrue(editor.run({"path": str(target), "start_line": 2, "end_line": 2, "content": "changed"}, context)["edited"])
             self.assertEqual(target.read_text(encoding="utf-8"), "one\nchanged\nthree\n")
