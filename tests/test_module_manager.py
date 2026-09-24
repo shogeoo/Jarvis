@@ -12,9 +12,23 @@ from jarvis.presets import PresetStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MODULE_MANAGER_ACTIONS = {
+    "send_message_to_agent",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "execute_command",
+    "list_capabilities",
+    "capability_info",
+    "toggle_capability",
+}
 RUNTIME_PRESENT = (
     (ROOT / ".jarvis" / "presets" / "module_manager" / "personprompt.txt").is_file()
     and (ROOT / ".jarvis" / "presets" / "main" / "personprompt.txt").is_file()
+    and all(
+        (ROOT / ".jarvis" / "actions" / action_id / "action.py").is_file()
+        for action_id in MODULE_MANAGER_ACTIONS
+    )
 )
 
 
@@ -86,18 +100,10 @@ class ModuleManagerContractTests(unittest.TestCase):
         presets = PresetStore(ROOT / ".jarvis" / "presets")
         module_manager = presets.load("module_manager")
         main = presets.load("main")
-        expected = {
-            "send_message_to_agent",
-            "read_file",
-            "write_file",
-            "edit_file",
-            "execute_command",
-            "list_capabilities",
-            "capability_info",
-            "toggle_capability",
-        }
-        self.assertEqual(set(module_manager.actions), expected)
-        self.assertTrue((expected - {"send_message_to_agent"}).isdisjoint(main.actions))
+        self.assertEqual(set(module_manager.actions), MODULE_MANAGER_ACTIONS)
+        self.assertTrue(
+            (MODULE_MANAGER_ACTIONS - {"send_message_to_agent"}).isdisjoint(main.actions)
+        )
 
     @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_capability_metadata_is_complete_without_loading_runtime(self):
