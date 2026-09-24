@@ -1280,6 +1280,11 @@ class AgentManager:
 
         if self.memory is None:
             return
+        with self._lock:
+            # Удалённый агент мог завершить ход уже после memory.delete;
+            # поздний persist не должен воскрешать его запись.
+            if self.agents.get(agent.agent_id) is not agent:
+                return
         try:
             self.memory.save(agent.memory_record())
         except Exception as exc:  # noqa: BLE001
