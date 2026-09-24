@@ -171,10 +171,7 @@ def validate_schema(schema: JSONSchema, *, where: str = "schema") -> None:
     if Draft202012Validator is None:  # pragma: no cover
         if not isinstance(schema, dict) or not (
             schema.get("type")
-            or any(
-                isinstance(schema.get(keyword), list) and bool(schema[keyword])
-                for keyword in ("anyOf", "oneOf", "allOf")
-            )
+            or (isinstance(schema.get("anyOf"), list) and bool(schema["anyOf"]))
         ):
             raise ValueError(f"Некорректная {where}: отсутствует type")
         return
