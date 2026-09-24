@@ -146,13 +146,19 @@ Action не публикует события. Падение действия �
 `auto_act-N` и выполняет через обычный dispatch. Их `call_result` поступают в
 тот же контекст, как если бы эти actions выбрала модель. При отсутствии
 совпадения событие проходит обычную обработку. Automation создаёт main через
-`create_automation`.
+`create_automation` — файловое действие в `.jarvis/actions/create_automation/`.
+Оно включено в preset main и дополнительно проверяет внутри, что вызывающий
+агент — main. У main аргументы `create_automation` валидируются на dispatch
+строгой disk-aware схемой, собираемой из схем существующих на диске actions
+и handlers.
 
-Действие `create_preset`, тоже доступное только main, принимает `preset_id`,
-`person_prompt` и массивы существующих на диске `actions`, `handlers`, `modules`;
-каждый массив может быть пустым. Идентификаторы проверяются, существующий preset
-не заменяется. Результат имеет `status: "created"` или `"not_created"`,
-`preset_id` и `error` (строка ошибки либо `null`).
+`create_preset` — файловое действие в `.jarvis/actions/create_preset/`, тоже
+включённое только в preset main и проверяющее вызывающего агента. Оно принимает
+`preset_id`, `person_prompt` и массивы существующих на диске `actions`,
+`handlers`, `modules`; каждый массив может быть пустым. Идентификаторы
+проверяются, существующий preset не заменяется. Результат имеет
+`status: "created"` или `"not_created"`, `preset_id` и `error` (строка ошибки
+либо `null`).
 
 ## Пачки
 
