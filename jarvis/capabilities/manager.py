@@ -24,7 +24,7 @@ from typing import Any
 from ..core.lifecycle import terminate_process
 from ..core.protocol import (
     ActionRequest,
-    ActionResult,
+    CallResult,
     Event,
     InputPart,
     validate_json,
@@ -515,7 +515,7 @@ class CapabilityManager:
                     ).start()
                 elif kind == "capability_error":
                     self._fail_call(host, message.get("agent_id"), message.get("call_id"), message.get("error", ""))
-                elif kind == "action_result":
+                elif kind == "call_result":
                     self._complete_action(
                         message.get("agent_id"),
                         message.get("call_id"),
@@ -1012,17 +1012,18 @@ class CapabilityManager:
     def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
         validate_json(action.data, spec.args_schema, where=f"аргументы {action.action_id}")
         if not agent.is_enabled_action(action.action_id):
-            self._manager().deliver_result(ActionResult(
+            self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
                 data={"status": "disabled", "info": "Action is currently disabled."},
             ))
             return
+        agent_modules = agent.modules() if hasattr(agent, "modules") else set()
         if self.is_globally_paused("action", action.action_id) or any(
             self.is_globally_paused("module", module_id)
             and action.action_id in self.module_action_ids(module_id)
-            for module_id in agent.modules()
+            for module_id in agent_modules
         ):
-            self._manager().deliver_result(ActionResult(
+            self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
                 data={"status": "paused", "info": "Capability is globally paused."},
             ))
@@ -1112,7 +1113,7 @@ class CapabilityManager:
         manager = self._manager()
         if manager is None or agent_id is None or call_id is None:
             self.debug.log(
-                "action_result_dropped",
+                "call_result_dropped",
                 agent_id=agent_id,
                 call_id=call_id,
                 reason="no_manager",
@@ -1120,7 +1121,7 @@ class CapabilityManager:
             return False
         if not isinstance(data, dict):
             self.debug.log(
-                "action_result_rejected",
+                "call_result_rejected",
                 agent_id=agent_id,
                 call_id=call_id,
                 reason="invalid_data",

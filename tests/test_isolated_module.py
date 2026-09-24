@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
-from jarvis.core.runtime import ActionResultTracker, EventBus
+from jarvis.core.runtime import CallResultTracker, EventBus
 from jarvis.infrastructure.debug import Debugger
 
 
@@ -112,7 +112,7 @@ class _Manager:
     def __init__(self, agent):
         self.agent = agent
         self.debug = Debugger(enabled=False)
-        self.results = ActionResultTracker(debug=self.debug)
+        self.results = CallResultTracker(debug=self.debug)
         self.errors = []
 
     def deliver_result(self, result):
@@ -164,7 +164,7 @@ class UnitHostTests(unittest.TestCase):
         bus.manager = fake
         return manager, actions, fake
 
-    def test_module_worker_returns_action_result(self):
+    def test_module_worker_returns_call_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
             manager, actions, fake = self._manager(root)
@@ -181,7 +181,7 @@ class UnitHostTests(unittest.TestCase):
                 self.assertEqual(
                     fake.agent.results[0].model_value(),
                     {
-                        "type": "action_result",
+                        "type": "call_result",
                         "call_id": "run-1",
                         "data": {"value": "ok"},
                     },

@@ -510,7 +510,7 @@ def main(argv=None) -> int:
                     return
                 finalized = True
                 connection.send({
-                    "kind": "action_result", "agent_id": agent_id, "call_id": call_id,
+                    "kind": "call_result", "agent_id": agent_id, "call_id": call_id,
                     "data": data,
                     "parts": [{"type": part.type, "mime_type": part.mime_type, "data": part.data, "name": part.name} for part in parts],
                 })
@@ -572,7 +572,7 @@ def main(argv=None) -> int:
                         _send(value)
                     else:
                         _send(value)
-                        if value.get("kind") in {"action_result", "capability_error"}:
+                        if value.get("kind") in {"call_result", "capability_error"}:
                             final = True
                             break
             finally:

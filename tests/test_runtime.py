@@ -150,12 +150,12 @@ class RuntimeTests(unittest.TestCase):
             _action_file(args_schema, result_schema, run_body),
         )
 
-    def action_results(self, agent):
+    def call_results(self, agent):
         return [
             json.loads(message["content"])
             for message in agent.history
             if message["role"] == "user"
-            and '"action_result"' in message["content"]
+            and '"call_result"' in message["content"]
         ]
 
     def test_actions_are_dispatched_in_array_order_with_results(self):
@@ -170,13 +170,13 @@ class RuntimeTests(unittest.TestCase):
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: len(self.action_results(agent)) == 2))
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
         self.assertEqual(
-            [item["data"]["text"] for item in self.action_results(agent)],
+            [item["data"]["text"] for item in self.call_results(agent)],
             ["one", "two"],
         )
         self.assertEqual(
-            [item["call_id"] for item in self.action_results(agent)],
+            [item["call_id"] for item in self.call_results(agent)],
             ["say-1", "say-2"],
         )
 
@@ -226,7 +226,7 @@ class RuntimeTests(unittest.TestCase):
                 item["type"] == "capability_error" for item in values
             )
             has_result = any(
-                item["type"] == "action_result"
+                item["type"] == "call_result"
                 and item["call_id"] == "next-1"
                 for item in values
             )
@@ -241,7 +241,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNotNone(values)
         error = next(item for item in values if item["type"] == "capability_error")
         self.assertEqual(error["data"]["capability"], "action:fail")
-        results = [item for item in values if item["type"] == "action_result"]
+        results = [item for item in values if item["type"] == "call_result"]
         self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
 
@@ -323,7 +323,7 @@ class RuntimeTests(unittest.TestCase):
             if message["role"] == "user"
         ]
         self.assertEqual(values[-1]["type"], "structure_error")
-        self.assertEqual(self.action_results(agent), [])
+        self.assertEqual(self.call_results(agent), [])
 
     def test_enabled_capabilities_belong_to_current_instance(self):
         self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
@@ -434,14 +434,14 @@ class RuntimeTests(unittest.TestCase):
             agent = manager.spawn_root(name="main", preset="main")
             self.publish(agent, "start")
             self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 3))
-            self.assertEqual(len(self.action_results(agent)), 1)
+            self.assertEqual(len(self.call_results(agent)), 1)
             self.assertIn("call_id уже использован", agent.history[-2]["content"])
 
             restarted = self.manager(_Client([outputs[1], _no_action("fresh-2")]), memory=memory)
             restored = restarted.restore(name="main", preset="main")
             self.publish(restored, "again")
             self.assertTrue(_wait(lambda: len(restarted.client.chat.completions.calls) >= 2))
-            self.assertEqual(len(self.action_results(restored)), 1)
+            self.assertEqual(len(self.call_results(restored)), 1)
 
     def test_transient_model_failure_retries_without_duplicate_input(self):
         class Flaky:
@@ -474,8 +474,8 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("say", {"text": "ignored"}, "disabled-1"),
             spec=specs["say"], agent=agent,
         )
-        self.assertTrue(_wait(lambda: any(r["call_id"] == "disabled-1" for r in self.action_results(agent))))
-        result = next(r for r in self.action_results(agent) if r["call_id"] == "disabled-1")
+        self.assertTrue(_wait(lambda: any(r["call_id"] == "disabled-1" for r in self.call_results(agent))))
+        result = next(r for r in self.call_results(agent) if r["call_id"] == "disabled-1")
         self.assertEqual(result["data"], {"status": "disabled", "info": "Action is currently disabled."})
 
     def test_interrupt_ignores_late_response_and_accepts_new_event(self):
@@ -562,8 +562,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(_wait(marker.exists))
         pid = int(marker.read_text())
         manager.disable_action("main", "slow")
-        self.assertTrue(_wait(lambda: any(r["call_id"] == "slow-1" for r in self.action_results(agent))))
-        results = [r for r in self.action_results(agent) if r["call_id"] == "slow-1"]
+        self.assertTrue(_wait(lambda: any(r["call_id"] == "slow-1" for r in self.call_results(agent))))
+        results = [r for r in self.call_results(agent) if r["call_id"] == "slow-1"]
         self.assertEqual([r["data"]["status"] for r in results], ["disabled"])
         self.assertEqual(results[0]["data"]["info"], "Action was disabled before completion.")
         with self.assertRaises(ProcessLookupError):
@@ -626,8 +626,8 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("interrupt_agent", {"agent_id": child_id}, "interrupt-1"),
             spec=manager.actions.require("interrupt_agent"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "interrupt-1" for item in self.action_results(main))))
-        result = next(item for item in self.action_results(main) if item["call_id"] == "interrupt-1")
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "interrupt-1" for item in self.call_results(main))))
+        result = next(item for item in self.call_results(main) if item["call_id"] == "interrupt-1")
         self.assertEqual(result["data"]["state"], "waiting")
         self.assertIn(child_id, manager.agents)
 
@@ -642,8 +642,8 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("delete_agent", {"agent_id": child_id}, "delete-1"),
             spec=manager.actions.require("delete_agent"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "delete-1" for item in self.action_results(main))))
-        result = next(item for item in self.action_results(main) if item["call_id"] == "delete-1")
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "delete-1" for item in self.call_results(main))))
+        result = next(item for item in self.call_results(main) if item["call_id"] == "delete-1")
         self.assertEqual(result["data"], {"agent_id": child_id, "deleted": True})
         self.assertNotIn(child_id, manager.agents)
 
@@ -667,7 +667,7 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "pause-1"),
             spec=manager.actions.require("toggle_capability"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.action_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.call_results(main))))
         self.assertNotIn("reloadable", manager.capabilities.loaded_actions())
         self.assertNotIn(old_host.key, manager.capabilities._hosts)
         self.assertIsNotNone(old_process.poll())
@@ -680,7 +680,7 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "resume-1"),
             spec=manager.actions.require("toggle_capability"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.action_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.call_results(main))))
         self.assertIn("reloadable", main.standalone_actions())
         self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
         self.assertNotIn("reloadable", manager.capabilities.global_paused()["actions"])
@@ -689,8 +689,8 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("reloadable", {}, "reload-1"),
             spec=manager.actions.require("reloadable"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "reload-1" for item in self.action_results(main))))
-        result = next(item for item in self.action_results(main) if item["call_id"] == "reload-1")
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "reload-1" for item in self.call_results(main))))
+        result = next(item for item in self.call_results(main) if item["call_id"] == "reload-1")
         self.assertEqual(result["data"], {"value": "new"})
 
     def test_global_pause_cancels_running_action_before_reporting_completion(self):
@@ -716,8 +716,8 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest("toggle_capability", {"kind": "action", "id": "global_slow"}, "pause-running-1"),
             spec=manager.actions.require("toggle_capability"), agent=main,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.action_results(main))))
-        results = [item for item in self.action_results(main) if item["call_id"] == "running-1"]
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.call_results(main))))
+        results = [item for item in self.call_results(main) if item["call_id"] == "running-1"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["data"]["status"], "paused")
         self.assertNotIn("global_slow", manager.capabilities.loaded_actions())

@@ -3,7 +3,7 @@ import json
 import unittest
 
 from jarvis.infrastructure.debug import Debugger
-from jarvis.core.protocol import ActionResult, Event, InputPart
+from jarvis.core.protocol import CallResult, Event, InputPart
 
 
 class _Tty(io.StringIO):
@@ -23,11 +23,11 @@ class DebugTests(unittest.TestCase):
             ),
         )
         assistant_output = '{"actions":[{"action_id":"no_action","call_id":"say-1","data":{}}]}'
-        action_result = ActionResult(call_id="say-1", data={"spoken": True})
+        call_result = CallResult(call_id="say-1", data={"spoken": True})
 
         debug.input(event, agent_id="main")
         debug.model("main", assistant_output)
-        debug.result(action_result, agent_id="main")
+        debug.result(call_result, agent_id="main")
         debug.log("event", event=event.debug_value())
         debug.state("main", "acting")
 
@@ -41,7 +41,7 @@ class DebugTests(unittest.TestCase):
             )
             + "\n"
             + "\n"
-            + json.dumps(action_result.model_value(), ensure_ascii=False, indent=2)
+            + json.dumps(call_result.model_value(), ensure_ascii=False, indent=2)
             + "\n",
         )
         self.assertNotIn("base64", output.getvalue())
@@ -81,10 +81,10 @@ class DebugTests(unittest.TestCase):
         output = _Tty()
         debug = Debugger(stream=output)
         event = Event(type="tick.event", data={"text": "ok"})
-        action_result = ActionResult(call_id="r-1", data={"value": 1})
+        call_result = CallResult(call_id="r-1", data={"value": 1})
 
         debug.input(event, agent_id="agent-001")
-        debug.result(action_result, agent_id="agent-001")
+        debug.result(call_result, agent_id="agent-001")
 
         text = output.getvalue()
         self.assertIn("\033[33m", text)
@@ -95,7 +95,7 @@ class DebugTests(unittest.TestCase):
     def test_main_output_is_green_on_terminal(self):
         output = _Tty()
         debug = Debugger(stream=output)
-        debug.result(ActionResult(call_id="r-1", data={}), agent_id="main")
+        debug.result(CallResult(call_id="r-1", data={}), agent_id="main")
         self.assertIn("\033[32m", output.getvalue())
 
     def test_subagent_error_is_red_even_for_subagent(self):

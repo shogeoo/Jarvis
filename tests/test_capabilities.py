@@ -6,7 +6,7 @@ from pathlib import Path
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
-from jarvis.core.runtime import ActionResultTracker, EventBus
+from jarvis.core.runtime import CallResultTracker, EventBus
 from jarvis.infrastructure.debug import Debugger
 from jarvis.presets import PresetStore
 
@@ -32,7 +32,7 @@ class _Manager:
     def __init__(self, agent):
         self.agent = agent
         self.debug = Debugger(enabled=False)
-        self.results = ActionResultTracker(debug=self.debug)
+        self.results = CallResultTracker(debug=self.debug)
 
     def deliver_result(self, result):
         self.agent.enqueue_result(result)
@@ -91,7 +91,7 @@ class CapabilityTests(unittest.TestCase):
                 self.assertEqual(
                     results[0].model_value(),
                     {
-                        "type": "action_result",
+                        "type": "call_result",
                         "call_id": "run-1",
                         "data": {"spoken": True, "text": "ok"},
                     },

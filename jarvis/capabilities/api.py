@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from ..core.protocol import ActionResult, Event, InputPart, JSONSchema
+from ..core.protocol import CallResult, Event, InputPart, JSONSchema
 
 
 ActionHandler = Callable[[dict[str, Any], "ActionContext"], Any]

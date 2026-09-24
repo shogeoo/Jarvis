@@ -3,7 +3,7 @@ import unittest
 
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
 from jarvis.core.protocol import (
-    ActionResult,
+    CallResult,
     Event,
     InputPart,
     parse_actions,
@@ -35,14 +35,14 @@ class ProtocolTests(unittest.TestCase):
         text_message = event.model_message(ModelCapabilities("test", ("text",)))
         self.assertIsInstance(text_message["content"], str)
 
-    def test_action_result_is_a_strict_model_value_with_external_action_id(self):
-        result = ActionResult(
+    def test_call_result_is_a_strict_model_value_with_external_action_id(self):
+        result = CallResult(
             call_id="say-1", data={"spoken": True}, agent_id="main"
         )
         self.assertEqual(
             json.loads(result.model_content()),
             {
-                "type": "action_result",
+                "type": "call_result",
                 "call_id": "say-1",
                 "data": {"spoken": True},
             },

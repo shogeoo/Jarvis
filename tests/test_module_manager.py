@@ -28,7 +28,7 @@ class ModuleManagerContractTests(unittest.TestCase):
             "object_schema",
             "create_module",
             "toggle_capability",
-            "ДОЖДИСЬ action_result",
+            "ДОЖДИСЬ call_result",
         ):
             self.assertIn(marker, prompt)
 

@@ -24,7 +24,7 @@ from .lifecycle import ProcessManager
 from .prompts import agent_system_prompt
 from .protocol import (
     ActionRequest,
-    ActionResult,
+    CallResult,
     Event,
     actions_response_schema,
     empty_object_schema,
@@ -84,6 +84,22 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
                     "text": {"type": "string"},
                 }
             ),
+        ),
+        owner="core",
+    )
+    events.register(
+        EventDefinition(
+            type="system_started",
+            description=(
+                "Jarvis завершил обычный запуск и восстановил доступный runtime. "
+                "Агент может проявить инициативу и начать разговор, но не обязан."
+            ),
+            data_schema=object_schema({
+                "datetime": {
+                    "type": "string",
+                    "description": "Local startup time in ISO 8601 with timezone offset.",
+                }
+            }),
         ),
         owner="core",
     )
@@ -210,7 +226,7 @@ class PendingAction:
         self.result_schema = result_schema
 
 
-class ActionResultTracker:
+class CallResultTracker:
     """Связывает авторские результаты с действиями по call_id."""
 
     def __init__(self, *, debug: Debugger | None = None):
@@ -255,7 +271,7 @@ class ActionResultTracker:
             pending = self._pending.get((agent_id, call_id))
         if pending is None:
             self.debug.log(
-                "action_result_rejected",
+                "call_result_rejected",
                 agent_id=agent_id,
                 call_id=call_id,
                 reason="unknown_or_completed",
@@ -269,7 +285,7 @@ class ActionResultTracker:
             )
         except ValueError as exc:
             self.debug.log(
-                "action_result_rejected",
+                "call_result_rejected",
                 agent_id=agent_id,
                 call_id=call_id,
                 reason="invalid_schema",
@@ -280,7 +296,7 @@ class ActionResultTracker:
         with self._lock:
             if self._pending.pop((agent_id, call_id), None) is not pending:
                 return False
-        result = ActionResult(
+        result = CallResult(
             call_id=call_id, data=data, agent_id=agent_id, parts=tuple(parts)
         )
         return manager.deliver_result(result)
@@ -344,7 +360,7 @@ class Agent:
             {"role": "system", "content": ""},
             *[dict(message) for message in (restored_messages or ())],
         ]
-        self._events: "queue.Queue[Event | ActionResult | None]" = queue.Queue()
+        self._events: "queue.Queue[Event | CallResult | None]" = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._state = "created"
@@ -557,7 +573,7 @@ class Agent:
             return True
         return False
 
-    def enqueue_result(self, result: ActionResult) -> None:
+    def enqueue_result(self, result: CallResult) -> None:
         if not self._stop.is_set():
             self._events.put(result)
 
@@ -603,13 +619,13 @@ class Agent:
             if not self._stop.is_set():
                 self._turn(batch, generation)
 
-    def _requeue_front(self, items: list[Event | ActionResult]) -> None:
+    def _requeue_front(self, items: list[Event | CallResult]) -> None:
         with self._events.mutex:
             for item in reversed(items):
                 self._events.queue.appendleft(item)
             self._events.not_empty.notify_all()
 
-    def _turn(self, batch: list[Event | ActionResult], generation: int) -> None:
+    def _turn(self, batch: list[Event | CallResult], generation: int) -> None:
         """Обработать пачку, удерживая новые события до корректного ответа."""
 
         try:
@@ -620,7 +636,7 @@ class Agent:
         self._run_turn(batch, snapshot, generation)
 
     def _run_turn(
-        self, batch: list[Event | ActionResult], snapshot: dict[str, set[str]], generation: int
+        self, batch: list[Event | CallResult], snapshot: dict[str, set[str]], generation: int
     ) -> None:
         """Выполнить один цикл на неизменяемом снимке capabilities."""
 
@@ -629,7 +645,7 @@ class Agent:
             return
         self._set_state("thinking", event_count=len(batch))
         for item in batch:
-            if isinstance(item, ActionResult):
+            if isinstance(item, CallResult):
                 self.history.append(item.model_message())
                 self.manager.debug.result(item, agent_id=self.agent_id)
             else:
@@ -708,7 +724,7 @@ class Agent:
                         target = (action.data["kind"], action.data["id"])
                         if target in global_changes:
                             raise ValueError(
-                                "Global disable and enable for one capability must be called in separate responses; wait for action_result"
+                                "Global disable and enable for one capability must be called in separate responses; wait for call_result"
                             )
                         global_changes.add(target)
                     if action.action_id not in specs:
@@ -811,7 +827,7 @@ class AgentManager:
         self.model_capabilities = model_capabilities
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
-        self.results = ActionResultTracker(debug=self.debug)
+        self.results = CallResultTracker(debug=self.debug)
         self.stopping = threading.Event()
         self.processes = ProcessManager()
         self.services.setdefault("process_manager", self.processes)
@@ -830,14 +846,14 @@ class AgentManager:
                     return candidate
         raise RuntimeError("Не удалось подобрать свободный идентификатор агента")
 
-    def deliver_result(self, result: ActionResult) -> bool:
+    def deliver_result(self, result: CallResult) -> bool:
         """Доставить результат только инициировавшему агенту."""
 
         with self._lock:
             agent = self.agents.get(result.agent_id)
         if agent is None:
             self.debug.log(
-                "action_result_dropped",
+                "call_result_dropped",
                 call_id=result.call_id,
                 reason="unknown_agent",
             )
@@ -1237,7 +1253,7 @@ class AgentManager:
     def disable_call(self, agent_id: str, call_id: str) -> None:
         self._finish_stopped_call(
             agent_id, call_id, status="disabled",
-            info="Action is locally disabled.",
+            info="Action was disabled before completion.",
         )
 
     def pause_call(self, agent_id: str, call_id: str) -> None:
@@ -1250,7 +1266,7 @@ class AgentManager:
         pending = self.results.discard(agent_id, call_id)
         if pending is not None:
             self.capabilities.cancel_execution(agent_id, call_id, pending.action_id)
-            self.deliver_result(ActionResult(
+            self.deliver_result(CallResult(
                 call_id=call_id, agent_id=agent_id,
                 data={"status": status, "info": info},
             ))

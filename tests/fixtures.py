@@ -175,7 +175,7 @@ def write_handler(
 
 def write_master_prompt(project_root: Path) -> Path:
     path = Path(project_root) / "master_prompt.txt"
-    path.write_text("environment\n{modalities}\n", encoding="utf-8")
+    path.write_text("environment\n", encoding="utf-8")
     return path
 
 

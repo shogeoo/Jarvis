@@ -48,6 +48,17 @@ class ModelCapabilitiesTests(unittest.TestCase):
         self.assertIn("Текущие поддерживаемые модальности: text, image", prompt)
         self.assertIn("Нативно не поддерживаются: audio, video, file", prompt)
 
+    def test_all_five_modalities_render_as_model_info_content(self):
+        from jarvis.infrastructure.model_capabilities import (
+            SUPPORTED_INPUT_MODALITIES,
+            ModelCapabilities,
+        )
+
+        self.assertEqual(
+            ModelCapabilities("GPT-6 Luna", SUPPORTED_INPUT_MODALITIES).prompt_block(),
+            "Текущие поддерживаемые модальности: text, image, audio, video, file.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

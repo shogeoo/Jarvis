@@ -385,13 +385,13 @@ class ActionRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class ActionResult:
+class CallResult:
     """Обязательный результат конкретного действия для его инициатора."""
 
     call_id: str
     data: dict[str, Any]
     agent_id: str | None = None
-    type: str = "action_result"
+    type: str = "call_result"
     parts: tuple[InputPart, ...] = ()
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
