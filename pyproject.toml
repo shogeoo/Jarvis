@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "jarvis"
 description = "Jarvis — event-thinking-action система"
 readme = "README.md"
+license = "GPL-3.0-only"
 requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = [
