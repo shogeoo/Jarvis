@@ -11,16 +11,17 @@ jarvis/infrastructure/   LLM-конфигурация и диагностика
 jarvis/application.py    composition root
 master_prompt.txt        общее описание среды для всех агентов
 
-.jarvis/                  отдельный git-репозиторий runtime-данных
+.jarvis/                  локальное хранилище вне Git этого проекта
 .jarvis/actions/<action_id>/action.py
 .jarvis/handlers/<handler_id>/handler.py
 .jarvis/modules/<module_id>/module.py + actions/<id>/ + handlers/<id>/
 .jarvis/presets/<preset>/
-.jarvis/runtime/
+.jarvis/runtime/logs/    логи всех unit-host и TTS
+.jarvis/runtime/          сгенерированный голос и временные данные
 ```
 
 Ядро резервирует `no_action`, `structure_error`,
-`capability_error`, `message_from_agent` и строгий тип результата `action_result`.
+`capability_error`, `message_from_agent` и строгий тип результата `call_result`.
 Все остальные actions и events приходят из динамически загруженных деклараций.
 
 ## Цикл агента
@@ -29,41 +30,41 @@ master_prompt.txt        общее описание среды для всех 
 контекст, FIFO, поток и набор включённых capabilities в RAM.
 
 ```text
-накопленная пачка events и action_results
+накопленная пачка events и call_results
         ↓
 отдельный user message для каждого event и результата
         ↓
 один structured запрос к модели
         ↓
-проверка полного JSON-ответа, включая уникальные action_id
+проверка полного JSON-ответа, включая уникальные call_id во всей истории агента
         ↓
 последовательная передача actions исполнителям
         ↓
-агент свободен; результаты возвращаются только инициатору по action_id
+агент свободен; результаты возвращаются только инициатору по call_id
 ```
 
 Последовательность относится к передаче задач. Ядро не ждёт фактического
 завершения уборки, синтеза речи, HTTP-запроса или другой работы. Исполнитель
-действия позже возвращает обязательный `ActionResult`, связанный с вызванным
-действием через `action_id`.
+действия позже возвращает обязательный `CallResult`, связанный с вызванным
+действием через `call_id`.
 
 Если передача одного action аварийно завершилась, следующие actions всё равно
-передаются. Main получает `capability_error` с идентификатором
+передаются. Агент, создавший вызов, получает `capability_error` с идентификатором
 источника и текстом исключения. Падение действия не создаёт автоматического
 результата.
 
 ## Structure error
 
-Невалидный JSON, повтор `action_id`, неизвестный action, неправильная JSON Schema аргументов и
+Невалидный JSON, повтор `call_id`, неизвестный action, неправильная JSON Schema аргументов и
 сочетание `no_action` с другими actions создают `structure_error`. Ошибочный
 assistant message сохраняется. Агент остаётся занят, а внешняя FIFO не
 добавляется в контекст, пока модель не вернёт корректную структуру.
 
-## Action, ActionResult и handler
+## Action, CallResult и handler
 
 Action — исполняемый код, который запускается, когда агент выдаёт
 соответствующее действие в JSON-ответе. Каждое действие обязано вернуть ровно
-один `ActionResult` вида `{"type":"action_result","action_id":"...","data":{...}}`,
+один `CallResult` вида `{"type":"call_result","call_id":"...","data":{...}}`,
 где формат `data` задаёт автор действия. Результат возвращается только
 инициировавшему агенту и может прийти позже.
 
@@ -98,13 +99,13 @@ Preset содержит три JSON-перечисления (`modules.json`, `a
 
 1. Loader проверяет и загружает код, если он ещё не загружен.
 2. Capability добавляется только в RAM выбранного агента.
-3. Handler запускается один раз глобально.
+3. В состоянии global running runtime запускается один раз.
 4. На следующем модельном цикле system message этого агента получает контракт.
 
 Модуль включается только целиком; часть модуля включить нельзя. Отдельно
 включаются только корневые действия и handlers.
 
-Выключение удаляет capability только у выбранного экземпляра. Когда capability
+Local disable удаляет capability только у выбранного экземпляра. Когда capability
 больше не включена ни у кого, loader очищает её registry, очередь, handlers, потоки,
 процесс и импортированный Python-код.
 
@@ -112,23 +113,33 @@ Preset на диске меняет только `main`. При следующе
 памяти вместе со своим сохранённым набором capabilities; если памяти нет,
 используется стартовый набор preset.
 
+Назначенная capability остаётся известной агенту после disable. Disabled action
+остаётся в JSON-каталоге, но не запускается и возвращает один результат с
+`data.status = "disabled"` и англоязычным `data.info`. Disabled handler остаётся известным в каталоге и не
+публикует события. Локальное отключение меняет один экземпляр; глобальная
+пауза module_manager хранится отдельно и действует для всех агентов, которым
+capability назначена. Пауза не меняет локальные назначения или disabled-наборы.
+
+Каждый invocation action имеет отдельный `call_id`. Вызовы одной capability
+исполняются независимо в отдельных execution processes, поэтому долгий или
+зависший action не блокирует handlers и другие actions. Ограничения времени на
+результат нет; физическая смерть execution считается ошибкой capability.
+
 ## Редактирование capabilities
 
 Module manager работает прямо с `.jarvis/`.
 
 Для изменения существующей capability:
 
-1. Запоминаются живые экземпляры, использующие capability.
-2. Capability удаляется у них из RAM.
-3. Runtime capability полностью выгружается.
-4. Код редактируется в том же каталоге.
-5. Выполняются validation и рабочие тесты.
-6. Код включается заново.
-7. Capability возвращается сохранённым живым экземплярам.
+1. Module manager переключает capability в global paused и ждёт её call_result.
+2. Runtime выгружается, локальные назначения и disabled-состояния агентов сохраняются.
+3. Код редактируется в том же каталоге.
+4. Выполняются validation и рабочие тесты.
+6. Module manager переключает capability обратно в global running отдельным вызовом.
+7. Ядро загружает обновлённый код агентам, которым capability назначена и локально включена.
 
-Агенты и их контексты не перезапускаются. Уже сформированный модельный запрос
-невозможно изменить задним числом; следующий цикл строится без выключенного
-контракта.
+Агенты и их контексты не перезапускаются. Глобальная пауза не превращает
+capability в локально disabled и не удаляет её из назначений.
 
 Для нового модуля сохранённых экземпляров нет. После проверки родитель указывает
 конкретный живой agent_id, которому module_manager включает новую возможность.
@@ -137,14 +148,15 @@ Module manager работает прямо с `.jarvis/`.
 
 Управляющие действия есть только у main:
 
-- `list_capabilities` — capabilities на диске и состояние загрузки;
+- `list_available_capabilities` — capabilities на диске, ещё не назначенные агенту;
 - `list_active_capabilities` — собственный RAM-набор;
 - `enable_capability` — добавить существующий модуль, действие или handler только себе;
 - `disable_capability` — убрать capability только у себя.
 
 Это позволяет main увидеть существующую интеграцию и подключить её самостоятельно.
-Пресет main защищён: экземпляр с пресетом main может существовать только один —
-корневой агент, создать субагента с этим пресетом нельзя.
+Protected-пресет является singleton: его экземпляр нельзя удалить или изменить
+извне, а второй экземпляр создать нельзя. Сам агент может менять собственные
+capabilities разрешёнными действиями.
 
 ## Декларация и JSON-каталог
 
@@ -162,7 +174,7 @@ unit-файлы и агрегирует их определения; загру�
   "core_protocol": {
     "actions": [],
     "events": [],
-    "action_result": {}
+    "call_result": {}
   },
   "standalone": {
     "actions": [],
@@ -184,6 +196,15 @@ unit-файлы и агрегирует их определения; загру�
 Это единственное описание конкретных возможностей для обычного агента.
 Personprompt задаёт личность и цель, а мастер-промпт — общий протокол без перечня
 установленных возможностей.
+
+Итоговый system message состоит строго из четырёх последовательных блоков:
+`person_prompt`, `master_prompt`, `model_info`, `capabilities`. Сведения о
+modalities принадлежат только `model_info`; они не подставляются в master prompt.
+
+После полной инициализации при обычном запуске main получает core event
+`system_started` с локальным ISO 8601 datetime и timezone. Это возможность
+проявить инициативу, а не требование приветствовать пользователя или выполнять
+действие.
 
 ## Зависимости и процессы
 
@@ -210,14 +231,16 @@ actions, events и результатами по JSON Lines.
 - `spawn_agent`, `delete_agent`, `interrupt_agent`, `list_agents` — экземпляры;
 - `send_message_to_agent` — адресное сообщение живому экземпляру;
 - `list_agent_presets` — файловые пресеты;
-- `list_capabilities`, `list_active_capabilities`, `enable_capability`,
+- `list_available_capabilities`, `list_active_capabilities`, `enable_capability`,
   `disable_capability` — просмотр и доступ текущего экземпляра;
 - `take_screenshot` — снимок возвращается прямо в результате действия
   отдельной image-частью, base64 в `data` нет;
 - `send_notification` — десктопные уведомления.
 
-Пресет `module_manager` пока не имеет собственных инструментов (кроме
-`send_message_to_agent`) — они будут предоставлены отдельно.
+Пресет `module_manager` получает `send_message_to_agent`, чтение и редактирование
+файлов, синхронное выполнение bash-команд, полную информацию о capabilities и
+глобальную паузу и возобновление capabilities одним toggle action. Эти actions не назначаются main и
+другим пресетам по умолчанию.
 
 ## Встроенная речь
 
@@ -242,12 +265,12 @@ PDEATHSIG), создаёт профиль голоса при необходим
 ## Долговременная память
 
 ```text
-memory/<preset_id>/agent.json
-memory/<preset_id>/context.json
-memory/<preset_id>/parts/
-memory/<preset_id>/<agent_id>/agent.json
-memory/<preset_id>/<agent_id>/context.json
-memory/<preset_id>/<agent_id>/parts/
+memory/<preset_id>/current/agent.json
+memory/<preset_id>/current/context.json
+memory/<preset_id>/current/parts/
+memory/<preset_id>/last/agent.json
+memory/<preset_id>/last/context.json
+memory/<preset_id>/last/parts/
 ```
 
 Корневой агент пресета хранится без подпапки `agent_id`. `agent.json` описывает
@@ -262,13 +285,13 @@ agent: event / assistant / module change
         ↓
 история + метаданные
         ↓
-атомарная запись agent.json + context.json
+атомарная публикация current; прежний current становится last
 ```
 
-`AgentManager.restore` читает все записи, поднимает `main`, затем восстанавливает
-субагентов в порядке «родитель раньше ребёнка» с прежними `agent_id`, preset,
-capabilities и контекстом. Записи с отсутствующим родителем пропускаются и удаляются.
-Битые файлы игнорируются. `delete` агента удаляет его файлы. Незавершённые
+`AgentManager.restore` читает `current`, а при его повреждении — `last`, поднимает
+`main`, затем восстанавливает субагентов в порядке «родитель раньше ребёнка» с
+прежними `agent_id`, preset, capabilities и контекстом. Записи с отсутствующим
+родителем пропускаются и сохраняются. Битые файлы не удаляются. `delete` агента удаляет его файлы. Незавершённые
 действия при остановке удаляются из RAM и на диск не сохраняются;
 пока файлы не удалены, контекст переживает перезапуск.
 

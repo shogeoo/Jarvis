@@ -106,6 +106,41 @@ def create_module():
     )
 """
 
+CONTROL_ACTIONS = {
+    "delete_agent": '''
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+def run(data, context):
+    return context.agent_manager.delete(agent_id=data["agent_id"])
+def create_action():
+    return action_definition("Delete agent", object_schema({"agent_id": {"type": "string"}}),
+        object_schema({"agent_id": {"type": "string"}, "deleted": {"type": "boolean"}}), run)
+''',
+    "interrupt_agent": '''
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+def run(data, context):
+    return context.agent_manager.interrupt(agent_id=data["agent_id"], requester_id=context.agent_id)
+def create_action():
+    return action_definition("Interrupt agent", object_schema({"agent_id": {"type": "string"}}),
+        object_schema({"agent_id": {"type": "string"}, "state": {"type": "string"}}), run)
+''',
+}
+
+
+def toggle_capability_action() -> str:
+    return '''
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+def run(data, context):
+    result = context.agent_manager.toggle_capability(kind=data["kind"], capability_id=data["id"])
+    return {"kind": data["kind"], "id": data["id"], **result}
+def create_action():
+    return action_definition("Toggle global capability state",
+        object_schema({"kind": {"type": "string", "enum": ["module", "action", "handler"]}, "id": {"type": "string"}}),
+        object_schema({"kind": {"type": "string"}, "id": {"type": "string"}, "state": {"type": "string", "enum": ["paused", "running"]}, "affected_agent_ids": {"type": "array", "items": {"type": "string"}}}), run)
+'''
+
 
 def link_environment(unit_dir: Path, python: str | None = None) -> Path:
     """Создать .venv/bin/python единицы симлинком на текущий интерпретатор."""
@@ -140,7 +175,7 @@ def write_handler(
 
 def write_master_prompt(project_root: Path) -> Path:
     path = Path(project_root) / "master_prompt.txt"
-    path.write_text("environment\n{modalities}\n", encoding="utf-8")
+    path.write_text("environment\n", encoding="utf-8")
     return path
 
 

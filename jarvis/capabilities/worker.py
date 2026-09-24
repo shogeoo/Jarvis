@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import multiprocessing
 import queue
 import re
 import sys
@@ -88,7 +89,10 @@ def _import_file(path: Path, dotted: str) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[dotted] = module
     try:
-        spec.loader.exec_module(module)
+        # Load the current source even when a quick edit kept the same mtime/size
+        # and an older timestamp-based .pyc still exists.
+        source = path.read_bytes()
+        exec(compile(source, str(path), "exec"), module.__dict__)
     except Exception:
         _forget_import(dotted)
         raise
@@ -374,13 +378,13 @@ class _Rpc:
     def call(self, target: str, method: str, args, kwargs):
         with self._lock:
             self._counter += 1
-            call_id = self._counter
+            rpc_id = self._counter
             slot: dict[str, Any] = {"event": threading.Event()}
-            self._pending[call_id] = slot
+            self._pending[rpc_id] = slot
         self._send(
             {
                 "kind": "rpc",
-                "call_id": call_id,
+                "rpc_id": rpc_id,
                 "target": target,
                 "method": method,
                 "args": list(args),
@@ -389,17 +393,17 @@ class _Rpc:
         )
         if not slot["event"].wait(timeout=RPC_TIMEOUT):
             with self._lock:
-                self._pending.pop(call_id, None)
+                self._pending.pop(rpc_id, None)
             raise RuntimeError(f"RPC-таймаут: {target}.{method}")
         with self._lock:
-            self._pending.pop(call_id, None)
+            self._pending.pop(rpc_id, None)
         if not slot.get("ok"):
             raise _RemoteError(slot.get("error") or "неизвестная ошибка ядра")
         return slot.get("value")
 
     def resolve(self, message: dict[str, Any]) -> None:
         with self._lock:
-            slot = self._pending.get(message.get("call_id"))
+            slot = self._pending.get(message.get("rpc_id"))
         if slot is None:
             return
         slot.update(
@@ -463,75 +467,133 @@ def main(argv=None) -> int:
     capabilities = Remote(rpc, "capabilities")
     capabilities.root = root
 
-    jobs: queue.Queue = queue.Queue()
     stop = threading.Event()
     services: dict[str, Any] = {}
-    sent_results: set[tuple[str, str]] = set()
-
-    def complete(agent_id: str, action_id: str, data, parts=()) -> None:
-        sent_results.add((agent_id, action_id))
-        _send(
-            {
-                "kind": "action_result",
-                "agent_id": agent_id,
-                "action_id": action_id,
-                "data": data,
-                "parts": [
-                    {
-                        "type": part.type,
-                        "mime_type": part.mime_type,
-                        "data": part.data,
-                    }
-                    for part in parts
-                ],
-            }
-        )
+    executions: dict[tuple[str, str], tuple[Any, Any]] = {}
+    execution_lock = threading.RLock()
+    rpc_routes: dict[str, Any] = {}
 
     for hook in unit.prepare:
         hook(config)
 
-    def run_actions() -> None:
-        while not stop.is_set():
-            item = jobs.get()
-            if item is None:
-                return
-            spec, message = item
-            agent_id = message["agent_id"]
-            action_id = message["action_id"]
+    def run_action(spec, message, connection) -> None:
+        agent_id = message["agent_id"]
+        call_id = message["call_id"]
+        finalized = False
+        completed = threading.Event()
+        finalize_lock = threading.Lock()
+        class ChildRpc:
+            def __init__(self):
+                self.counter = 0
+
+            def call(self, target, method, args, kwargs):
+                self.counter += 1
+                rpc_id = f"{agent_id}:{call_id}:{self.counter}"
+                connection.send({"kind": "rpc", "rpc_id": rpc_id, "target": target, "method": method, "args": list(args), "kwargs": dict(kwargs), "caller_agent_id": agent_id})
+                while connection.poll(RPC_TIMEOUT):
+                    response = connection.recv()
+                    if response.get("kind") == "rpc_result" and response.get("rpc_id") == rpc_id:
+                        if response.get("ok"):
+                            return response.get("value")
+                        raise _RemoteError(response.get("error") or "RPC error")
+                raise RuntimeError(f"RPC-таймаут: {target}.{method}")
+
+        child_rpc = ChildRpc()
+        child_manager = Remote(child_rpc, "agent_manager")
+        child_capabilities = Remote(child_rpc, "capabilities")
+        child_capabilities.root = root
+
+        def complete(data, parts=()):
+            nonlocal finalized
+            with finalize_lock:
+                if finalized:
+                    return
+                finalized = True
+                connection.send({
+                    "kind": "call_result", "agent_id": agent_id, "call_id": call_id,
+                    "data": data,
+                    "parts": [{"type": part.type, "mime_type": part.mime_type, "data": part.data, "name": part.name} for part in parts],
+                })
+                completed.set()
+
+        try:
             context = ActionContext(
                 agent_id=agent_id,
-                action_id=action_id,
-                action_type=message["type"],
-                capability_id=message["type"],
-                module_id=unit.module_id,
-                complete=lambda data, parts=(), agent_id=agent_id, action_id=action_id: complete(
-                    agent_id, action_id, data, parts
-                ),
+                call_id=call_id,
+                action_id=message["action_id"],
+                capability_id=message["action_id"],
+                module_id=unit.module_id, complete=complete,
                 config=config,
-                agent_manager=agent_manager,
-                capabilities=capabilities,
+                agent_manager=child_manager,
+                capabilities=child_capabilities,
                 services=services,
                 metadata=dict(message.get("metadata") or {}),
-                stop_event=stop,
+                stop_event=threading.Event(),
             )
-            try:
-                result = spec.run(message["data"], context)
-            except Exception as exc:  # noqa: BLE001
-                _send(
-                    {
-                        "kind": "capability_error",
-                        "agent_id": agent_id,
-                        "action_id": action_id,
-                        "error": str(exc),
-                    }
-                )
-                continue
-            if result is PENDING:
-                continue
-            complete(agent_id, action_id, result)
+            result = spec.run(message["data"], context)
+            if result is not PENDING:
+                complete(result)
+            else:
+                completed.wait()
+        except Exception as exc:  # noqa: BLE001
+            if not finalized:
+                connection.send({"kind": "capability_error", "agent_id": agent_id, "call_id": call_id, "error": str(exc)})
+        finally:
+            connection.close()
 
-    action_thread = threading.Thread(target=run_actions, daemon=True)
-    action_thread.start()
+    def start_action(spec, message):
+        key = (message["agent_id"], message["call_id"])
+        parent, child = multiprocessing.get_context("fork").Pipe(duplex=True)
+        process = multiprocessing.get_context("fork").Process(target=run_action, args=(spec, message, child), daemon=True)
+        process.start()
+        child.close()
+        with execution_lock:
+            executions[key] = (process, parent)
+
+        def relay():
+            final = False
+            try:
+                while not stop.is_set():
+                    if not parent.poll(0.1):
+                        if not process.is_alive():
+                            break
+                        continue
+                    try:
+                        value = parent.recv()
+                    except EOFError:
+                        break
+                    with execution_lock:
+                        active = executions.get(key, (None,))[0] is process
+                    if not active:
+                        break
+                    if value.get("kind") == "rpc":
+                        with execution_lock:
+                            rpc_routes[value["rpc_id"]] = parent
+                        _send(value)
+                    else:
+                        _send(value)
+                        if value.get("kind") in {"call_result", "capability_error"}:
+                            final = True
+                            break
+            finally:
+                with execution_lock:
+                    active = executions.get(key, (None,))[0] is process
+                    if active:
+                        executions.pop(key, None)
+                    for rpc_id, routed in list(rpc_routes.items()):
+                        if routed is parent:
+                            rpc_routes.pop(rpc_id, None)
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=1)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=1)
+                parent.close()
+                if active and not final and not stop.is_set():
+                    _send({"kind": "capability_error", "agent_id": key[0], "call_id": key[1], "error": "Исполнение действия завершилось без результата"})
+
+        threading.Thread(target=relay, daemon=True).start()
 
     _send({"kind": "ready", "catalog": catalog})
 
@@ -551,6 +613,7 @@ def main(argv=None) -> int:
                                 "type": part.type,
                                 "mime_type": part.mime_type,
                                 "data": part.data,
+                                "name": part.name,
                             }
                             for part in event.parts
                         ],
@@ -600,7 +663,29 @@ def main(argv=None) -> int:
             if kind == "shutdown":
                 break
             if kind == "rpc_result":
-                rpc.resolve(message)
+                with execution_lock:
+                    routed = rpc_routes.pop(message.get("rpc_id"), None)
+                if routed is not None:
+                    try:
+                        routed.send(message)
+                    except (BrokenPipeError, EOFError, OSError):
+                        pass
+                else:
+                    rpc.resolve(message)
+                continue
+            if kind == "cancel_action":
+                key = (message.get("agent_id"), message.get("call_id"))
+                with execution_lock:
+                    execution = executions.pop(key, None)
+                if execution is not None:
+                    process, connection = execution
+                    if process.is_alive():
+                        process.terminate()
+                    process.join(timeout=1)
+                    if process.is_alive():
+                        process.kill()
+                        process.join(timeout=1)
+                _send({"kind": "cancelled", "agent_id": key[0], "call_id": key[1]})
                 continue
             if kind == "signal":
                 for callback in unit.signals:
@@ -611,21 +696,30 @@ def main(argv=None) -> int:
                 continue
             if kind != "action":
                 continue
-            spec = unit.actions.get(message.get("type"))
+            spec = unit.actions.get(message.get("action_id"))
             if spec is None:
                 _send(
                     {
                         "kind": "capability_error",
                         "agent_id": message.get("agent_id"),
-                        "action_id": message.get("action_id"),
-                        "error": f"Неизвестное действие: {message.get('type')}",
+                        "call_id": message.get("call_id"),
+                        "error": f"Неизвестное действие: {message.get('action_id')}",
                     }
                 )
                 continue
-            jobs.put((spec, message))
+            start_action(spec, message)
     finally:
         stop.set()
-        jobs.put(None)
+        with execution_lock:
+            active = list(executions.values())
+            executions.clear()
+        for process, connection in active:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=1)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1)
         for context, handler in contexts:
             if handler.stop is not None:
                 try:
@@ -637,7 +731,6 @@ def main(argv=None) -> int:
                 hook(config)
             except Exception:
                 pass
-        action_thread.join(timeout=2)
         for thread in handler_threads:
             thread.join(timeout=2)
     return 0

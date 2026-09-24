@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from openai import OpenAI
 
 from .core.protocol import Event
@@ -12,6 +14,7 @@ from .infrastructure.config import Config
 from .infrastructure.context import MemoryStore
 from .infrastructure.debug import Debugger
 from .infrastructure.model_capabilities import discover_model_capabilities
+from .infrastructure.runtime_layout import ensure_runtime_layout
 from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
 from .speech import service as speech_service
@@ -22,6 +25,7 @@ class JarvisApplication:
         if not config.llm_enabled:
             raise RuntimeError("LLM_MODEL не задан")
         self.config = config
+        ensure_runtime_layout(config.jarvis_dir)
         self.debug = Debugger(enabled=True)
         self.memory = memory or MemoryStore(config.jarvis_dir / "memory")
         self.actions = ActionRegistry()
@@ -75,6 +79,15 @@ class JarvisApplication:
             debug=self.debug,
         )
         self.main_agent = self.agents.restore(name="main", preset="main")
+        if self.main_agent is not None:
+            self.bus.publish(
+                Event(
+                    type="system_started",
+                    data={"datetime": datetime.now().astimezone().isoformat(timespec="seconds")},
+                    source="core",
+                    target=self.main_agent.agent_id,
+                )
+            )
         return self
 
     def _emit_speech(self, data: dict) -> None:

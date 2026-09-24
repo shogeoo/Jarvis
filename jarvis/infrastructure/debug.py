@@ -21,16 +21,18 @@ class Debugger:
 
     Печатается ровно то, что видит модель в своём контексте, и строго
     как JSON-структура: вход — {"type":..., "data":...} как его задаёт
-    модуль, результат — {"type":"action_result", "action_id":...,
+    модуль, результат — {"type":"call_result", "call_id":...,
     "data":...}, выход — content assistant message.
 
     Сломанный (невалидный) ответ модели в консоль не выводится вовсе:
     модель видит только structure_error, содержащий его текст.
-    structure_error и capability_error подсвечиваются красным.
+    structure_error и capability_error подсвечиваются красным. Ошибки LLM API
+    печатаются отдельными красными строками без заголовка и JSON-обёртки.
 
-    Между любыми двумя JSON-блоками — пустая строка. Всё, что связано
+    Между блоками — одна пустая строка. Завершающие переводы строк убираются,
+    чтобы соседние сообщения не создавали двойной интервал. Всё, что связано
     с main, печатается зелёным; субагенты (включая их handlers и
-    action_result) — жёлтым. Цвет включается только на терминале.
+    call_result) — жёлтым. Цвет включается только на терминале.
 
     OpenAI-обёртка (списки text/image_url, data URL с base64) и
     переформатирование JSON намеренно не выводятся: base64 текстом
@@ -76,6 +78,15 @@ class Debugger:
         намеренно подавляются.
         """
 
+    def error(self, message: str) -> None:
+        """Напечатать исходный текст ошибки красным, без заголовка."""
+
+        if not self.enabled:
+            return
+        rendered = str(message).rstrip("\r\n")
+        if rendered:
+            self._write("main", error=True, rendered=rendered)
+
     def message(self, content: Any, *, agent_id: str = "main") -> None:
         """Вывести блок строго как отформатированный JSON.
 
@@ -103,7 +114,7 @@ class Debugger:
         self.message(event.model_value(), agent_id=agent_id)
 
     def result(self, result: Any, agent_id: str = "main") -> None:
-        """Вывести результат действия как событие: type/action_id/data."""
+        """Вывести результат действия как событие: type/call_id/data."""
 
         self.message(result.model_value(), agent_id=agent_id)
 

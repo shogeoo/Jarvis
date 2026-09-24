@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,9 @@ class AgentPreset:
     actions: tuple[str, ...]
     handlers: tuple[str, ...]
     protected: bool = False
+    disabled_modules: tuple[str, ...] = ()
+    disabled_actions: tuple[str, ...] = ()
+    disabled_handlers: tuple[str, ...] = ()
 
 
 class PresetStore:
@@ -88,7 +92,45 @@ class PresetStore:
             tuple(raw_actions),
             tuple(raw_handlers),
             metadata.get("protected", False),
+            tuple(self._read_disabled(path, "modules", _NAME)),
+            tuple(self._read_disabled(path, "actions", _CAPABILITY)),
+            tuple(self._read_disabled(path, "handlers", _CAPABILITY)),
         )
+
+    @staticmethod
+    def _read_disabled(path: Path, name: str, pattern) -> list[str]:
+        unified = path / "disabled_capabilities.json"
+        if unified.is_file():
+            state = json.loads(unified.read_text(encoding="utf-8"))
+            values = state.get(name, []) if isinstance(state, dict) else []
+        else:
+            legacy = path / f"disabled_{name}.json"
+            values = json.loads(legacy.read_text(encoding="utf-8")) if legacy.is_file() else []
+        if not isinstance(values, list) or not all(isinstance(item, str) and pattern.fullmatch(item) for item in values):
+            raise ValueError(f"Некорректный список disabled {name} в preset {path.name}")
+        return values
+
+    def set_disabled(self, name: str, kind: str, capability_id: str, disabled: bool) -> None:
+        self.validate_capability(kind, capability_id)
+        preset = self.load(name)
+        key = {"module": "modules", "action": "actions", "handler": "handlers"}[kind]
+        values = set(getattr(preset, {"modules": "disabled_modules", "actions": "disabled_actions", "handlers": "disabled_handlers"}[key]))
+        if disabled:
+            values.add(capability_id)
+        else:
+            values.discard(capability_id)
+        state = {
+            "modules": sorted(set(preset.disabled_modules)),
+            "actions": sorted(set(preset.disabled_actions)),
+            "handlers": sorted(set(preset.disabled_handlers)),
+        }
+        state[key] = sorted(values)
+        destination = self.path(name) / "disabled_capabilities.json"
+        temporary = destination.with_suffix(".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, destination)
+        for legacy_key in ("modules", "actions", "handlers"):
+            (destination.parent / f"disabled_{legacy_key}.json").unlink(missing_ok=True)
 
     def list(self) -> list[AgentPreset]:
         if not self.root.exists():

@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import tempfile
 import threading
 import time
@@ -34,7 +35,7 @@ class _Completions:
         index = len(self.calls) - 1
         if self.block:
             self.block(index)
-        output = self.outputs[index] if index < len(self.outputs) else self.outputs[-1]
+        output = self.outputs[index] if index < len(self.outputs) else _no_action(f"fallback-{index}")
         return _Response(output)
 
 
@@ -68,9 +69,9 @@ EMPTY_SCHEMA = {
 
 def _no_action(action_id="done"):
     return (
-        '{"actions":[{"action_id":'
+        '{"actions":[{"action_id":"no_action","call_id":'
         f"{json.dumps(action_id)},"
-        '"type":"no_action","data":{}}]}'
+        '"data":{}}]}'
     )
 
 
@@ -84,6 +85,16 @@ def _wait(predicate, timeout=2):
 
 
 class RuntimeTests(unittest.TestCase):
+    def install_project_action(self, action_id):
+        source = Path(__file__).resolve().parents[1] / ".jarvis" / "actions" / action_id / "action.py"
+        if source.is_file():
+            code = source.read_text(encoding="utf-8")
+        elif action_id == "toggle_capability":
+            code = fixtures.toggle_capability_action()
+        else:
+            code = fixtures.CONTROL_ACTIONS[action_id]
+        fixtures.write_action(self.root / "actions", action_id, code)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -139,33 +150,33 @@ class RuntimeTests(unittest.TestCase):
             _action_file(args_schema, result_schema, run_body),
         )
 
-    def action_results(self, agent):
+    def call_results(self, agent):
         return [
             json.loads(message["content"])
             for message in agent.history
             if message["role"] == "user"
-            and '"action_result"' in message["content"]
+            and '"call_result"' in message["content"]
         ]
 
     def test_actions_are_dispatched_in_array_order_with_results(self):
         client = _Client(
             [
                 '{"actions":['
-                '{"action_id":"say-1","type":"say","data":{"text":"one"}},'
-                '{"action_id":"say-2","type":"say","data":{"text":"two"}}]}',
+                '{"action_id":"say","call_id":"say-1","data":{"text":"one"}},'
+                '{"action_id":"say","call_id":"say-2","data":{"text":"two"}}]}',
                 _no_action("done-1"),
             ]
         )
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: len(self.action_results(agent)) == 2))
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
         self.assertEqual(
-            [item["data"]["text"] for item in self.action_results(agent)],
+            [item["data"]["text"] for item in self.call_results(agent)],
             ["one", "two"],
         )
         self.assertEqual(
-            [item["action_id"] for item in self.action_results(agent)],
+            [item["call_id"] for item in self.call_results(agent)],
             ["say-1", "say-2"],
         )
 
@@ -190,8 +201,8 @@ class RuntimeTests(unittest.TestCase):
         client = _Client(
             [
                 '{"actions":['
-                '{"action_id":"fail-1","type":"fail","data":{}},'
-                '{"action_id":"next-1","type":"next","data":{}}]}',
+                '{"action_id":"fail","call_id":"fail-1","data":{}},'
+                '{"action_id":"next","call_id":"next-1","data":{}}]}',
                 _no_action("done-1"),
             ]
         )
@@ -208,14 +219,15 @@ class RuntimeTests(unittest.TestCase):
                     if message["role"] != "user":
                         continue
                     item = json.loads(message["content"])
-                    values[(item["type"], item.get("action_id"))] = item
+                    if "type" in item:
+                        values[(item["type"], item.get("call_id"))] = item
             values = list(values.values())
             has_error = any(
                 item["type"] == "capability_error" for item in values
             )
             has_result = any(
-                item["type"] == "action_result"
-                and item["action_id"] == "next-1"
+                item["type"] == "call_result"
+                and item["call_id"] == "next-1"
                 for item in values
             )
             return values if has_error and has_result else None
@@ -229,8 +241,8 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNotNone(values)
         error = next(item for item in values if item["type"] == "capability_error")
         self.assertEqual(error["data"]["capability"], "action:fail")
-        results = [item for item in values if item["type"] == "action_result"]
-        self.assertEqual([item["action_id"] for item in results], ["next-1"])
+        results = [item for item in values if item["type"] == "call_result"]
+        self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
 
     def test_events_in_busy_batch_keep_arrival_order(self):
@@ -296,8 +308,8 @@ class RuntimeTests(unittest.TestCase):
         client = _Client(
             [
                 '{"actions":['
-                '{"action_id":"say-1","type":"say","data":{"text":"one"}},'
-                '{"action_id":"say-1","type":"say","data":{"text":"two"}}]}',
+                '{"action_id":"say","call_id":"say-1","data":{"text":"one"}},'
+                '{"action_id":"say","call_id":"say-1","data":{"text":"two"}}]}',
                 _no_action("done-1"),
             ]
         )
@@ -311,7 +323,7 @@ class RuntimeTests(unittest.TestCase):
             if message["role"] == "user"
         ]
         self.assertEqual(values[-1]["type"], "structure_error")
-        self.assertEqual(self.action_results(agent), [])
+        self.assertEqual(self.call_results(agent), [])
 
     def test_enabled_capabilities_belong_to_current_instance(self):
         self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
@@ -395,7 +407,7 @@ class RuntimeTests(unittest.TestCase):
                 parent_id=root.agent_id, name="worker", preset="worker"
             )
             self.assertIsNotNone(memory.load("worker", child_info["agent_id"]))
-            manager.delete(agent_id=child_info["agent_id"], reason="test")
+            manager.delete(agent_id=child_info["agent_id"])
             self.assertIsNone(memory.load("worker", child_info["agent_id"]))
 
     def test_enabled_capabilities_are_persisted(self):
@@ -408,6 +420,326 @@ class RuntimeTests(unittest.TestCase):
             record = memory.load("main", "main")
             self.assertIn("echo", record["modules"])
             self.assertIn("say", record["actions"])
+
+    def test_call_id_cannot_be_reused_after_completion_or_restore(self):
+        outputs = [
+            '{"actions":[{"action_id":"say","call_id":"used-1","data":{"text":"one"}}]}',
+            '{"actions":[{"action_id":"say","call_id":"used-1","data":{"text":"again"}}]}',
+            _no_action("fresh-1"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            client = _Client(outputs)
+            manager = self.manager(client, memory=memory)
+            agent = manager.spawn_root(name="main", preset="main")
+            self.publish(agent, "start")
+            self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 3))
+            self.assertEqual(len(self.call_results(agent)), 1)
+            self.assertIn("call_id уже использован", agent.history[-2]["content"])
+
+            restarted = self.manager(_Client([outputs[1], _no_action("fresh-2")]), memory=memory)
+            restored = restarted.restore(name="main", preset="main")
+            self.publish(restored, "again")
+            self.assertTrue(_wait(lambda: len(restarted.client.chat.completions.calls) >= 2))
+            self.assertEqual(len(self.call_results(restored)), 1)
+
+    def test_transient_model_failure_retries_without_duplicate_input(self):
+        class Flaky:
+            def __init__(self):
+                self.calls = []
+            def create(self, **kwargs):
+                self.calls.append(copy.deepcopy(kwargs))
+                if len(self.calls) == 1:
+                    raise ConnectionError("temporary")
+                return _Response(_no_action("after-retry"))
+        flaky = Flaky()
+        client = type("Client", (), {"chat": type("Chat", (), {"completions": flaky})()})()
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        self.publish(agent, "hello")
+        self.assertTrue(_wait(lambda: len(flaky.calls) == 2))
+        self.assertEqual(len([m for m in agent.history if m["role"] == "user"]), 1)
+        self.assertEqual(flaky.calls[0]["messages"], flaky.calls[1]["messages"])
+
+    def test_disabled_action_stays_known_and_returns_disabled_result(self):
+        manager = self.manager(_Client([_no_action("done")]))
+        agent = manager.spawn_root(name="main", preset="main")
+        manager.disable_action(agent.agent_id, "say")
+        self.assertIn("say", agent.known_snapshot()["actions"])
+        self.assertNotIn("say", agent.capabilities_snapshot()["actions"])
+        specs, _ = agent._contract()
+        self.assertIn("say", specs)
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(
+            action=ActionRequest("say", {"text": "ignored"}, "disabled-1"),
+            spec=specs["say"], agent=agent,
+        )
+        self.assertTrue(_wait(lambda: any(r["call_id"] == "disabled-1" for r in self.call_results(agent))))
+        result = next(r for r in self.call_results(agent) if r["call_id"] == "disabled-1")
+        self.assertEqual(result["data"], {"status": "disabled", "info": "Action is currently disabled."})
+
+    def test_interrupt_ignores_late_response_and_accepts_new_event(self):
+        entered, release = threading.Event(), threading.Event()
+        def block(index):
+            if index == 0:
+                entered.set()
+                release.wait(3)
+        client = _Client([_no_action("old"), _no_action("new")], block)
+        manager = self.manager(client)
+        root = manager.spawn_root(name="main", preset="main")
+        child = manager.spawn(parent_id="main", name="worker", preset="worker")
+        agent = manager.require_agent(child["agent_id"])
+        self.publish(agent, "first")
+        self.assertTrue(entered.wait(2))
+        manager.interrupt(agent_id=agent.agent_id)
+        self.publish(agent, "second")
+        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
+        release.set()
+        self.assertTrue(_wait(lambda: any("new" in str(m.get("content")) for m in agent.history)))
+        self.assertFalse(any('"call_id":"old"' in str(m.get("content")) for m in agent.history))
+        self.assertIn(agent.agent_id, manager.agents)
+
+    def test_protected_agent_and_recursive_delete(self):
+        manager = self.manager(_Client([_no_action("done")]))
+        root = manager.spawn_root(name="main", preset="main")
+        with self.assertRaisesRegex(ValueError, "Защищённый"):
+            manager.delete(agent_id="main")
+        with self.assertRaisesRegex(ValueError, "Защищённый"):
+            manager.interrupt(agent_id="main", requester_id="another")
+        parent = manager.spawn(parent_id="main", name="parent", preset="worker")["agent_id"]
+        child = manager.spawn(parent_id=parent, name="child", preset="worker")["agent_id"]
+        grandchild = manager.spawn(parent_id=child, name="grandchild", preset="worker")["agent_id"]
+        manager.delete(agent_id=parent)
+        self.assertEqual(set(manager.agents), {"main"})
+        self.assertNotIn(child, manager.bus._agents)
+        self.assertNotIn(grandchild, manager.bus._agents)
+
+    def test_non_main_protected_preset_is_singleton_and_undeletable(self):
+        special = self.root / "presets" / "special"
+        special.mkdir()
+        (special / "personprompt.txt").write_text("special", encoding="utf-8")
+        for name in ("modules", "actions", "handlers"):
+            (special / f"{name}.json").write_text("[]", encoding="utf-8")
+        (special / "preset.json").write_text('{"protected": true}', encoding="utf-8")
+        manager = self.manager(_Client([_no_action("done")]))
+        manager.spawn_root(name="main", preset="main")
+        special_id = manager.spawn(parent_id="main", name="special", preset="special")["agent_id"]
+        with self.assertRaisesRegex(ValueError, "защищён"):
+            manager.spawn(parent_id="main", name="duplicate", preset="special")
+        with self.assertRaisesRegex(ValueError, "Защищённый"):
+            manager.delete(agent_id=special_id)
+
+    def test_restore_failure_preserves_memory_and_does_not_replace_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            memory.save({
+                "agent_id": "main", "name": "Jarvis", "preset": "main",
+                "parent_id": None, "modules": [], "actions": ["missing_action"],
+                "handlers": [], "messages": [{"role": "user", "content": "saved"}],
+            })
+            before = (Path(temporary) / "main" / "current" / "agent.json").read_bytes()
+            manager = self.manager(_Client([_no_action("done")]), memory=memory)
+            self.assertIsNone(manager.restore(name="main", preset="main"))
+            self.assertEqual(manager.agents, {})
+            self.assertEqual(memory.load("main", "main")["actions"], ["missing_action"])
+            self.assertEqual((Path(temporary) / "main" / "current" / "agent.json").read_bytes(), before)
+
+    def test_disable_running_action_kills_execution_and_returns_one_disabled_result(self):
+        marker = self.root / "running.pid"
+        result_schema = {
+            "type": "object", "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"], "additionalProperties": False,
+        }
+        self.write_action(
+            "slow", EMPTY_SCHEMA, result_schema,
+            f"    import os, time\n    open({str(marker)!r}, 'w').write(str(os.getpid()))\n    time.sleep(10)\n    return {{'ok': True}}\n",
+        )
+        manager = self.manager(_Client([_no_action("done")]))
+        agent = manager.spawn_root(name="main", preset="main")
+        manager.enable_action("main", "slow")
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(action=ActionRequest("slow", {}, "slow-1"), spec=manager.actions.require("slow"), agent=agent)
+        self.assertTrue(_wait(marker.exists))
+        pid = int(marker.read_text())
+        manager.disable_action("main", "slow")
+        self.assertTrue(_wait(lambda: any(r["call_id"] == "slow-1" for r in self.call_results(agent))))
+        results = [r for r in self.call_results(agent) if r["call_id"] == "slow-1"]
+        self.assertEqual([r["data"]["status"] for r in results], ["disabled"])
+        self.assertEqual(results[0]["data"]["info"], "Action was disabled before completion.")
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_invalid_result_is_protocol_error_to_calling_child(self):
+        self.write_action(
+            "bad_result", EMPTY_SCHEMA,
+            {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False},
+            "    return {'ok': 'wrong'}\n",
+        )
+        manager = self.manager(_Client([_no_action("done")]))
+        root = manager.spawn_root(name="main", preset="main")
+        child_info = manager.spawn(parent_id="main", name="worker", preset="worker")
+        child = manager.require_agent(child_info["agent_id"])
+        manager.enable_action(child.agent_id, "bad_result")
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(action=ActionRequest("bad_result", {}, "bad-1"), spec=manager.actions.require("bad_result"), agent=child)
+        self.assertTrue(_wait(lambda: any('"type":"capability_error"' in str(m.get("content")) for m in child.history)))
+        errors = [json.loads(m["content"]) for m in child.history if m["role"] == "user" and isinstance(m["content"], str) and '"capability_error"' in m["content"]]
+        self.assertEqual([e["data"]["call_id"] for e in errors], ["bad-1"])
+        self.assertFalse(any('"capability_error"' in str(m.get("content")) for m in root.history[1:]))
+        self.assertFalse(manager.results.has_pending(child.agent_id, "bad-1"))
+
+    def test_disabled_state_survives_restore_and_available_list_excludes_known(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            first = self.manager(_Client([_no_action("one")]), memory=memory)
+            root = first.spawn_root(name="main", preset="main")
+            first.disable_action("main", "say")
+            first.disable_handler("main", "tick")
+            self.assertIn("say", memory.load("main", "main")["disabled_actions"])
+            listed = first.capabilities.list_available(root.known_snapshot())
+            self.assertNotIn("say", [item["id"] for item in listed["actions"]])
+            self.assertNotIn("tick", [item["id"] for item in listed["handlers"]])
+            second = self.manager(_Client([_no_action("two")]), memory=memory)
+            restored = second.restore(name="main", preset="main")
+            self.assertIn("say", restored.disabled_snapshot()["actions"])
+            self.assertIn("tick", restored.disabled_snapshot()["handlers"])
+            event = Event(type="tick.event", data={"text": "ignored"}, handler_id="tick")
+            self.assertFalse(second.bus.publish(event))
+            self.assertIn("say", restored._contract()[0])
+
+    def test_available_list_describes_unloaded_action(self):
+        self.write_action("extra", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
+        manager = self.manager(_Client([_no_action("done")]))
+        root = manager.spawn_root(name="main", preset="main")
+        self.assertNotIn("extra", manager.capabilities.loaded_actions())
+        available = manager.capabilities.list_available(root.known_snapshot())
+        self.assertEqual([item for item in available["actions"] if item["id"] == "extra"], [{"id": "extra", "description": "test"}])
+
+    def test_interrupt_action_rpc_matches_agent_manager_signature(self):
+        self.install_project_action("interrupt_agent")
+        manager = self.manager(_Client([_no_action("done")]))
+        main = manager.spawn_root(name="main", preset="main")
+        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
+        manager.enable_action("main", "interrupt_agent")
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(
+            action=ActionRequest("interrupt_agent", {"agent_id": child_id}, "interrupt-1"),
+            spec=manager.actions.require("interrupt_agent"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "interrupt-1" for item in self.call_results(main))))
+        result = next(item for item in self.call_results(main) if item["call_id"] == "interrupt-1")
+        self.assertEqual(result["data"]["state"], "waiting")
+        self.assertIn(child_id, manager.agents)
+
+    def test_delete_action_rpc_needs_only_agent_id(self):
+        self.install_project_action("delete_agent")
+        manager = self.manager(_Client([_no_action("done")]))
+        main = manager.spawn_root(name="main", preset="main")
+        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
+        manager.enable_action("main", "delete_agent")
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(
+            action=ActionRequest("delete_agent", {"agent_id": child_id}, "delete-1"),
+            spec=manager.actions.require("delete_agent"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "delete-1" for item in self.call_results(main))))
+        result = next(item for item in self.call_results(main) if item["call_id"] == "delete-1")
+        self.assertEqual(result["data"], {"agent_id": child_id, "deleted": True})
+        self.assertNotIn(child_id, manager.agents)
+
+    def test_global_pause_then_resume_reloads_changed_action(self):
+        self.install_project_action("toggle_capability")
+        value_schema = {
+            "type": "object", "properties": {"value": {"type": "string"}},
+            "required": ["value"], "additionalProperties": False,
+        }
+        self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'old'}\n")
+        manager = self.manager(_Client([_no_action("done")]))
+        main = manager.spawn_root(name="main", preset="main")
+        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
+        manager.enable_action("main", "toggle_capability")
+        manager.enable_action("main", "reloadable")
+        manager.enable_action(child_id, "reloadable")
+        old_host = manager.capabilities._actions["reloadable"].host
+        old_process = old_host.process
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(
+            action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "pause-1"),
+            spec=manager.actions.require("toggle_capability"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.call_results(main))))
+        self.assertNotIn("reloadable", manager.capabilities.loaded_actions())
+        self.assertNotIn(old_host.key, manager.capabilities._hosts)
+        self.assertIsNotNone(old_process.poll())
+        self.assertIn("reloadable", manager.capabilities.global_paused()["actions"])
+        self.assertIn("reloadable", main.standalone_actions())
+        self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
+
+        self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'new'}\n")
+        manager.capabilities.dispatch(
+            action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "resume-1"),
+            spec=manager.actions.require("toggle_capability"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.call_results(main))))
+        self.assertIn("reloadable", main.standalone_actions())
+        self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
+        self.assertNotIn("reloadable", manager.capabilities.global_paused()["actions"])
+        self.assertIsNot(manager.capabilities._actions["reloadable"].host, old_host)
+        manager.capabilities.dispatch(
+            action=ActionRequest("reloadable", {}, "reload-1"),
+            spec=manager.actions.require("reloadable"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "reload-1" for item in self.call_results(main))))
+        result = next(item for item in self.call_results(main) if item["call_id"] == "reload-1")
+        self.assertEqual(result["data"], {"value": "new"})
+
+    def test_global_pause_cancels_running_action_before_reporting_completion(self):
+        self.install_project_action("toggle_capability")
+        marker = self.root / "global-running.pid"
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
+        self.write_action(
+            "global_slow", EMPTY_SCHEMA, schema,
+            f"    import os, time\n    open({str(marker)!r}, 'w').write(str(os.getpid()))\n    time.sleep(10)\n    return {{'ok': True}}\n",
+        )
+        manager = self.manager(_Client([_no_action("done")]))
+        main = manager.spawn_root(name="main", preset="main")
+        manager.enable_action("main", "toggle_capability")
+        manager.enable_action("main", "global_slow")
+        from jarvis.core.protocol import ActionRequest
+        manager.capabilities.dispatch(
+            action=ActionRequest("global_slow", {}, "running-1"),
+            spec=manager.actions.require("global_slow"), agent=main,
+        )
+        self.assertTrue(_wait(marker.exists))
+        pid = int(marker.read_text())
+        manager.capabilities.dispatch(
+            action=ActionRequest("toggle_capability", {"kind": "action", "id": "global_slow"}, "pause-running-1"),
+            spec=manager.actions.require("toggle_capability"), agent=main,
+        )
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.call_results(main))))
+        results = [item for item in self.call_results(main) if item["call_id"] == "running-1"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["data"]["status"], "paused")
+        self.assertNotIn("global_slow", manager.capabilities.loaded_actions())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_global_toggle_same_capability_twice_in_batch_is_structure_error(self):
+        self.install_project_action("toggle_capability")
+        client = _Client([
+            '{"actions":['
+            '{"action_id":"toggle_capability","call_id":"toggle-1","data":{"kind":"action","id":"say"}},'
+            '{"action_id":"toggle_capability","call_id":"toggle-2","data":{"kind":"action","id":"say"}}]}',
+            _no_action("done-1"),
+        ])
+        manager = self.manager(client)
+        main = manager.spawn_root(name="main", preset="main")
+        manager.enable_action("main", "toggle_capability")
+        self.publish(main, "check")
+        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
+        self.assertIn("structure_error", str(main.history))
+        self.assertIn("say", main.standalone_actions())
+        self.assertNotIn("say", manager.capabilities.global_paused()["actions"])
 
 
 if __name__ == "__main__":

@@ -3,7 +3,9 @@ import os
 import tempfile
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from jarvis.application import JarvisApplication
@@ -24,6 +26,16 @@ class ApplicationTests(unittest.TestCase):
     ):
         client = Mock()
         openai.return_value = client
+        response_number = iter(range(1000))
+
+        def model_response(**kwargs):
+            call_id = f"application-noop-{next(response_number)}"
+            content = json.dumps({
+                "actions": [{"action_id": "no_action", "call_id": call_id, "data": {}}]
+            })
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, refusal=None))])
+
+        client.chat.completions.create.side_effect = model_response
         discover.return_value = ModelCapabilities("test", ("text",))
         with tempfile.TemporaryDirectory() as project_dir:
             project = Path(project_dir)
@@ -43,14 +55,18 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
+                    ordered_blocks = ["person_prompt:", "master_prompt:", "model_info:", "capabilities:"]
+                    positions = [system_prompt.index(block) for block in ordered_blocks]
+                    self.assertEqual(positions, sorted(positions))
+                    self.assertIn("environment", system_prompt)
+                    self.assertIn("Текущие поддерживаемые модальности: text", system_prompt)
                     self.assertIn('"type": "say"', system_prompt)
                     self.assertIn('"type": "tick.event"', system_prompt)
                     self.assertIn('"type": "structure_error"', system_prompt)
                     self.assertIn(
                         '"type": "capability_error"', system_prompt
                     )
-                    self.assertIn("action_result", system_prompt)
-                    self.assertIn("environment", system_prompt)
+                    self.assertIn("call_result", system_prompt)
                     self.assertEqual(
                         app.capabilities.loaded_snapshot(),
                         {
@@ -65,21 +81,16 @@ class ApplicationTests(unittest.TestCase):
                         preset="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
-                    disabled = app.capabilities.disable_for_edit(
-                        kind="action", capability_id="say"
-                    )
+                    paused = app.capabilities.toggle_global_state("action", "say")
+                    self.assertEqual(paused["state"], "paused")
                     self.assertEqual(
-                        set(disabled["disabled_for"]),
+                        set(paused["affected_agent_ids"]),
                         {app.main_agent.agent_id, other_agent.agent_id},
                     )
-                    self.assertNotIn("say", app.main_agent.standalone_actions())
-                    restored = app.capabilities.enable_after_edit(
-                        kind="action", capability_id="say"
-                    )
-                    self.assertEqual(
-                        set(restored["restored_for"]),
-                        {app.main_agent.agent_id, other_agent.agent_id},
-                    )
+                    self.assertIn("say", app.main_agent.standalone_actions())
+                    self.assertNotIn("say", app.capabilities.loaded_actions())
+                    running = app.capabilities.toggle_global_state("action", "say")
+                    self.assertEqual(running["state"], "running")
                     self.assertIn("say", app.main_agent.standalone_actions())
 
                     app.capabilities.dispatch(
@@ -96,7 +107,7 @@ class ApplicationTests(unittest.TestCase):
                             json.loads(message["content"])
                             for message in app.main_agent.history
                             if message["role"] == "user"
-                            and '"action_result"' in message["content"]
+                            and '"call_result"' in message["content"]
                         ]
                         if results:
                             break
@@ -104,11 +115,20 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(
                         results[0],
                         {
-                            "type": "action_result",
-                            "action_id": "say-1",
+                            "type": "call_result",
+                            "call_id": "say-1",
                             "data": {"spoken": True, "text": "test"},
                         },
                     )
+                    started = [
+                        json.loads(message["content"])
+                        for message in app.main_agent.history
+                        if message["role"] == "user"
+                        and '"system_started"' in message["content"]
+                    ]
+                    self.assertEqual(len(started), 1)
+                    timestamp = datetime.fromisoformat(started[0]["data"]["datetime"])
+                    self.assertIsNotNone(timestamp.tzinfo)
                 finally:
                     app.stop()
 

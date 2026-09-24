@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from ..core.protocol import ActionResult, Event, InputPart, JSONSchema
+from ..core.protocol import CallResult, Event, InputPart, JSONSchema
 
 
 ActionHandler = Callable[[dict[str, Any], "ActionContext"], Any]
@@ -219,8 +219,8 @@ class ActionContext:
     """Служебный конверт передачи действия коду capability."""
 
     agent_id: str
+    call_id: str
     action_id: str
-    action_type: str
     capability_id: str
     module_id: str | None
     complete: ResultCallback

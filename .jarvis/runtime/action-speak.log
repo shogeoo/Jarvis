@@ -1,5 +1,0 @@
-TTS Fish Audio: подключение к http://127.0.0.1:3030/generate (голос: jarvis)...
-TTS Fish Audio: запуск сервера: /usr/local/bin/s2 --model /home/gd/.models/s2-pro/s2-pro-q4_k_m.gguf --tokenizer /home/gd/.models/s2-pro/tokenizer.json --server --host 127.0.0.1 --port 3030 --cuda 0 -ngl -1
-TTS Fish Audio: веб-сервер готов.
-[2KTTS Fish Audio: остановка.
-TTS Fish Audio: остановка сервера...
