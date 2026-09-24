@@ -144,80 +144,6 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
             owner="core:speech",
         )
     )
-    empty_object = empty_object_schema()
-    automation_action = object_schema(
-        {
-            "action_id": {"type": "string"},
-            "data": empty_object,
-        }
-    )
-    automation_actions = {
-        "type": "array",
-        "minItems": 1,
-        "items": automation_action,
-    }
-    event_trigger = {
-        "anyOf": [
-            object_schema({"handler_id": {"type": "string"}, "data": empty_object}),
-            object_schema({"type": {"type": "string"}, "data": empty_object}),
-        ]
-    }
-    call_result_trigger = object_schema(
-        {
-            "type": {"type": "string", "enum": ["call_result"]},
-            "call_id": {"type": "string"},
-            "data": empty_object,
-        }
-    )
-    automation_schema = {
-        "anyOf": [
-            object_schema({"event": event_trigger, "actions": automation_actions}),
-            object_schema({"call_result": call_result_trigger, "actions": automation_actions}),
-        ]
-    }
-    actions.register(
-        ActionDefinition(
-            id="create_automation",
-            description=(
-                "Create one exact-match automation. It has exactly one event or "
-                "call_result trigger and a non-empty actions array. Stored actions "
-                "contain action_id and data only; Jarvis assigns unique call_id values."
-            ),
-            args_schema=automation_schema,
-            result_schema=object_schema(
-                {"status": {"type": "string", "enum": ["created"]}}
-            ),
-            run=_create_automation_action,
-            owner="core:primary",
-        )
-    )
-    actions.register(
-        ActionDefinition(
-            id="create_preset",
-            description=(
-                "Create a new non-protected agent preset from person_prompt and "
-                "existing on-disk capability IDs. Each capability array may be empty."
-            ),
-            args_schema=object_schema(
-                {
-                    "preset_id": {"type": "string"},
-                    "person_prompt": {"type": "string"},
-                    "actions": {"type": "array", "items": {"type": "string"}},
-                    "handlers": {"type": "array", "items": {"type": "string"}},
-                    "modules": {"type": "array", "items": {"type": "string"}},
-                }
-            ),
-            result_schema=object_schema(
-                {
-                    "status": {"type": "string", "enum": ["created", "not_created"]},
-                    "preset_id": {"type": "string"},
-                    "error": {"type": ["string", "null"]},
-                }
-            ),
-            run=_create_preset_action,
-            owner="core:primary",
-        )
-    )
     events.register(
         EventDefinition(
             type="speech_detected",
@@ -235,29 +161,6 @@ def _speech_action_run(data, context):
     from ..speech import service
 
     return service.speak_result(data["text"])
-
-
-def _create_automation_action(data, context):
-    context.agent_manager.create_automation(data)
-    return {"status": "created"}
-
-
-def _create_preset_action(data, context):
-    preset_id = data["preset_id"]
-    capabilities = {
-        "actions": data["actions"],
-        "handlers": data["handlers"],
-        "modules": data["modules"],
-    }
-    try:
-        context.agent_manager.create_preset(
-            preset_id=preset_id,
-            person_prompt=data["person_prompt"],
-            capabilities=capabilities,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"status": "not_created", "preset_id": preset_id, "error": str(exc)}
-    return {"status": "created", "preset_id": preset_id, "error": None}
 
 
 class EventBus:
@@ -1044,16 +947,6 @@ class AgentManager:
         agent._used_call_ids.update(action.call_id for action in requests)
         return requests
 
-    def create_automation(self, automation: dict[str, Any]) -> int:
-        candidate = AutomationStore.validate(automation)
-        for item in candidate["actions"]:
-            schema = self._existing_action_schema(item["action_id"])
-            validate_json(
-                item["data"], schema,
-                where=f"automation action {item['action_id']}",
-            )
-        return self.automations.append(candidate)
-
     def automation_args_schema(self) -> dict[str, Any]:
         """Build a strict, disk-aware input schema for arbitrary automation JSON."""
 
@@ -1153,38 +1046,6 @@ class AgentManager:
 
     def invalidate_automation_schema(self) -> None:
         self._automation_args_schema_cache = None
-
-    def _existing_action_schema(self, action_id: str) -> dict[str, Any]:
-        registered = self.actions.get(action_id)
-        if registered is not None:
-            return registered.args_schema
-        for path in self.capabilities.discover_actions():
-            if path.name == action_id:
-                catalog = self.capabilities.capability_info(
-                    kind="action", capability_id=action_id
-                )
-                return catalog["actions"][0]["args_schema"]
-        for path in self.capabilities.discover_modules():
-            catalog = self.capabilities.capability_info(
-                kind="module", capability_id=path.name
-            )
-            for item in catalog["actions"]:
-                if item["id"] == action_id:
-                    return item["args_schema"]
-        raise ValueError(f"Action does not exist: {action_id}")
-
-    def create_preset(
-        self,
-        *,
-        preset_id: str,
-        person_prompt: str,
-        capabilities: dict[str, list[str]],
-    ) -> None:
-        for kind in ("actions", "handlers", "modules"):
-            singular = {"actions": "action", "handlers": "handler", "modules": "module"}[kind]
-            for capability_id in capabilities[kind]:
-                self.capabilities.validate(kind=singular, capability_id=capability_id)
-        self.presets.create(preset_id, person_prompt, capabilities)
 
     def _new_id(self) -> str:
         with self._lock:

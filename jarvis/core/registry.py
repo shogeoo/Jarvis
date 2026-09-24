@@ -150,7 +150,6 @@ class ActionRegistry:
         }
         if primary:
             owners.add("core:speech")
-            owners.add("core:primary")
         with self._lock:
             return {
                 name: spec

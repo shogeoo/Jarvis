@@ -1051,11 +1051,7 @@ class CapabilityManager:
     # --- dispatch -----------------------------------------------------
     def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
         validate_json(action.data, spec.args_schema, where=f"аргументы {action.action_id}")
-        primary_core_action = (
-            getattr(agent, "primary", False)
-            and "core:primary" in spec.owner.split("|")
-        )
-        if not agent.is_enabled_action(action.action_id) and not primary_core_action:
+        if not agent.is_enabled_action(action.action_id):
             self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
                 data={"status": "disabled", "info": "Action is currently disabled."},
