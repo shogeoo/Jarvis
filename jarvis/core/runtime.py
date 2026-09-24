@@ -679,7 +679,7 @@ class Agent:
                 if generation != self._generation:
                     return
                 failures += 1
-                self.manager.debug.log("model_request_error", agent_id=self.agent_id, error=str(exc), attempt=failures)
+                self.manager.debug.error(str(exc))
                 if failures >= 5:
                     self._model_failure(exc)
                     return
