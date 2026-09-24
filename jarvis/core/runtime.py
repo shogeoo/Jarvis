@@ -10,9 +10,12 @@ import sys
 import threading
 import time
 import traceback
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from ..infrastructure.context import MemoryStore
+from ..infrastructure.automations import AutomationStore
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
 from ..capabilities.api import ActionDefinition, EventDefinition
@@ -141,6 +144,80 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
             owner="core:speech",
         )
     )
+    empty_object = empty_object_schema()
+    automation_action = object_schema(
+        {
+            "action_id": {"type": "string"},
+            "data": empty_object,
+        }
+    )
+    automation_actions = {
+        "type": "array",
+        "minItems": 1,
+        "items": automation_action,
+    }
+    event_trigger = {
+        "anyOf": [
+            object_schema({"handler_id": {"type": "string"}, "data": empty_object}),
+            object_schema({"type": {"type": "string"}, "data": empty_object}),
+        ]
+    }
+    call_result_trigger = object_schema(
+        {
+            "type": {"type": "string", "enum": ["call_result"]},
+            "call_id": {"type": "string"},
+            "data": empty_object,
+        }
+    )
+    automation_schema = {
+        "anyOf": [
+            object_schema({"event": event_trigger, "actions": automation_actions}),
+            object_schema({"call_result": call_result_trigger, "actions": automation_actions}),
+        ]
+    }
+    actions.register(
+        ActionDefinition(
+            id="create_automation",
+            description=(
+                "Create one exact-match automation. It has exactly one event or "
+                "call_result trigger and a non-empty actions array. Stored actions "
+                "contain action_id and data only; Jarvis assigns unique call_id values."
+            ),
+            args_schema=automation_schema,
+            result_schema=object_schema(
+                {"status": {"type": "string", "enum": ["created"]}}
+            ),
+            run=_create_automation_action,
+            owner="core:primary",
+        )
+    )
+    actions.register(
+        ActionDefinition(
+            id="create_preset",
+            description=(
+                "Create a new non-protected agent preset from person_prompt and "
+                "existing on-disk capability IDs. Each capability array may be empty."
+            ),
+            args_schema=object_schema(
+                {
+                    "preset_id": {"type": "string"},
+                    "person_prompt": {"type": "string"},
+                    "actions": {"type": "array", "items": {"type": "string"}},
+                    "handlers": {"type": "array", "items": {"type": "string"}},
+                    "modules": {"type": "array", "items": {"type": "string"}},
+                }
+            ),
+            result_schema=object_schema(
+                {
+                    "status": {"type": "string", "enum": ["created", "not_created"]},
+                    "preset_id": {"type": "string"},
+                    "error": {"type": ["string", "null"]},
+                }
+            ),
+            run=_create_preset_action,
+            owner="core:primary",
+        )
+    )
     events.register(
         EventDefinition(
             type="speech_detected",
@@ -158,6 +235,29 @@ def _speech_action_run(data, context):
     from ..speech import service
 
     return service.speak_result(data["text"])
+
+
+def _create_automation_action(data, context):
+    context.agent_manager.create_automation(data)
+    return {"status": "created"}
+
+
+def _create_preset_action(data, context):
+    preset_id = data["preset_id"]
+    capabilities = {
+        "actions": data["actions"],
+        "handlers": data["handlers"],
+        "modules": data["modules"],
+    }
+    try:
+        context.agent_manager.create_preset(
+            preset_id=preset_id,
+            person_prompt=data["person_prompt"],
+            capabilities=capabilities,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "not_created", "preset_id": preset_id, "error": str(exc)}
+    return {"status": "created", "preset_id": preset_id, "error": None}
 
 
 class EventBus:
@@ -540,6 +640,11 @@ class Agent:
             modules=snapshot["modules"], handlers=snapshot["handlers"],
             primary=self.primary,
         )
+        if self.primary and "create_automation" in actions:
+            actions["create_automation"] = replace(
+                actions["create_automation"],
+                args_schema=self.manager.automation_args_schema(),
+            )
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
@@ -644,10 +749,30 @@ class Agent:
             self._requeue_front(batch)
             return
         self._set_state("thinking", event_count=len(batch))
+        try:
+            specs, _ = self._contract(snapshot)
+        except Exception as exc:  # noqa: BLE001
+            for item in batch:
+                if isinstance(item, CallResult):
+                    self.history.append(item.model_message())
+                    self.manager.debug.result(item, agent_id=self.agent_id)
+                else:
+                    self.history.append(
+                        item.model_message(self.manager.model_capabilities)
+                    )
+                    self.manager.debug.input(
+                        item, self.manager.model_capabilities, agent_id=self.agent_id
+                    )
+            self._persist_context()
+            self._model_failure(exc)
+            return
+
+        requires_model = False
         for item in batch:
             if isinstance(item, CallResult):
                 self.history.append(item.model_message())
                 self.manager.debug.result(item, agent_id=self.agent_id)
+                model_value = item.model_value()
             else:
                 self.history.append(
                     item.model_message(self.manager.model_capabilities)
@@ -655,13 +780,35 @@ class Agent:
                 self.manager.debug.input(
                     item, self.manager.model_capabilities, agent_id=self.agent_id
                 )
-        self._persist_context()
+                model_value = item.model_value()
 
-        try:
-            specs, _ = self._contract(snapshot)
-        except Exception as exc:  # noqa: BLE001
-            self._model_failure(exc)
+            automation = self.manager.matching_automation(model_value)
+            if not automation:
+                requires_model = True
+                continue
+            automated_actions = self.manager.automation_requests(
+                automation, specs=specs, agent=self
+            )
+            if automated_actions is None:
+                requires_model = True
+                continue
+            assistant_content = json.dumps(
+                {"actions": [action.model_value() for action in automated_actions]},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            self.history.append({"role": "assistant", "content": assistant_content})
+            self._used_call_ids.update(self._scan_call_ids([self.history[-1]]))
+            self.manager.debug.model(self.agent_id, assistant_content)
+            self._persist_context()
+            self._set_state("acting", action_count=len(automated_actions), automated=True)
+            self._execute_actions(automated_actions, specs)
+
+        self._persist_context()
+        if not requires_model:
+            self._set_state("waiting")
             return
+
         schemas = {name: spec.args_schema for name, spec in specs.items()}
 
         failures = 0
@@ -828,6 +975,13 @@ class AgentManager:
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
         self.results = CallResultTracker(debug=self.debug)
+        automation_path = (
+            Path(config.jarvis_dir) / "automations.json"
+            if config is not None
+            else presets.root.parent / "automations.json"
+        )
+        self.automations = AutomationStore(automation_path)
+        self._automation_args_schema_cache: dict[str, Any] | None = None
         self.stopping = threading.Event()
         self.processes = ProcessManager()
         self.services.setdefault("process_manager", self.processes)
@@ -835,6 +989,202 @@ class AgentManager:
         self.primary_agent_id: str | None = None
         self._lock = threading.RLock()
         bus.manager = self  # type: ignore[attr-defined]
+
+    def matching_automation(self, model_value: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            return self.automations.matching(model_value)
+        except Exception as exc:  # noqa: BLE001
+            self.debug.log("automation_read_error", error=str(exc))
+            return []
+
+    def automation_requests(
+        self,
+        automations: list[dict[str, Any]],
+        *,
+        specs: dict[str, ActionDefinition],
+        agent: Agent,
+    ) -> list[ActionRequest] | None:
+        requests = []
+        reserved = set(agent._used_call_ids)
+        for automation in automations:
+            for item in automation["actions"]:
+                spec = specs.get(item["action_id"])
+                if spec is None:
+                    self.debug.log(
+                        "automation_action_unavailable",
+                        agent_id=agent.agent_id,
+                        action_id=item["action_id"],
+                    )
+                    return None
+                try:
+                    validate_json(
+                        item["data"], spec.args_schema,
+                        where=f"automation action {item['action_id']}",
+                    )
+                except ValueError as exc:
+                    self.debug.log(
+                        "automation_action_invalid",
+                        agent_id=agent.agent_id,
+                        action_id=item["action_id"],
+                        error=str(exc),
+                    )
+                    return None
+                call_number = 1
+                while f"auto_act-{call_number}" in reserved:
+                    call_number += 1
+                call_id = f"auto_act-{call_number}"
+                reserved.add(call_id)
+                requests.append(
+                    ActionRequest(
+                        action_id=item["action_id"],
+                        call_id=call_id,
+                        data=item["data"],
+                    )
+                )
+        agent._used_call_ids.update(action.call_id for action in requests)
+        return requests
+
+    def create_automation(self, automation: dict[str, Any]) -> int:
+        candidate = AutomationStore.validate(automation)
+        for item in candidate["actions"]:
+            schema = self._existing_action_schema(item["action_id"])
+            validate_json(
+                item["data"], schema,
+                where=f"automation action {item['action_id']}",
+            )
+        return self.automations.append(candidate)
+
+    def automation_args_schema(self) -> dict[str, Any]:
+        """Build a strict, disk-aware input schema for arbitrary automation JSON."""
+
+        if self._automation_args_schema_cache is not None:
+            return self._automation_args_schema_cache
+
+        action_args = {
+            action_id: spec.args_schema
+            for action_id, spec in self.actions.all().items()
+            if action_id != "no_action"
+        }
+        action_results = {
+            action_id: spec.result_schema
+            for action_id, spec in self.actions.all().items()
+            if action_id != "no_action"
+        }
+        on_disk = self.capabilities.automation_schemas()
+        for action_id, schema in on_disk["action_args"].items():
+            action_args.setdefault(action_id, schema)
+        for action_id, schema in on_disk["action_results"].items():
+            action_results.setdefault(action_id, schema)
+
+        action_variants = [
+            object_schema(
+                {
+                    "action_id": {"type": "string", "enum": [action_id]},
+                    "data": schema,
+                }
+            )
+            for action_id, schema in sorted(action_args.items())
+        ]
+        if not action_variants:
+            raise ValueError("Automation requires at least one existing action")
+        actions_schema = {
+            "type": "array",
+            "minItems": 1,
+            "items": {"anyOf": action_variants},
+        }
+
+        event_variants = [
+            object_schema(
+                {
+                    "handler_id": {"type": "string", "enum": [handler_id]},
+                    "data": schema,
+                }
+            )
+            for handler_id, schema in sorted(on_disk["handler_events"].items())
+        ]
+        event_variants.extend(
+            object_schema(
+                {
+                    "type": {"type": "string", "enum": [event_type]},
+                    "data": spec.data_schema,
+                }
+            )
+            for event_type, spec in sorted(self.events.all().items())
+        )
+        event_trigger = {"anyOf": event_variants}
+
+        result_schemas = list(action_results.values())
+        result_schemas.extend(
+            (
+                object_schema(
+                    {
+                        "status": {"type": "string", "enum": ["disabled"]},
+                        "info": {"type": "string"},
+                    }
+                ),
+                object_schema(
+                    {
+                        "status": {"type": "string", "enum": ["paused"]},
+                        "info": {"type": "string"},
+                    }
+                ),
+            )
+        )
+        unique_results = {
+            json.dumps(schema, ensure_ascii=False, sort_keys=True): schema
+            for schema in result_schemas
+        }
+        call_result_trigger = object_schema(
+            {
+                "type": {"type": "string", "enum": ["call_result"]},
+                "call_id": {"type": "string"},
+                "data": {"anyOf": list(unique_results.values())},
+            }
+        )
+        self._automation_args_schema_cache = {
+            "anyOf": [
+                object_schema({"event": event_trigger, "actions": actions_schema}),
+                object_schema(
+                    {"call_result": call_result_trigger, "actions": actions_schema}
+                ),
+            ]
+        }
+        return self._automation_args_schema_cache
+
+    def invalidate_automation_schema(self) -> None:
+        self._automation_args_schema_cache = None
+
+    def _existing_action_schema(self, action_id: str) -> dict[str, Any]:
+        registered = self.actions.get(action_id)
+        if registered is not None:
+            return registered.args_schema
+        for path in self.capabilities.discover_actions():
+            if path.name == action_id:
+                catalog = self.capabilities.capability_info(
+                    kind="action", capability_id=action_id
+                )
+                return catalog["actions"][0]["args_schema"]
+        for path in self.capabilities.discover_modules():
+            catalog = self.capabilities.capability_info(
+                kind="module", capability_id=path.name
+            )
+            for item in catalog["actions"]:
+                if item["id"] == action_id:
+                    return item["args_schema"]
+        raise ValueError(f"Action does not exist: {action_id}")
+
+    def create_preset(
+        self,
+        *,
+        preset_id: str,
+        person_prompt: str,
+        capabilities: dict[str, list[str]],
+    ) -> None:
+        for kind in ("actions", "handlers", "modules"):
+            singular = {"actions": "action", "handlers": "handler", "modules": "module"}[kind]
+            for capability_id in capabilities[kind]:
+                self.capabilities.validate(kind=singular, capability_id=capability_id)
+        self.presets.create(preset_id, person_prompt, capabilities)
 
     def _new_id(self) -> str:
         with self._lock:
@@ -1163,6 +1513,7 @@ class AgentManager:
 
     def enable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        self.invalidate_automation_schema()
         if self.capabilities.is_globally_paused("module", module_id):
             agent.enable_module(module_id)
             return {"agent_id": agent_id, "module_id": module_id, "enabled": True, "globally_paused": True}
@@ -1188,6 +1539,7 @@ class AgentManager:
 
     def enable_action(self, agent_id: str, action_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        self.invalidate_automation_schema()
         if self.capabilities.is_globally_paused("action", action_id):
             agent.enable_action(action_id)
             return {"agent_id": agent_id, "action_id": action_id, "enabled": True, "globally_paused": True}
@@ -1213,6 +1565,7 @@ class AgentManager:
 
     def enable_handler(self, agent_id: str, handler_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        self.invalidate_automation_schema()
         if self.capabilities.is_globally_paused("handler", handler_id):
             agent.enable_handler(handler_id)
             return {"agent_id": agent_id, "handler_id": handler_id, "enabled": True, "globally_paused": True}

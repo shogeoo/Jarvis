@@ -95,6 +95,8 @@ def ensure_runtime_layout(root: Path) -> None:
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
 
+    _write_if_missing(root / "automations.json", "[]\n")
+
     state_path = root / "capability_state.json"
     legacy_path = root / "disabled_capabilities.json"
     try:

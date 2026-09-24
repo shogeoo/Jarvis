@@ -28,7 +28,18 @@ class ActionRegistry:
         ):
             if not isinstance(schema, dict):
                 raise ValueError(f"Схема {name} действия {spec.id} должна быть объектом")
-            if schema.get("type") != "object":
+            is_object_schema = schema.get("type") == "object"
+            is_object_union = (
+                name == "аргументов"
+                and isinstance(schema.get("anyOf"), list)
+                and bool(schema["anyOf"])
+                and all(
+                    isinstance(variant, dict)
+                    and variant.get("type") == "object"
+                    for variant in schema["anyOf"]
+                )
+            )
+            if not is_object_schema and not is_object_union:
                 raise ValueError(f"Схема {name} действия {spec.id} должна быть объектом")
             validate_strict_schema(schema, where=f"схема {name} действия {spec.id}")
         if not callable(spec.run):
@@ -139,6 +150,7 @@ class ActionRegistry:
         }
         if primary:
             owners.add("core:speech")
+            owners.add("core:primary")
         with self._lock:
             return {
                 name: spec

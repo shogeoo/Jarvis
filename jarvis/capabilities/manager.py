@@ -283,6 +283,46 @@ class CapabilityManager:
             return self._describe("handler", capability_id)
         raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
+    def automation_schemas(self) -> dict[str, dict[str, Any]]:
+        """Describe disk capabilities without loading their runtime processes."""
+
+        action_args: dict[str, Any] = {}
+        action_results: dict[str, Any] = {}
+        handler_events: dict[str, Any] = {}
+
+        def add_catalog(catalog: dict[str, Any]) -> None:
+            for action in catalog.get("actions", []):
+                action_args[action["id"]] = action["args_schema"]
+                action_results[action["id"]] = action["result_schema"]
+            for handler in catalog.get("handlers", []):
+                event = handler.get("event")
+                events = handler.get("events", [])
+                if event is not None:
+                    events = [event]
+                if events:
+                    handler_events[handler["id"]] = events[0]["data_schema"]
+
+        for kind, paths in (
+            ("action", self.discover_actions()),
+            ("handler", self.discover_handlers()),
+            ("module", self.discover_modules()),
+        ):
+            for path in paths:
+                try:
+                    add_catalog(self._describe(kind, path.name))
+                except Exception as exc:  # noqa: BLE001
+                    self.debug.log(
+                        "automation_schema_unavailable",
+                        kind=kind,
+                        capability_id=path.name,
+                        error=str(exc),
+                    )
+        return {
+            "action_args": action_args,
+            "action_results": action_results,
+            "handler_events": handler_events,
+        }
+
     def list_available(self, known: dict[str, set[str]]) -> dict[str, Any]:
         result = {"modules": [], "actions": [], "handlers": []}
         for kind, paths, key in (
@@ -1011,7 +1051,11 @@ class CapabilityManager:
     # --- dispatch -----------------------------------------------------
     def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
         validate_json(action.data, spec.args_schema, where=f"аргументы {action.action_id}")
-        if not agent.is_enabled_action(action.action_id):
+        primary_core_action = (
+            getattr(agent, "primary", False)
+            and "core:primary" in spec.owner.split("|")
+        )
+        if not agent.is_enabled_action(action.action_id) and not primary_core_action:
             self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
                 data={"status": "disabled", "info": "Action is currently disabled."},
@@ -1215,6 +1259,7 @@ class CapabilityManager:
         manager = self._manager()
         if manager is None:
             raise RuntimeError("Менеджер агентов не запущен")
+        manager.invalidate_automation_schema()
         affected = manager.agents_assigned_and_enabled(kind, capability_id)
         agent_ids = [agent.agent_id for agent in affected]
         if not self.is_globally_paused(kind, capability_id):

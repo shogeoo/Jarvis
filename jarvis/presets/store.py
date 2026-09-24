@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +39,7 @@ class PresetStore:
 
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._lock = threading.RLock()
 
     @staticmethod
     def validate_name(name: str) -> None:
@@ -149,21 +153,27 @@ class PresetStore:
     ) -> AgentPreset:
         self.validate_name(name)
         path = self.path(name)
-        if path.exists():
-            try:
-                existing = self.load(name)
-            except ValueError:
-                existing = None
-            if existing is not None and existing.protected:
-                raise ValueError(f"Защищённый пресет {name} нельзя заменить")
         if not person_prompt.strip():
             raise ValueError("personprompt не должен быть пустым")
         normalized = self._normalize(capabilities or {})
-        path.mkdir(parents=True, exist_ok=True)
-        (path / "personprompt.txt").write_text(
-            person_prompt.strip() + "\n", encoding="utf-8"
-        )
-        self._write_lists(path, normalized)
+        with self._lock:
+            if path.exists():
+                raise ValueError(f"Пресет уже существует: {name}")
+            self.root.mkdir(parents=True, exist_ok=True)
+            staging = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=self.root))
+            try:
+                (staging / "personprompt.txt").write_text(
+                    person_prompt.strip() + "\n", encoding="utf-8"
+                )
+                self._write_lists(staging, normalized)
+                (staging / "preset.json").write_text(
+                    json.dumps({"protected": False}, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                os.rename(staging, path)
+            except Exception:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
         return self.load(name)
 
     def delete(self, name: str) -> None:

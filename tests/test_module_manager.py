@@ -12,7 +12,10 @@ from jarvis.presets import PresetStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME_PRESENT = (ROOT / ".jarvis" / "presets").is_dir()
+RUNTIME_PRESENT = (
+    (ROOT / ".jarvis" / "presets" / "module_manager" / "personprompt.txt").is_file()
+    and (ROOT / ".jarvis" / "presets" / "main" / "personprompt.txt").is_file()
+)
 
 
 class ModuleManagerContractTests(unittest.TestCase):
