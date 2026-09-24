@@ -11,7 +11,7 @@ from typing import Any
 
 
 class AutomationStore:
-    """Read and append validated JSON automation rules."""
+    """Read, append, and remove validated JSON automation rules."""
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -83,6 +83,31 @@ class AutomationStore:
             current.append(validated)
             self._write(current)
             return len(current)
+
+    def remove(self, automation: Any) -> int:
+        """Remove every rule identical to the given one; return how many were removed."""
+        target = self.validate(automation)
+        with self._lock:
+            current = self.list()
+            wanted = self._rule_identity(target)
+            kept = [
+                item
+                for item in current
+                if not self._same_json(self._rule_identity(item), wanted)
+            ]
+            removed = len(current) - len(kept)
+            if removed:
+                self._write(kept)
+            return removed
+
+    @staticmethod
+    def _rule_identity(automation: dict[str, Any]) -> dict[str, Any]:
+        # The call_id value identifies one invocation, so it is not part of a
+        # rule's identity — the same comparison matching() uses for call_result.
+        rule = json.loads(json.dumps(automation, ensure_ascii=False))
+        if "call_result" in rule:
+            rule["call_result"].pop("call_id", None)
+        return rule
 
     def matching(self, model_value: dict[str, Any]) -> list[dict[str, Any]]:
         matches = []
