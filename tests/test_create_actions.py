@@ -147,14 +147,11 @@ class CreateActionsTests(unittest.TestCase):
         )
         preset_dir = self.root / "presets" / "listener"
         self.assertTrue(preset_dir.is_dir())
-        self.assertEqual(
-            json.loads((preset_dir / "actions.json").read_text(encoding="utf-8")),
-            ["say"],
+        capabilities = json.loads(
+            (preset_dir / "capabilities.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(
-            json.loads((preset_dir / "handlers.json").read_text(encoding="utf-8")),
-            ["tick"],
-        )
+        self.assertEqual(capabilities["actions"], ["say"])
+        self.assertEqual(capabilities["handlers"], ["tick"])
 
     def test_create_preset_refuses_overwrite(self):
         module = self.load_action("create_preset")

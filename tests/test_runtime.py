@@ -99,10 +99,13 @@ class RuntimeTests(unittest.TestCase):
         fixtures.write_action(self.root / "actions", action_id, code)
 
     def enable_for_main(self, *action_ids):
-        path = self.root / "presets" / "main" / "actions.json"
-        enabled = set(json.loads(path.read_text(encoding="utf-8")))
+        path = self.root / "presets" / "main" / "capabilities.json"
+        capabilities = json.loads(path.read_text(encoding="utf-8"))
+        capabilities["actions"] = sorted(
+            set(capabilities["actions"]) | set(action_ids)
+        )
         path.write_text(
-            json.dumps(sorted(enabled | set(action_ids))) + "\n", encoding="utf-8"
+            json.dumps(capabilities, indent=2) + "\n", encoding="utf-8"
         )
 
     def load_installed_action(self, action_id):
@@ -732,8 +735,10 @@ class RuntimeTests(unittest.TestCase):
         special = self.root / "presets" / "special"
         special.mkdir()
         (special / "personprompt.txt").write_text("special", encoding="utf-8")
-        for name in ("modules", "actions", "handlers"):
-            (special / f"{name}.json").write_text("[]", encoding="utf-8")
+        (special / "capabilities.json").write_text(
+            json.dumps({"modules": [], "actions": [], "handlers": []}),
+            encoding="utf-8",
+        )
         (special / "preset.json").write_text('{"protected": true}', encoding="utf-8")
         manager = self.manager(_Client([_no_action("done")]))
         manager.spawn_root(name="main", preset="main")

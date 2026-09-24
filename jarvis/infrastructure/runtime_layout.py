@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 
-_EMPTY_LIST = "[]\n"
+_EMPTY_CAPABILITIES = json.dumps(
+    {"modules": [], "actions": [], "handlers": []}, indent=2
+) + "\n"
 
 
 def _write_if_missing(path: Path, content: str) -> None:
@@ -34,8 +36,7 @@ def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
     else:
         prompt = f"Ты — агент preset {name}. Выполняй порученную задачу.\n"
     _write_if_missing(preset / "personprompt.txt", prompt)
-    for filename in ("actions.json", "handlers.json", "modules.json"):
-        _write_if_missing(preset / filename, _EMPTY_LIST)
+    _write_if_missing(preset / "capabilities.json", _EMPTY_CAPABILITIES)
     _write_if_missing(
         preset / "preset.json",
         json.dumps({"protected": protected}, ensure_ascii=False, indent=2) + "\n",
