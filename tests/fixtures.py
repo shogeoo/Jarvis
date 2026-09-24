@@ -107,6 +107,132 @@ def create_module():
 """
 
 CONTROL_ACTIONS = {
+    "create_automation": '''
+from pathlib import Path
+
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+from jarvis.infrastructure.automations import AutomationStore
+
+
+def _open_object():
+    return {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": True,
+        "x-jarvis-open-object": True,
+    }
+
+
+def run(data, context):
+    if context.agent_id != "main":
+        raise ValueError("Only main may create automations.")
+    automation = AutomationStore.validate(data)
+    AutomationStore(Path(context.config.jarvis_dir) / "automations.json").append(
+        automation
+    )
+    return {"status": "created"}
+
+
+def create_action():
+    open_object = _open_object()
+    trigger_event = {
+        "anyOf": [
+            object_schema(
+                {"handler_id": {"type": "string"}, "data": open_object}
+            ),
+            object_schema({"type": {"type": "string"}, "data": open_object}),
+        ]
+    }
+    trigger_call_result = object_schema(
+        {
+            "type": {"type": "string", "enum": ["call_result"]},
+            "call_id": {"type": "string"},
+            "data": open_object,
+        }
+    )
+    automation_action = object_schema(
+        {"action_id": {"type": "string"}, "data": open_object}
+    )
+    actions = {"type": "array", "minItems": 1, "items": automation_action}
+    return action_definition(
+        "Create an exact-match automation for one model-facing event or call_result. "
+        "Actions contain action_id and data; Jarvis assigns unique call_id values. "
+        "Only main can create automations.",
+        {
+            "anyOf": [
+                object_schema({"event": trigger_event, "actions": actions}),
+                object_schema(
+                    {"call_result": trigger_call_result, "actions": actions}
+                ),
+            ]
+        },
+        object_schema({"status": {"type": "string", "enum": ["created"]}}),
+        run,
+    )
+''',
+    "create_preset": '''
+from pathlib import Path
+
+from jarvis.capabilities import action_definition
+from jarvis.core.protocol import object_schema
+from jarvis.presets import PresetStore
+
+
+def run(data, context):
+    preset_id = data["preset_id"]
+    if context.agent_id != "main":
+        return {
+            "status": "not_created",
+            "preset_id": preset_id,
+            "error": "Only main may create presets.",
+        }
+
+    capabilities = {
+        "actions": data["actions"],
+        "handlers": data["handlers"],
+        "modules": data["modules"],
+    }
+    try:
+        for kind, ids in capabilities.items():
+            singular = {"actions": "action", "handlers": "handler", "modules": "module"}[kind]
+            for capability_id in ids:
+                context.capabilities.validate(
+                    kind=singular, capability_id=capability_id
+                )
+        PresetStore(Path(context.config.jarvis_dir) / "presets").create(
+            preset_id, data["person_prompt"], capabilities
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "not_created", "preset_id": preset_id, "error": str(exc)}
+    return {"status": "created", "preset_id": preset_id, "error": None}
+
+
+def create_action():
+    return action_definition(
+        "Create a new agent preset from person_prompt and existing on-disk "
+        "capability IDs. Each actions, handlers, and modules array may be empty. "
+        "Existing presets cannot be replaced. Only main may create presets.",
+        object_schema(
+            {
+                "preset_id": {"type": "string"},
+                "person_prompt": {"type": "string"},
+                "actions": {"type": "array", "items": {"type": "string"}},
+                "handlers": {"type": "array", "items": {"type": "string"}},
+                "modules": {"type": "array", "items": {"type": "string"}},
+            }
+        ),
+        object_schema(
+            {
+                "status": {"type": "string", "enum": ["created", "not_created"]},
+                "preset_id": {"type": "string"},
+                "error": {"type": ["string", "null"]},
+            }
+        ),
+        run,
+    )
+''',
     "delete_agent": '''
 from jarvis.capabilities import action_definition
 from jarvis.core.protocol import object_schema

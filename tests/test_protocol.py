@@ -20,7 +20,8 @@ class ProtocolTests(unittest.TestCase):
         with patch("jarvis.core.protocol.Draft202012Validator", None):
             actions = ActionRegistry()
             register_core_protocol(actions, EventRegistry())
-            self.assertIsNotNone(actions.get("create_automation"))
+            self.assertIsNotNone(actions.get("no_action"))
+            self.assertIsNotNone(actions.get("speech"))
 
     def test_event_is_one_compact_model_value(self):
         event = Event(type="sample", data={"text": "Привет"})

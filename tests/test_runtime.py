@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import json
 import os
 import tempfile
@@ -6,11 +7,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest, Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
+from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.presets import PresetStore
@@ -94,6 +97,22 @@ class RuntimeTests(unittest.TestCase):
         else:
             code = fixtures.CONTROL_ACTIONS[action_id]
         fixtures.write_action(self.root / "actions", action_id, code)
+
+    def enable_for_main(self, *action_ids):
+        path = self.root / "presets" / "main" / "actions.json"
+        enabled = set(json.loads(path.read_text(encoding="utf-8")))
+        path.write_text(
+            json.dumps(sorted(enabled | set(action_ids))) + "\n", encoding="utf-8"
+        )
+
+    def load_installed_action(self, action_id):
+        path = self.root / "actions" / action_id / "action.py"
+        spec = importlib.util.spec_from_file_location(
+            f"installed_{action_id}_action", path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -184,7 +203,7 @@ class RuntimeTests(unittest.TestCase):
         client = _Client([_no_action("after-automation")])
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
-        manager.create_automation(
+        AutomationStore(self.root / "automations.json").append(
             {
                 "event": {"handler_id": "tick", "data": {"text": "go"}},
                 "actions": [{"action_id": "say", "data": {"text": "automated"}}],
@@ -215,7 +234,7 @@ class RuntimeTests(unittest.TestCase):
         client = _Client([_no_action("after-call-result-automation")])
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
-        manager.create_automation(
+        AutomationStore(self.root / "automations.json").append(
             {
                 "call_result": {
                     "type": "call_result",
@@ -247,8 +266,12 @@ class RuntimeTests(unittest.TestCase):
 
     def test_management_actions_return_their_declared_result_shapes(self):
         client = _Client([_no_action("after-management")])
+        self.install_project_action("create_automation")
+        self.install_project_action("create_preset")
+        self.enable_for_main("create_automation", "create_preset")
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
+        contract = agent._contract()[0]
         manager.capabilities.dispatch(
             action=ActionRequest(
                 "create_automation",
@@ -258,7 +281,7 @@ class RuntimeTests(unittest.TestCase):
                 },
                 "create-automation-call",
             ),
-            spec=agent._contract()[0]["create_automation"],
+            spec=contract["create_automation"],
             agent=agent,
         )
         manager.capabilities.dispatch(
@@ -273,7 +296,7 @@ class RuntimeTests(unittest.TestCase):
                 },
                 "create-preset-call",
             ),
-            spec=self.actions.require("create_preset"),
+            spec=contract["create_preset"],
             agent=agent,
         )
         manager.capabilities.dispatch(
@@ -288,7 +311,7 @@ class RuntimeTests(unittest.TestCase):
                 },
                 "create-preset-success-call",
             ),
-            spec=self.actions.require("create_preset"),
+            spec=contract["create_preset"],
             agent=agent,
         )
         self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 3))
@@ -301,9 +324,22 @@ class RuntimeTests(unittest.TestCase):
             {"status": "created", "preset_id": "empty-preset", "error": None},
         )
         self.assertTrue((self.root / "presets" / "empty-preset").is_dir())
+        stored = AutomationStore(self.root / "automations.json").list()
+        self.assertEqual(
+            stored,
+            [
+                {
+                    "event": {"handler_id": "tick", "data": {"text": "saved"}},
+                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
+                }
+            ],
+        )
 
     def test_primary_only_management_actions_are_not_in_subagent_prompt(self):
         client = _Client([_no_action("main-ready"), _no_action("worker-ready")])
+        self.install_project_action("create_automation")
+        self.install_project_action("create_preset")
+        self.enable_for_main("create_automation", "create_preset")
         manager = self.manager(client)
         main = manager.spawn_root(name="main", preset="main")
         worker = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
@@ -314,23 +350,49 @@ class RuntimeTests(unittest.TestCase):
             self.assertNotIn(f'"type": "{action_id}"', worker_prompt)
 
     def test_create_preset_uses_existing_capability_ids_and_refuses_overwrite(self):
+        self.install_project_action("create_preset")
         manager = self.manager(_Client([]))
         manager.spawn_root(name="main", preset="main")
-        manager.create_preset(
-            preset_id="researcher",
-            person_prompt="Research carefully.",
-            capabilities={"actions": ["say"], "handlers": [], "modules": []},
+        module = self.load_installed_action("create_preset")
+        context = SimpleNamespace(
+            agent_id="main",
+            capabilities=manager.capabilities,
+            config=SimpleNamespace(jarvis_dir=self.root),
         )
-        created = self.presets.load("researcher")
-        self.assertEqual(created.person_prompt, "Research carefully.")
-        self.assertEqual(created.actions, ("say",))
-        self.assertFalse(created.protected)
-        with self.assertRaisesRegex(ValueError, "существует"):
-            manager.create_preset(
-                preset_id="researcher",
-                person_prompt="Do not replace me.",
-                capabilities={"actions": [], "handlers": [], "modules": []},
-            )
+        created = module.run(
+            {
+                "preset_id": "researcher",
+                "person_prompt": "Research carefully.",
+                "actions": ["say"],
+                "handlers": [],
+                "modules": [],
+            },
+            context,
+        )
+        self.assertEqual(
+            created,
+            {"status": "created", "preset_id": "researcher", "error": None},
+        )
+        preset = self.presets.load("researcher")
+        self.assertEqual(preset.person_prompt, "Research carefully.")
+        self.assertEqual(preset.actions, ("say",))
+        self.assertFalse(preset.protected)
+        refused = module.run(
+            {
+                "preset_id": "researcher",
+                "person_prompt": "Do not replace me.",
+                "actions": [],
+                "handlers": [],
+                "modules": [],
+            },
+            context,
+        )
+        self.assertEqual(refused["status"], "not_created")
+        self.assertIn("существует", refused["error"])
+        self.assertEqual(
+            self.presets.load("researcher").person_prompt,
+            "Research carefully.",
+        )
 
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(
