@@ -1345,9 +1345,11 @@ class AgentManager:
             for pending in self.results.for_agent(candidate):
                 self.capabilities.cancel_call(candidate, pending.call_id)
             self.results.discard_agent(candidate)
-            self.capabilities.release_snapshot(snapshot, agents=self.agents_snapshot())
             if self.memory is not None:
+                # Память стирается до выгрузки capabilities: сбой выгрузки
+                # не должен оставлять папку удалённого экземпляра на диске.
                 self.memory.delete(agent.preset, candidate)
+            self.capabilities.release_snapshot(snapshot, agents=self.agents_snapshot())
         return {"agent_id": agent_id, "deleted": True}
 
     @staticmethod

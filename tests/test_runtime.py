@@ -397,23 +397,21 @@ class RuntimeTests(unittest.TestCase):
             "Research carefully.",
         )
 
-    def test_core_speech_units_resolve_without_disk_sources(self):
-        self.enable_for_main("speech")
-        path = self.root / "presets" / "main" / "capabilities.json"
-        capabilities = json.loads(path.read_text(encoding="utf-8"))
-        capabilities["handlers"] = ["tick", "speech_detected"]
-        path.write_text(json.dumps(capabilities, indent=2) + "\n", encoding="utf-8")
-        manager = self.manager(_Client([_no_action("ready")]))
-        agent = manager.spawn_root(name="main", preset="main")
-        existing = manager.capabilities.list_existing()
-        self.assertIn("speech", [item["id"] for item in existing["actions"]])
-        self.assertIn("speech_detected", [item["id"] for item in existing["handlers"]])
-        actions, events = agent._contract()
-        self.assertIn("speech", actions)
-        self.assertIn("speech_detected", events)
-        snapshot = agent.capabilities_snapshot()
-        self.assertIn("speech", snapshot["actions"])
-        self.assertIn("speech_detected", snapshot["handlers"])
+    def test_delete_agent_removes_memory_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            manager = self.manager(_Client([_no_action("done")]), memory=memory)
+            main = manager.spawn_root(name="main", preset="main")
+            created = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
+            worker_id = created["agent_id"]
+            manager.persist_agent(manager.require_agent(worker_id))
+            worker_dir = Path(temporary) / "worker" / worker_id
+            self.assertTrue(worker_dir.is_dir())
+            self.assertEqual(
+                manager.delete(agent_id=worker_id),
+                {"agent_id": worker_id, "deleted": True},
+            )
+            self.assertFalse(worker_dir.exists())
 
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(

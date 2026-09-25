@@ -232,12 +232,10 @@ class CapabilityManager:
             if module_id not in loaded["modules"]:
                 missing.add(f"module:{module_id}")
         for action_id in snapshot.get("actions", ()):
-            # Зарезервированные core-единицы (например, speech) кода на диске
-            # не имеют и перенаправляются на захардкоженную реализацию ядра.
-            if action_id not in loaded["actions"] and self.actions.get(action_id) is None:
+            if action_id not in loaded["actions"]:
                 missing.add(f"action:{action_id}")
         for handler_id in snapshot.get("handlers", ()):
-            if handler_id not in loaded["handlers"] and self.events.get(handler_id) is None:
+            if handler_id not in loaded["handlers"]:
                 missing.add(f"handler:{handler_id}")
         return missing
 
@@ -274,24 +272,6 @@ class CapabilityManager:
             }
             for path in self.discover_handlers()
         ]
-        core_speech = self.actions.get("speech")
-        if core_speech is not None:
-            actions.append({
-                "id": "speech",
-                "description": core_speech.description,
-                "loaded": True,
-                "globally_running": True,
-                "globally_paused": False,
-            })
-        core_speech_detected = self.events.get("speech_detected")
-        if core_speech_detected is not None:
-            handlers.append({
-                "id": "speech_detected",
-                "description": core_speech_detected.description,
-                "loaded": True,
-                "globally_running": True,
-                "globally_paused": False,
-            })
         return {"modules": modules, "actions": actions, "handlers": handlers}
 
     def capability_info(self, *, kind: str, capability_id: str) -> dict[str, Any]:
@@ -819,11 +799,11 @@ class CapabilityManager:
                     self.load_module(module_id, start_handlers=False)
                     loaded.append(("module", module_id))
             for action_id in sorted(snapshot.get("actions", ())):
-                if action_id not in self.loaded_actions() and self.actions.get(action_id) is None:
+                if action_id not in self.loaded_actions():
                     self.load_action(action_id, start_handlers=False)
                     loaded.append(("action", action_id))
             for handler_id in sorted(snapshot.get("handlers", ())):
-                if handler_id not in self.loaded_handlers() and self.events.get(handler_id) is None:
+                if handler_id not in self.loaded_handlers():
                     self.load_handler(handler_id, start_handlers=False)
                     loaded.append(("handler", handler_id))
             if start_handlers:
@@ -862,13 +842,9 @@ class CapabilityManager:
             if not any(module_id in agent.modules() for agent in agents):
                 self.unload_module(module_id)
         for action_id in sorted(snapshot.get("actions", ())):
-            if self.actions.get(action_id) is not None:
-                continue
             if not any(action_id in agent.standalone_actions() for agent in agents):
                 self.unload_action(action_id)
         for handler_id in sorted(snapshot.get("handlers", ())):
-            if self.events.get(handler_id) is not None:
-                continue
             if not any(handler_id in agent.standalone_handlers() for agent in agents):
                 self.unload_handler(handler_id)
 
@@ -1402,17 +1378,6 @@ class CapabilityManager:
             for action_id in sorted(snapshot.get("actions", ())):
                 runtime = self._actions.get(action_id)
                 if runtime is None and describe_unloaded:
-                    core_action = self.actions.get(action_id)
-                    if core_action is not None:
-                        actions.append({
-                            "id": action_id,
-                            "type": action_id,
-                            "description": core_action.description,
-                            "args_schema": core_action.args_schema,
-                            "result_schema": core_action.result_schema,
-                            "path": "core",
-                        })
-                        continue
                     item = self._describe("action", action_id)["actions"][0]
                     actions.append(self._action_summary(self._proxy_action(item, f"action:{action_id}", self.action_path(action_id)), self.action_path(action_id)))
                     continue
@@ -1424,24 +1389,6 @@ class CapabilityManager:
             for handler_id in sorted(snapshot.get("handlers", ())):
                 runtime = self._handlers.get(handler_id)
                 if runtime is None and describe_unloaded:
-                    core_event = self.events.get(handler_id)
-                    if core_event is not None:
-                        handlers.append({
-                            "id": handler_id,
-                            "description": core_event.description,
-                            "path": "core",
-                            "events": [{
-                                "type": core_event.type,
-                                "description": core_event.description,
-                                "data_schema": core_event.data_schema,
-                            }],
-                        })
-                        events.append({
-                            "type": core_event.type,
-                            "description": core_event.description,
-                            "data_schema": core_event.data_schema,
-                        })
-                        continue
                     item = self._describe("handler", handler_id)["handlers"][0]
                     definition = self._proxy_handler(item, f"handler:{handler_id}", self.handler_path(handler_id))
                     handlers.append(self._handler_summary(definition, self.handler_path(handler_id)))
