@@ -1554,7 +1554,18 @@ class _AgentApi:
         )
         return {"delivered": delivered, "agent_id": target.agent_id}
 
+    @staticmethod
+    def _reject_module_part(kind: str, capability_id: str) -> None:
+        if kind != "module" and "." in capability_id:
+            module_id = capability_id.split(".", 1)[0]
+            raise ValueError(
+                f"Часть модуля отдельно не переключается: {capability_id!r} "
+                f"принадлежит модулю {module_id!r} — укажите kind='module', "
+                f"id={module_id!r}"
+            )
+
     def enable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
+        self._reject_module_part(kind, capability_id)
         manager = self._manager
         if kind == "module":
             manager.enable_module(agent_id, capability_id)
@@ -1577,6 +1588,7 @@ class _AgentApi:
         }
 
     def disable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
+        self._reject_module_part(kind, capability_id)
         manager = self._manager
         if kind == "module":
             manager.disable_module(agent_id, capability_id)
