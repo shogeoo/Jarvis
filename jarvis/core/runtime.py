@@ -110,12 +110,17 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         EventDefinition(
             type="capability_error",
             description=(
-                "Необработанная ошибка в коде capability: действия, handler "
-                "или модуля. capability содержит идентификатор источника."
+                "Необработанная ошибка в коде capability: её мог упасть целый "
+                "модуль, автономное действие или handler. kind и id указывают "
+                "источник."
             ),
             data_schema=object_schema(
                 {
-                    "capability": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["module", "action", "handler"],
+                    },
+                    "id": {"type": "string"},
                     "error": {"type": "string"},
                     "call_id": {"type": ["string", "null"]},
                 }
@@ -161,6 +166,19 @@ def _speech_action_run(data, context):
     from ..speech import service
 
     return service.speak_result(data["text"])
+
+
+def _capability_identity(action_id: str) -> tuple[str, str]:
+    """Capability, отвечающая за упавший вызов.
+
+    Вызов действия внутри модуля сообщает весь модуль: по определению,
+    capability — это целый модуль, автономное действие или handler, а
+    единица модуля сама по себе capability не является.
+    """
+
+    if "." in action_id:
+        return "module", action_id.split(".", 1)[0]
+    return "action", action_id
 
 
 class EventBus:
@@ -841,8 +859,8 @@ class Agent:
                     agent=self,
                 )
             except Exception as exc:  # noqa: BLE001
-                capability = spec.owner.split("|")[0]
-                self.manager.report_capability_error(capability, exc, agent_id=self.agent_id, call_id=action.call_id)
+                kind, capability_id = _capability_identity(action.action_id)
+                self.manager.report_capability_error(kind, capability_id, exc, agent_id=self.agent_id, call_id=action.call_id)
 
 class AgentManager:
     """Управляет равноправными экземплярами агентов."""
@@ -1467,7 +1485,8 @@ class AgentManager:
     def fail_call(self, agent_id: str, call_id: str, error: Exception | str) -> None:
         pending = self.results.discard(agent_id, call_id)
         if pending is not None:
-            self.report_capability_error(f"action:{pending.action_id}", error, agent_id=agent_id, call_id=call_id)
+            kind, capability_id = _capability_identity(pending.action_id)
+            self.report_capability_error(kind, capability_id, error, agent_id=agent_id, call_id=call_id)
 
     def disable_call(self, agent_id: str, call_id: str) -> None:
         self._finish_stopped_call(
@@ -1491,12 +1510,12 @@ class AgentManager:
             ))
 
     def report_capability_error(
-        self, capability: str, error: Exception | str,
+        self, kind: str, capability_id: str, error: Exception | str,
         *, agent_id: str | None = None, call_id: str | None = None,
     ) -> None:
         target = agent_id
         event_type = "capability_error"
-        data = {"capability": capability, "error": str(error), "call_id": call_id}
+        data = {"kind": kind, "id": capability_id, "error": str(error), "call_id": call_id}
         if target is None:
             self.debug.log(event_type, **data)
             return

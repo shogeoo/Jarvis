@@ -397,6 +397,24 @@ class RuntimeTests(unittest.TestCase):
             "Research carefully.",
         )
 
+    def test_core_speech_units_resolve_without_disk_sources(self):
+        self.enable_for_main("speech")
+        path = self.root / "presets" / "main" / "capabilities.json"
+        capabilities = json.loads(path.read_text(encoding="utf-8"))
+        capabilities["handlers"] = ["tick", "speech_detected"]
+        path.write_text(json.dumps(capabilities, indent=2) + "\n", encoding="utf-8")
+        manager = self.manager(_Client([_no_action("ready")]))
+        agent = manager.spawn_root(name="main", preset="main")
+        existing = manager.capabilities.list_existing()
+        self.assertIn("speech", [item["id"] for item in existing["actions"]])
+        self.assertIn("speech_detected", [item["id"] for item in existing["handlers"]])
+        actions, events = agent._contract()
+        self.assertIn("speech", actions)
+        self.assertIn("speech_detected", events)
+        snapshot = agent.capabilities_snapshot()
+        self.assertIn("speech", snapshot["actions"])
+        self.assertIn("speech_detected", snapshot["handlers"])
+
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(
             "fail",
@@ -457,7 +475,8 @@ class RuntimeTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertIsNotNone(values)
         error = next(item for item in values if item["type"] == "capability_error")
-        self.assertEqual(error["data"]["capability"], "action:fail")
+        self.assertEqual(error["data"]["kind"], "action")
+        self.assertEqual(error["data"]["id"], "fail")
         results = [item for item in values if item["type"] == "call_result"]
         self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
