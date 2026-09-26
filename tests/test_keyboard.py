@@ -1,4 +1,5 @@
 import multiprocessing
+import json
 import subprocess
 import sys
 import tempfile
@@ -38,19 +39,60 @@ class KeyboardTests(unittest.TestCase):
         self.assertEqual(self.keys.keycode("KEY_F24"), 194)
         self.assertEqual(self.keys.keycode(30), 30)
 
-    def test_unicode_text_uses_utf8_clipboard_without_enter_or_screenshots(self):
-        text = "Привет! €🙂\nВторая строка"
-        with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
-            result = self.run_action("type_text", {"text": text})
+    def text_command(self, args, **kwargs):
+        device = {"name": "ydotoold-virtual-device", "rules": "", "model": "", "layout": "us,ru", "variant": "", "options": "", "active_layout_index": 0, "capsLock": False}
+        stdout = json.dumps({"keyboards": [device]}) if args == ["hyprctl", "-j", "devices"] else ""
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    def test_text_physically_types_english_russian_and_restores_layout(self):
+        with patch("subprocess.run", side_effect=self.text_command) as run:
+            result = self.run_action("type_text", {"text": "AП"})
         self.assertEqual(result["status"], "success")
-        self.assertEqual(run.call_args_list[0].kwargs["input"], text.encode("utf-8"))
-        self.assertEqual(run.call_args_list[0].args[0][0], "wl-copy")
-        self.assertEqual([call.args[0] for call in run.call_args_list[1:]], [
-            ["ydotool", "key", "29:1"], ["ydotool", "key", "47:1"],
-            ["ydotool", "key", "47:0"], ["ydotool", "key", "29:0"],
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ["hyprctl", "-j", "devices"],
+            ["ydotool", "key", "42:1"], ["ydotool", "key", "30:1"],
+            ["ydotool", "key", "30:0"], ["ydotool", "key", "42:0"],
+            ["hyprctl", "switchxkblayout", "ydotoold-virtual-device", "1"],
+            ["ydotool", "key", "42:1"], ["ydotool", "key", "34:1"],
+            ["ydotool", "key", "34:0"], ["ydotool", "key", "42:0"],
+            ["hyprctl", "switchxkblayout", "ydotoold-virtual-device", "0"],
         ])
         self.assertTrue(all("timeout" not in call.kwargs for call in run.call_args_list))
+        self.assertFalse(any(self.keys.held))
         self.context.complete.assert_not_called()
+
+    def test_unrepresentable_character_fails_before_any_keypress(self):
+        with patch("subprocess.run", side_effect=self.text_command) as run:
+            result = self.run_action("type_text", {"text": "hello🙂"})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("U+1F642", result["error"])
+        self.assertEqual(run.call_count, 1)
+
+    def test_typing_failure_releases_keys_and_restores_layout(self):
+        def command(args, **kwargs):
+            if args == ["ydotool", "key", "34:1"]:
+                return subprocess.CompletedProcess(args, 1, "", "key failed")
+            return self.text_command(args, **kwargs)
+        with patch("subprocess.run", side_effect=command) as run:
+            result = self.run_action("type_text", {"text": "П"})
+        self.assertEqual(result["status"], "error")
+        self.assertIn(["ydotool", "key", "34:0"], [call.args[0] for call in run.call_args_list])
+        self.assertEqual(run.call_args.args[0], ["hyprctl", "switchxkblayout", "ydotoold-virtual-device", "0"])
+        self.assertFalse(any(self.keys.held))
+
+    def test_caps_lock_is_respected_without_toggling_it(self):
+        def command(args, **kwargs):
+            result = self.text_command(args, **kwargs)
+            if args == ["hyprctl", "-j", "devices"]:
+                value = json.loads(result.stdout)
+                value["keyboards"][0]["capsLock"] = True
+                result.stdout = json.dumps(value)
+            return result
+        with patch("subprocess.run", side_effect=command) as run:
+            result = self.run_action("type_text", {"text": "Aa"})
+        self.assertEqual(result["status"], "success")
+        events = [call.args[0][-1] for call in run.call_args_list if call.args[0][0] == "ydotool"]
+        self.assertEqual(events, ["30:1", "30:0", "42:1", "30:1", "30:0", "42:0"])
 
     def test_hotkey_releases_in_reverse_order_and_preserves_held_modifier(self):
         self.keys.held[29] = 1
