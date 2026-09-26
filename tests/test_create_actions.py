@@ -1,6 +1,5 @@
-"""Контракт файловых действий create_automation и create_preset."""
+"""Контракт системных действий create_automation и create_preset."""
 
-import importlib.util
 import json
 import tempfile
 import unittest
@@ -10,20 +9,12 @@ from types import SimpleNamespace
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import EventBus
+from jarvis.core.runtime import register_core_protocol
+from jarvis.presets import PresetStore
 from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.debug import Debugger
 
 import fixtures
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def _action_source(action_id):
-    source = ROOT / ".jarvis" / "actions" / action_id / "action.py"
-    if source.is_file():
-        return source.read_text(encoding="utf-8")
-    return fixtures.CONTROL_ACTIONS[action_id]
 
 
 class CreateActionsTests(unittest.TestCase):
@@ -39,16 +30,21 @@ class CreateActionsTests(unittest.TestCase):
             debug=Debugger(enabled=False),
         )
         self.addCleanup(self.manager.shutdown)
+        self.actions = ActionRegistry()
+        register_core_protocol(self.actions, EventRegistry())
+        self.state_manager = SimpleNamespace(
+            presets=PresetStore(self.root / "presets"),
+            automations=AutomationStore(self.root / "automations.json"),
+        )
 
     def load_action(self, action_id):
-        path = self.root / "actions" / action_id / "action.py"
-        fixtures.write_action(self.root / "actions", action_id, _action_source(action_id))
-        spec = importlib.util.spec_from_file_location(
-            f"create_actions_{action_id}", path
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        def run(data, context):
+            context.action_id = action_id
+            context.agent_manager = SimpleNamespace(_manager=self.state_manager)
+            context.capabilities = self.manager
+            context.metadata = {"preset": "main"}
+            return self.actions.require(action_id).run(data, context)
+        return SimpleNamespace(run=run)
 
     def automation_context(self, agent_id):
         return SimpleNamespace(
@@ -82,19 +78,22 @@ class CreateActionsTests(unittest.TestCase):
             "actions": [{"action_id": "say", "data": {"text": "ok"}}],
         }
         result = module.run(rule, self.automation_context("main"))
-        self.assertEqual(result, {"status": "created"})
-        self.assertEqual(AutomationStore(self.root / "automations.json").list(), [rule])
+        self.assertEqual(result["status"], "created")
+        stored = self.state_manager.automations.list()[0]
+        self.assertEqual(stored["automation_id"], result["automation_id"])
+        stored.pop("automation_id")
+        self.assertEqual(stored, rule)
 
     def test_create_automation_rejects_malformed_rule(self):
         module = self.load_action("create_automation")
-        with self.assertRaises(ValueError):
-            module.run(
+        result = module.run(
                 {
                     "event": {"handler_id": "tick", "data": {"text": "go"}},
                     "actions": [{"action_id": "say", "call_id": "smuggled", "data": {}}],
                 },
                 self.automation_context("main"),
             )
+        self.assertEqual(result["status"], "not_created")
         self.assertEqual(AutomationStore(self.root / "automations.json").list(), [])
 
     def test_create_preset_refuses_other_agents(self):

@@ -26,6 +26,12 @@ class _Response:
         message = type("Message", (), {"content": content, "refusal": None})()
         self.choices = [type("Choice", (), {"message": message})()]
 
+    def __iter__(self):
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=self.choices[0].message)])
+
+    def close(self):
+        pass
+
 
 class _Completions:
     def __init__(self, outputs, block=None):
@@ -89,14 +95,7 @@ def _wait(predicate, timeout=2):
 
 class RuntimeTests(unittest.TestCase):
     def install_project_action(self, action_id):
-        source = Path(__file__).resolve().parents[1] / ".jarvis" / "actions" / action_id / "action.py"
-        if source.is_file():
-            code = source.read_text(encoding="utf-8")
-        elif action_id == "toggle_capability":
-            code = fixtures.toggle_capability_action()
-        else:
-            code = fixtures.CONTROL_ACTIONS[action_id]
-        fixtures.write_action(self.root / "actions", action_id, code)
+        self.actions.require(action_id)
 
     def enable_for_main(self, *action_ids):
         path = self.root / "presets" / "main" / "capabilities.json"
@@ -109,6 +108,8 @@ class RuntimeTests(unittest.TestCase):
         )
 
     def load_installed_action(self, action_id):
+        if self.actions.get(action_id) is not None:
+            return SimpleNamespace(run=self.actions.require(action_id).run)
         path = self.root / "actions" / action_id / "action.py"
         spec = importlib.util.spec_from_file_location(
             f"installed_{action_id}_action", path
@@ -319,7 +320,8 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 3))
         results = {item["call_id"]: item["data"] for item in self.call_results(agent)}
-        self.assertEqual(results["create-automation-call"], {"status": "created"})
+        self.assertEqual(results["create-automation-call"]["status"], "created")
+        self.assertIsNone(results["create-automation-call"]["error"])
         self.assertEqual(results["create-preset-call"]["status"], "not_created")
         self.assertIn("missing-action", results["create-preset-call"]["error"])
         self.assertEqual(
@@ -328,6 +330,7 @@ class RuntimeTests(unittest.TestCase):
         )
         self.assertTrue((self.root / "presets" / "empty-preset").is_dir())
         stored = AutomationStore(self.root / "automations.json").list()
+        stored = [{key: value for key, value in rule.items() if key != "automation_id"} for rule in stored]
         self.assertEqual(
             stored,
             [
@@ -359,6 +362,9 @@ class RuntimeTests(unittest.TestCase):
         module = self.load_installed_action("create_preset")
         context = SimpleNamespace(
             agent_id="main",
+            action_id="create_preset",
+            agent_manager=manager.capabilities._agent_api,
+            metadata={"preset": "main"},
             capabilities=manager.capabilities,
             config=SimpleNamespace(jarvis_dir=self.root),
         )

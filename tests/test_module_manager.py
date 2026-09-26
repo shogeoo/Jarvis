@@ -13,14 +13,10 @@ from jarvis.presets import PresetStore
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_MANAGER_ACTIONS = {
-    "send_message_to_agent",
     "read_file",
     "write_file",
     "edit_file",
     "execute_command",
-    "list_capabilities",
-    "capability_info",
-    "toggle_capability",
 }
 RUNTIME_PRESENT = (
     (ROOT / ".jarvis" / "presets" / "module_manager" / "personprompt.txt").is_file()
@@ -102,7 +98,7 @@ class ModuleManagerContractTests(unittest.TestCase):
         main = presets.load("main")
         self.assertEqual(set(module_manager.actions), MODULE_MANAGER_ACTIONS)
         self.assertTrue(
-            (MODULE_MANAGER_ACTIONS - {"send_message_to_agent"}).isdisjoint(main.actions)
+            MODULE_MANAGER_ACTIONS.isdisjoint(main.actions)
         )
 
     @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")

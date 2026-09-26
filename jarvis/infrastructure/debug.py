@@ -71,7 +71,7 @@ class Debugger:
             self.stream.write("\n")
             self.stream.flush()
 
-    def log(self, kind: str, **data: Any) -> None:
+    def log(self, event_name: str, **data: Any) -> None:
         """Совместимость со старыми диагностическими вызовами.
 
         Технические логи не являются частью представления модели и поэтому

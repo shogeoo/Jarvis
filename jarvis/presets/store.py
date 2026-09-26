@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ctypes
 import os
 import re
 import shutil
@@ -62,6 +63,10 @@ class PresetStore:
         return self.root / name
 
     def load(self, name: str) -> AgentPreset:
+        with self._lock:
+            return self._load_locked(name)
+
+    def _load_locked(self, name: str) -> AgentPreset:
         path = self.path(name)
         try:
             person_prompt = (path / "personprompt.txt").read_text(
@@ -173,6 +178,10 @@ class PresetStore:
         return self.load(name)
 
     def delete(self, name: str) -> None:
+        with self._lock:
+            self._delete_locked(name)
+
+    def _delete_locked(self, name: str) -> None:
         self.validate_name(name)
         path = self.path(name)
         if not path.is_dir():
@@ -185,6 +194,30 @@ class PresetStore:
             else:
                 raise ValueError(f"В пресете есть неизвестный каталог: {child}")
         path.rmdir()
+
+    def edit(self, name: str, person_prompt: str, capabilities: dict[str, list[str]]) -> AgentPreset:
+        if not isinstance(person_prompt, str) or not person_prompt.strip():
+            raise ValueError("person_prompt must not be empty")
+        normalized = self._normalize(capabilities)
+        with self._lock:
+            self.load(name)
+            path = self.path(name)
+            staging = Path(tempfile.mkdtemp(prefix=".edit-", dir=self.root))
+            replacement = staging / "replacement"
+            try:
+                shutil.copytree(path, replacement)
+                (replacement / "personprompt.txt").write_text(person_prompt.strip() + "\n", encoding="utf-8")
+                self._write_capabilities(replacement, normalized)
+                (replacement / "disabled_capabilities.json").write_text(json.dumps({key: [] for key in normalized}) + "\n", encoding="utf-8")
+                # Linux atomically exchanges the two complete directories:
+                # a crash never leaves the preset absent or half-written.
+                libc = ctypes.CDLL(None, use_errno=True)
+                if libc.renameat2(-100, os.fsencode(path), -100, os.fsencode(replacement), 2) != 0:
+                    error = ctypes.get_errno()
+                    raise OSError(error, os.strerror(error))
+            finally:
+                shutil.rmtree(staging)
+            return self.load(name)
 
     @staticmethod
     def _read_capabilities(path: Path, name: str) -> dict[str, list[str]]:

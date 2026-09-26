@@ -141,7 +141,7 @@ class ActionRegistry:
             return dict(self._actions)
 
     def for_capabilities(
-        self, *, modules: set[str], actions: set[str], primary: bool = False
+        self, *, modules: set[str], actions: set[str], primary: bool = False, developer: bool = False
     ) -> dict[str, ActionDefinition]:
         owners = {
             "core",
@@ -150,6 +150,9 @@ class ActionRegistry:
         }
         if primary:
             owners.add("core:speech")
+            owners.add("core:primary")
+        if developer:
+            owners.add("core:developer")
         with self._lock:
             return {
                 name: spec

@@ -15,6 +15,7 @@ from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
 
 import fixtures
+from test_runtime import _Response
 
 
 class ApplicationTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class ApplicationTests(unittest.TestCase):
             content = json.dumps({
                 "actions": [{"action_id": "no_action", "call_id": call_id, "data": {}}]
             })
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, refusal=None))])
+            return _Response(content)
 
         client.chat.completions.create.side_effect = model_response
         discover.return_value = ModelCapabilities("test", ("text",))

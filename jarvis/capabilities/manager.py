@@ -130,16 +130,27 @@ class CapabilityManager:
         self._handlers: dict[str, LoadedHandler] = {}
         self._modules: dict[str, LoadedModule] = {}
         self._global_state_path = self.root / "capability_state.json"
+        self._global_state_error = None
         try:
             raw_state = json.loads(self._global_state_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_state, dict) or not isinstance(raw_state.get("paused"), dict):
+                raise ValueError("Invalid global capability state")
+            for key in ("modules", "actions", "handlers"):
+                if not isinstance(raw_state["paused"].get(key), list) or not all(isinstance(item, str) for item in raw_state["paused"][key]):
+                    raise ValueError("Invalid global capability state: " + key)
         except FileNotFoundError:
+            raw_state = {}
+        except Exception as exc:
+            self._global_state_error = str(exc)
+            self.debug.error("Cannot read capability_state.json; file preserved: " + str(exc))
             raw_state = {}
         old_paused = raw_state.get("paused", {})
         self._global_paused = {
             kind: set(old_paused.get(kind, raw_state.get(kind, [])))
             for kind in ("modules", "actions", "handlers")
         }
-        self._save_global_state()
+        if self._global_state_error is None:
+            self._save_global_state()
         self._agent_api = _AgentApi(self)
         self._closing = threading.Event()
         self._cancel_waiters: dict[tuple[str, str], threading.Event] = {}
@@ -1051,7 +1062,7 @@ class CapabilityManager:
     # --- dispatch -----------------------------------------------------
     def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
         validate_json(action.data, spec.args_schema, where=f"аргументы {action.action_id}")
-        if not agent.is_enabled_action(action.action_id):
+        if not spec.owner.startswith("core") and not agent.is_enabled_action(action.action_id):
             self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
                 data={"status": "disabled", "info": "Action is currently disabled."},
@@ -1126,7 +1137,7 @@ class CapabilityManager:
                 agent.agent_id, action.call_id, data, parts
             ),
             config=self.config,
-            agent_manager=manager,
+            agent_manager=self._agent_api,
             capabilities=self,
             services=self.services,
             metadata={"preset": agent.preset, "agent_name": agent.name},
@@ -1229,9 +1240,10 @@ class CapabilityManager:
 
     def runnable_snapshot(self, snapshot: dict[str, set[str]]) -> dict[str, set[str]]:
         paused = self.global_paused()
+        system_actions = {name for name, spec in self.actions.all().items() if spec.owner.startswith("core")}
         return {
             "modules": set(snapshot.get("modules", ())) - paused["modules"],
-            "actions": set(snapshot.get("actions", ())) - paused["actions"],
+            "actions": set(snapshot.get("actions", ())) - paused["actions"] - system_actions,
             "handlers": set(snapshot.get("handlers", ())) - paused["handlers"],
         }
 
@@ -1247,6 +1259,8 @@ class CapabilityManager:
             return self._toggle_global_state_locked(kind, capability_id)
 
     def _toggle_global_state_locked(self, kind: str, capability_id: str) -> dict[str, Any]:
+        if self._global_state_error is not None:
+            raise ValueError("Cannot update unreadable capability state: " + self._global_state_error)
         kind_to_key = {"module": "modules", "action": "actions", "handler": "handlers"}
         key = kind_to_key.get(kind)
         if key is None:

@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 import threading
+import uuid
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,8 @@ class AutomationStore:
 
     @staticmethod
     def validate(automation: Any) -> dict[str, Any]:
+        if isinstance(automation, dict) and "automation_id" in automation:
+            automation = {key: value for key, value in automation.items() if key != "automation_id"}
         if not isinstance(automation, dict) or set(automation) not in (
             {"event", "actions"},
             {"call_result", "actions"},
@@ -74,7 +78,13 @@ class AutomationStore:
                 return []
             if not isinstance(value, list):
                 raise ValueError(f"{self.path} must contain a JSON array")
-            return [self.validate(item) for item in value]
+            result = []
+            for item in value:
+                rule = self.validate(item)
+                if "automation_id" in item:
+                    rule["automation_id"] = item["automation_id"]
+                result.append(rule)
+            return result
 
     def append(self, automation: Any) -> int:
         validated = self.validate(automation)
@@ -83,6 +93,41 @@ class AutomationStore:
             current.append(validated)
             self._write(current)
             return len(current)
+
+    def identified(self) -> list[dict[str, Any]]:
+        with self._lock:
+            current = self.list()
+            for index, rule in enumerate(current):
+                rule.setdefault("automation_id", "auto-" + hashlib.sha256((str(index) + json.dumps(rule, sort_keys=True)).encode()).hexdigest()[:12])
+            return current
+
+    def create(self, automation: Any) -> str:
+        rule = self.validate(automation)
+        with self._lock:
+            current = self.identified()
+            identifier = "auto-" + uuid.uuid4().hex[:12]
+            current.append({"automation_id": identifier, **rule})
+            self._write(current)
+            return identifier
+
+    def edit(self, identifier: str, automation: Any) -> None:
+        rule = self.validate(automation)
+        with self._lock:
+            current = self.identified()
+            for index, item in enumerate(current):
+                if item["automation_id"] == identifier:
+                    current[index] = {"automation_id": identifier, **rule}
+                    self._write(current)
+                    return
+            raise ValueError("Automation not found: " + identifier)
+
+    def remove_id(self, identifier: str) -> None:
+        with self._lock:
+            current = self.identified()
+            kept = [item for item in current if item["automation_id"] != identifier]
+            if len(kept) == len(current):
+                raise ValueError("Automation not found: " + identifier)
+            self._write(kept)
 
     def remove(self, automation: Any) -> int:
         """Remove every rule identical to the given one; return how many were removed."""
