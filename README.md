@@ -349,6 +349,11 @@ Protected agents/presets сохраняют защиту от удаления.
 Абсолютные координаты задаются в пикселях рабочего стола, steps интерполяции
 удалены; таймаутов команд нет. Все mouse actions возвращают только status/error;
 автоскриншотов нет. Для изображения вызывается отдельный take_screenshot.
+Дополнительно доступны mouse.hold_button с обязательными button и duration_ms
+(миллисекунды), mouse.button_down(button) и mouse.button_up(button).
+button принимает left/right/middle. Удержание по времени не блокирует движение
+или явное отпускание. Более новая команда кнопки имеет приоритет над старым
+таймером. При отмене click/drag/hold и штатной выгрузке кнопки отпускаются.
 
 Локальный модуль keyboard содержит ровно пять actions: type_text(text),
 press_key(key), key_down(key), key_up(key), hotkey(keys). Клавиши задаются

@@ -391,6 +391,13 @@ Startup создаёт лишь недостающие state-файлы; нев�
 
 Mouse выполняет только команды мыши и возвращает status/error; автоматического
 создания image parts больше нет. Screenshot запрашивается отдельным action.
+mouse.hold_button(button, duration_ms) удерживает кнопку заданное время,
+mouse.button_down(button) зажимает до mouse.button_up(button). Button —
+left/right/middle; duration_ms обязателен и не является execution timeout.
+Общее состояние кнопок хранится в RawArray внутри module host. Короткий flock
+согласует команды; во время timed hold блокировка не удерживается. Владение
+кнопкой имеет номер поколения, поэтому старый таймер не отпускает новое зажатие.
+Отмена click/drag/hold вызывает finally с отпусканием; teardown очищает зажатия.
 Keyboard имеет пять действий: type_text, press_key, key_down, key_up, hotkey.
 Команды ydotool находятся в соответствующих action.py. keys.py содержит только
 разрешение имен/keycodes, общий RawArray зажатых клавиш, процессный flock и
