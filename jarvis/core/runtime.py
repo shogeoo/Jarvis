@@ -787,6 +787,7 @@ class Agent:
                     model=self.manager.model,
                     messages=list(self.history),
                     response_format=response_format(schemas),
+                    reasoning_effort="medium",
                     stream=True,
                 )
                 with self._generation_lock:
