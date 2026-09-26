@@ -8,6 +8,7 @@ from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import EventBus
 from jarvis.infrastructure.debug import Debugger
+from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
 from jarvis.presets import PresetStore
 
 
@@ -95,11 +96,14 @@ class ModuleManagerContractTests(unittest.TestCase):
     def test_module_manager_has_only_its_management_actions_by_default(self):
         presets = PresetStore(ROOT / ".jarvis" / "presets")
         module_manager = presets.load("module_manager")
-        main = presets.load("main")
         self.assertEqual(set(module_manager.actions), MODULE_MANAGER_ACTIONS)
-        self.assertTrue(
-            MODULE_MANAGER_ACTIONS.isdisjoint(main.actions)
-        )
+        # A user may explicitly assign maintenance tools to main. Only startup
+        # defaults, rather than the mutable installed preset, are constrained.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ensure_runtime_layout(root)
+            main = PresetStore(root / "presets").load("main")
+            self.assertTrue(MODULE_MANAGER_ACTIONS.isdisjoint(main.actions))
 
     @unittest.skipUnless(RUNTIME_PRESENT, "External .jarvis runtime is not installed")
     def test_capability_metadata_is_complete_without_loading_runtime(self):

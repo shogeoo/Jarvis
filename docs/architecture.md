@@ -386,3 +386,22 @@ automation_id. Create добавляет правило, edit заменяет �
 dispatch. Системные управляющие actions находятся в core_protocol каталога.
 Startup создаёт лишь недостающие state-файлы; невалидные оригиналы логируются
 и не заменяются пустыми.
+
+## Локальные mouse и keyboard
+
+Mouse выполняет только команды мыши и возвращает status/error; автоматического
+создания image parts больше нет. Screenshot запрашивается отдельным action.
+Keyboard имеет пять действий: type_text, press_key, key_down, key_up, hotkey.
+Команды ydotool находятся в соответствующих action.py. keys.py содержит только
+разрешение имен/keycodes, общий RawArray зажатых клавиш, процессный flock и
+teardown. RawArray наследуется execution-процессами через существующий fork.
+Flock открывается каждым invocation отдельно и освобождается ОС при его смерти.
+Клавиатурные операции выполняются целиком в одной последовательности; порядок
+зависимых вызовов обеспечивается ожиданием предыдущего call_result.
+
+type_text использует Wayland clipboard (wl-copy, UTF-8) и Ctrl+V, меняя clipboard.
+Состояние клавиш сохраняется между key_down/key_up и очищается при штатном
+teardown. Hotkey освобождает только нажатые им клавиши, в обратном порядке.
+Screenshot, автоматический Enter и command timeout отсутствуют. Clipboard paste
+может не поддерживаться отдельным приложением; для имен Linux нужен системный
+input-event-codes.h. Модуль не пытается угадывать приложение или раскладку.

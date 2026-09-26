@@ -33,16 +33,36 @@ class MouseTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(run.call_args_list[-1].args[0], ["ydotool", "click", "0x80"])
 
-    def test_move_uses_pixel_coordinates_and_returns_named_image_once(self):
+    def test_move_uses_pixel_coordinates_without_screenshot(self):
         action = self.load_action("move")
         complete = Mock()
         def command(args, **kwargs):
             self.assertNotIn("timeout", kwargs)
-            if args[0] == "hyprshot":
-                (Path(args[6]) / args[8]).write_bytes(b"png")
+            self.assertEqual(args[0], "ydotool")
             return subprocess.CompletedProcess(args, 0, "", "")
         with patch("subprocess.run", side_effect=command) as run:
-            action.run({"x": 123, "y": 456}, SimpleNamespace(complete=complete))
+            result = action.run({"x": 123, "y": 456}, SimpleNamespace(complete=complete))
         self.assertEqual(run.call_args_list[0].args[0], ["ydotool", "mousemove", "-a", "-x", "123", "-y", "456"])
-        complete.assert_called_once()
-        self.assertTrue(complete.call_args.kwargs["parts"][0].name.endswith(".png"))
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result, {"status": "success", "error": None})
+        complete.assert_not_called()
+
+    def test_no_mouse_action_creates_screenshots(self):
+        arguments = {
+            "move": {"x": 1, "y": 2},
+            "relative_move": {"x": 1, "y": 2},
+            "scroll": {"steps": 2},
+            "drag": {"x": 1, "y": 2, "button": "left"},
+            "double_drag": {"x": 1, "y": 2, "button": "left"},
+            "click": {"button": "left"},
+            "double_click": {"button": "left"},
+        }
+        for name, data in arguments.items():
+            with self.subTest(action=name):
+                action = self.load_action(name)
+                complete = Mock()
+                with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+                    result = action.run(data, SimpleNamespace(complete=complete))
+                self.assertEqual(result, {"status": "success", "error": None})
+                self.assertTrue(all(call.args[0][0] == "ydotool" for call in run.call_args_list))
+                complete.assert_not_called()
