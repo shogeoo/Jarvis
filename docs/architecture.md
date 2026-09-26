@@ -178,9 +178,12 @@ Protected-пресет является singleton: его экземпляр н�
 извне, а второй экземпляр создать нельзя. Сам агент может менять собственные
 capabilities разрешёнными действиями.
 
-`create_automation` и `create_preset` — файловые действия в `.jarvis/actions/`:
-они включены только в preset main и внутри проверяют, что вызывающий агент —
-main.
+Управляющие actions зарегистрированы ядром в `jarvis/core/system_actions.py`.
+Они не создают capability hosts и не перечисляются как capabilities на диске.
+`send_message_to_agent` доступен каждому агенту, включая восстановленные
+экземпляры. Управление агентами, presets, автоматизациями и собственными
+назначениями доступно main. `list_capabilities`, `capability_info` и
+`toggle_capability` доступны module_manager по умолчанию.
 
 ## Точные автоматизации
 
@@ -282,7 +285,8 @@ actions, events и результатами по JSON Lines.
 Только у main:
 
 - `spawn_agent`, `delete_agent`, `interrupt_agent`, `list_agents` — экземпляры;
-- `send_message_to_agent` — адресное сообщение живому экземпляру;
+- `create_preset`, `edit_preset`, `remove_preset` — шаблоны экземпляров;
+- `create_automation`, `edit_automation`, `remove_automation`, `list_automations` — правила;
 - `list_agent_presets` — файловые пресеты;
 - `list_available_capabilities`, `list_active_capabilities`, `enable_capability`,
   `disable_capability` — просмотр и доступ текущего экземпляра;
@@ -294,6 +298,8 @@ actions, events и результатами по JSON Lines.
 файлов, синхронное выполнение bash-команд, полную информацию о capabilities и
 глобальную паузу и возобновление capabilities одним toggle action. Эти actions не назначаются main и
 другим пресетам по умолчанию.
+
+`send_message_to_agent` является системным action для всех агентов по умолчанию.
 
 ## Встроенная речь
 
@@ -350,3 +356,33 @@ agent: event / assistant / module change
 
 Отдельного `system` нет. Ctrl+C сейчас напрямую запускает очистку runtime.
 Автозапуск вместе с ОС находится вне текущего этапа.
+
+## Lifecycle и шаблоны экземпляров
+
+Model API работает в streaming режиме. Generation владеет своим stream;
+interrupt закрывает HTTP response и инвалидирует generation. Частичный JSON
+не исполняется. Поздние chunks не принимаются. Очередь событий и выполняющиеся
+actions переживают interrupt. Провайдер может продолжить серверное вычисление
+после разрыва соединения, если его API не поддерживает отмену.
+
+Delete не отказывает из-за активной работы. Все удаляемые экземпляры сначала
+снимаются с регистрации, затем останавливаются генерации, executions и
+доставка, удаляется память. Сохранение и снятие регистрации согласованы общей
+блокировкой, поэтому поздний save не создаёт память удалённого экземпляра.
+Remove preset включает все его живые и сохранённые экземпляры и descendants.
+Каждый execution имеет собственную группу процессов, которая очищается при
+cancel и смерти capability host.
+
+Person prompt и protected сохраняются в metadata экземпляра. Edit preset
+меняет шаблон для будущих экземпляров; уже живые и восстановленные используют
+свои сохранённые значения. Полная редакция preset публикуется атомарным
+обменом каталогов Linux renameat2, чтобы не оставлять отсутствующий preset.
+
+Automation CRUD использует один AutomationStore ядра и постоянный
+automation_id. Create добавляет правило, edit заменяет его по ID, remove
+удаляет по ID. Остальные правила сохраняются. Старые правила без ID получают
+стабильные ID при чтении списка и сохраняют их при следующей операции записи.
+Схема create/edit строится из каталогов, но выполнение использует обычный
+dispatch. Системные управляющие actions находятся в core_protocol каталога.
+Startup создаёт лишь недостающие state-файлы; невалидные оригиналы логируются
+и не заменяются пустыми.
