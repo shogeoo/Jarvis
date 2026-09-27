@@ -394,10 +394,19 @@ class CapabilityManager:
 
     def _worker_command(self, kind: str, unit_id: str) -> list[str]:
         path = self._unit_path(kind, unit_id)
+        package = Path(__file__).resolve().parents[1]
+        # Load only the SDK package, not the core environment's site-packages.
+        bootstrap = (
+            "import importlib.util,runpy,sys;"
+            f"spec=importlib.util.spec_from_file_location('jarvis',{str(package / '__init__.py')!r},submodule_search_locations=[{str(package)!r}]);"
+            "module=importlib.util.module_from_spec(spec);sys.modules['jarvis']=module;"
+            "spec.loader.exec_module(module);"
+            "runpy.run_module('jarvis.capabilities.worker',run_name='__main__',alter_sys=True)"
+        )
         return [
             str(self._python(path)),
-            "-m",
-            "jarvis.capabilities.worker",
+            "-c",
+            bootstrap,
             "--jarvis-dir",
             str(self.root.resolve()),
             "--unit",
@@ -405,18 +414,7 @@ class CapabilityManager:
         ]
 
     def _worker_env(self) -> dict[str, str]:
-        environment = dict(os.environ)
-        project_root = str(self.config.project_root if self.config else Path.cwd())
-        package_root = str(Path(__file__).resolve().parents[2])
-        paths = []
-        for item in (project_root, package_root):
-            if item not in paths:
-                paths.append(item)
-        previous = environment.get("PYTHONPATH")
-        if previous:
-            paths.append(previous)
-        environment["PYTHONPATH"] = os.pathsep.join(paths)
-        return environment
+        return dict(os.environ)
 
     def _cwd(self) -> Path:
         return self.config.project_root if self.config else Path.cwd()
@@ -453,7 +451,7 @@ class CapabilityManager:
         )
 
     def _host_log(self, host: UnitHost):
-        log_dir = (self.config.jarvis_dir if self.config else DEFAULT_ROOT) / "runtime" / "logs"
+        log_dir = self.root / "runtime" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         return open(log_dir / f"{host.kind}-{host.unit_id}.log", "ab")
 
@@ -638,6 +636,9 @@ class CapabilityManager:
         self.cancel_execution(agent_id, call_id, pending.action_id)
 
     def cancel_execution(self, agent_id: str, call_id: str, action_id: str) -> None:
+        manager = self._manager()
+        if manager is not None:
+            manager.processes.cancel_call(agent_id, call_id)
         with self._lock:
             runtime = self._actions.get(action_id)
         if runtime is not None and runtime.host.started:
@@ -1098,9 +1099,11 @@ class CapabilityManager:
                 result_schema=spec.result_schema,
             )
         if core:
+            processes = getattr(manager, "processes", None)
+            owner = processes.reserve_call(agent.agent_id, action.call_id) if processes is not None else None
             threading.Thread(
                 target=self._run_core_action,
-                args=(spec, action, agent),
+                args=(spec, action, agent, owner),
                 name=f"jarvis-core-{action.action_id}",
                 daemon=True,
             ).start()
@@ -1122,34 +1125,41 @@ class CapabilityManager:
             raise
 
     def _run_core_action(
-        self, spec: ActionDefinition, action: ActionRequest, agent: Any
+        self, spec: ActionDefinition, action: ActionRequest, agent: Any, owner=None
     ) -> None:
         """Исполнить захардкоженное действие ядра в собственном потоке."""
 
         manager = self._manager()
+        def current_caller():
+            return not hasattr(manager, "agents") or manager.agents.get(agent.agent_id) is agent
+        def complete(data, parts=()):
+            if current_caller():
+                return self._complete_action(agent.agent_id, action.call_id, data, parts)
+            return False
         context = ActionContext(
             agent_id=agent.agent_id,
             call_id=action.call_id,
             action_id=action.action_id,
             capability_id=action.action_id,
             module_id=None,
-            complete=lambda data, parts=(): self._complete_action(
-                agent.agent_id, action.call_id, data, parts
-            ),
+            complete=complete,
             config=self.config,
             agent_manager=self._agent_api,
             capabilities=self,
             services=self.services,
-            metadata={"preset": agent.preset, "agent_name": agent.name},
+            metadata={"preset": agent.preset, "agent_name": agent.name, "execution_owner": owner},
         )
+        if not current_caller():
+            return
         try:
             result = spec.run(dict(action.data), context)
         except Exception as exc:  # noqa: BLE001
-            manager.fail_call(agent.agent_id, action.call_id, exc)
+            if current_caller():
+                manager.fail_call(agent.agent_id, action.call_id, exc)
             return
         if result is PENDING:
             return
-        self._complete_action(agent.agent_id, action.call_id, result)
+        complete(result)
 
     def _manager(self) -> Any:
         return getattr(self.event_bus, "manager", None)
@@ -1436,6 +1446,7 @@ class CapabilityManager:
                     continue
                 modules.append(self._module_summary(runtime))
             return {
+                "storage_root": str(self.root.resolve()),
                 "actions": actions,
                 "handlers": handlers,
                 "events": events,

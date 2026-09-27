@@ -32,7 +32,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_multimodal_event_is_one_message_and_filters_unsupported_parts(self):
         event = Event(
-            type="telegram.message",
+            type="example.message",
             data={"text": "Что на фото?"},
             parts=(InputPart("image", "image/jpeg", "aGVsbG8="),),
         )

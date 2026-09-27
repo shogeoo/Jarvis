@@ -138,12 +138,6 @@ def write_handler(
     return unit
 
 
-def write_master_prompt(project_root: Path) -> Path:
-    path = Path(project_root) / "master_prompt.txt"
-    path.write_text("environment\n", encoding="utf-8")
-    return path
-
-
 def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     root = Path(root)
     actions = root / "actions"

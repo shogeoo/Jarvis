@@ -434,8 +434,14 @@ def define_toggle_capability():
 
 
 SYSTEM_MAIN = frozenset(["spawn_agent","interrupt_agent","delete_agent","list_agents","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities"] + ["create_preset", "edit_preset", "remove_preset", "create_automation", "edit_automation", "remove_automation", "list_automations"])
-SYSTEM_DEVELOPER = frozenset(["list_capabilities", "capability_info", "toggle_capability"])
+SYSTEM_DEVELOPER = frozenset(["list_capabilities", "capability_info", "toggle_capability", "read_file", "write_file", "edit_file", "execute_command"])
 SYSTEM_ALL = frozenset(["send_message_to_agent"])
+SYSTEM_MAIN = SYSTEM_MAIN | frozenset({"reply"})
+
+
+def reply(data, context):
+    context.agent_manager._manager.debug.reply(data["text"], agent_id=context.agent_id)
+    return {"status": "successful"}
 
 
 def state_action(data, context):
@@ -470,6 +476,9 @@ def state_action(data, context):
             capabilities = {key: data[key] for key in ("actions", "handlers", "modules")}
             for key, values in capabilities.items():
                 for value in values:
+                    spec = manager.actions.get(value) if key == "actions" else None
+                    if spec is not None and spec.owner.startswith("core"):
+                        continue
                     context.capabilities.validate(kind={"actions": "action", "handlers": "handler", "modules": "module"}[key], capability_id=value)
             if operation == "create":
                 manager.presets.create(identifier, data["person_prompt"], capabilities)
@@ -501,6 +510,9 @@ def register_state_actions(registry):
     registry.register(replace(action_definition("List saved automations and their automation_id values.", object_schema({}), object_schema({"automations": {"type": "array", "items": open_object}}), state_action), id="list_automations", owner="core:primary"))
 
 def register_system_actions(registry):
+    from .developer_actions import register_developer_actions
+    register_developer_actions(registry)
+    registry.register(replace(action_definition("Reply to the user with plain text in the terminal. Use when speech is unavailable or a written answer is appropriate.", object_schema({"text": {"type": "string"}}), object_schema({"status": {"type": "string", "enum": ["successful"]}}), reply), id="reply", owner="core:primary"))
     register_state_actions(registry)
     for action_id in ["spawn_agent","interrupt_agent","delete_agent","list_agents","send_message_to_agent","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities","list_capabilities","capability_info","toggle_capability"]:
         definition = globals()["define_" + action_id]()

@@ -43,6 +43,7 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     """Зарегистрировать зарезервированные элементы протокола."""
     from .system_actions import register_system_actions
     register_system_actions(actions)
+    events.register(EventDefinition("user_message", "A direct text request from the user.", object_schema({"text": {"type": "string"}})), owner="core")
 
     actions.register(
         ActionDefinition(
@@ -787,7 +788,8 @@ class Agent:
                     model=self.manager.model,
                     messages=list(self.history),
                     response_format=response_format(schemas),
-                    reasoning_effort="medium",
+                    **({"reasoning_effort": self.manager.config.reasoning_effort if self.manager.config is not None else "low"}
+                       if self.manager.config is None or self.manager.config.reasoning_effort is not None else {}),
                     stream=True,
                 )
                 with self._generation_lock:
@@ -1326,7 +1328,7 @@ class AgentManager:
             }
         disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
         from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL
-        system_ids = SYSTEM_MAIN | SYSTEM_DEVELOPER | SYSTEM_ALL
+        system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "module_manager" else set())
         initial["actions"].difference_update(system_ids)
         disabled_override["actions"].difference_update(system_ids)
         self.capabilities.load_snapshot(

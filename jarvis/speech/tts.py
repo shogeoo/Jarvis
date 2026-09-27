@@ -233,6 +233,7 @@ class Speaker:
         cmd += ["--server", "--host", self._host, "--port", str(self._port)]
         cmd += self.cfg.tts_server_args
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._log_path().parent.mkdir(parents=True, exist_ok=True)
         print(
             f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
             flush=True,

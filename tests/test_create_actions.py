@@ -33,6 +33,7 @@ class CreateActionsTests(unittest.TestCase):
         self.actions = ActionRegistry()
         register_core_protocol(self.actions, EventRegistry())
         self.state_manager = SimpleNamespace(
+            actions=self.actions,
             presets=PresetStore(self.root / "presets"),
             automations=AutomationStore(self.root / "automations.json"),
         )

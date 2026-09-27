@@ -4,6 +4,7 @@ import json
 import sys
 import traceback
 from pathlib import Path
+from importlib.resources import files
 
 _EMPTY = {"modules": [], "actions": [], "handlers": []}
 
@@ -35,12 +36,8 @@ def _state_if_missing(path: Path, default: dict) -> None:
 def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
     preset = root / "presets" / name
     preset.mkdir(parents=True, exist_ok=True)
-    prompt = (
-        "Ты — Jarvis, цифровой ассистент пользователя. Отвечай ясно и точно.\n"
-        if name == "main" else
-        "Ты — Module Manager, разработчик capabilities Jarvis. Выполняй задачи родителя.\n"
-        if name == "module_manager" else f"Ты — агент preset {name}.\n"
-    )
+    prompt = (files("jarvis").joinpath("assets", name + ".txt").read_text(encoding="utf-8")
+              if name in {"main", "module_manager"} else f"Ты — агент preset {name}.\n")
     _write_if_missing(preset / "personprompt.txt", prompt)
     _write_if_missing(preset / "capabilities.json", json.dumps(_EMPTY, indent=2) + "\n")
     _write_if_missing(preset / "preset.json", json.dumps({"protected": protected}) + "\n")

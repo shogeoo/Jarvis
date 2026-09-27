@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import sys
+import shutil
 import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import build_config
+from .config import build_config, STT_ENABLED, TTS_ENABLED
 from .stt import Pipeline, pipeline
 from .tts import Speaker, SpeechInterrupted
 
@@ -31,6 +32,10 @@ class SpeechService:
         self._detach: list[Callable[[], None]] = []
         self._lock = threading.RLock()
 
+    @property
+    def can_speak(self) -> bool:
+        return self._speaker is not None
+
     def start(
         self,
         jarvis_dir: Path,
@@ -47,14 +52,19 @@ class SpeechService:
             speaker = None
             try:
                 config.runtime_dir.mkdir(parents=True, exist_ok=True)
-                speaker = Speaker(config)
-                speaker.start()
+                if TTS_ENABLED and shutil.which(str(config.tts_server_bin)):
+                    speaker = Speaker(config)
+                    speaker.start()
+                elif TTS_ENABLED:
+                    print("s2 binary not found; speech action is unavailable. STT remains independent.", file=sys.stderr)
             except Exception as exc:  # noqa: BLE001
                 self._report(debug, "speech_tts_failed", exc)
                 speaker = None
             pipe = None
             detach: list[Callable[[], None]] = []
             try:
+                if not STT_ENABLED:
+                    return self._finish_start(speaker, None, [])
                 pipe = pipeline()
                 pipe.ensure_running(jarvis_dir)
                 if speaker is not None:
@@ -73,13 +83,17 @@ class SpeechService:
                 )
             except Exception as exc:  # noqa: BLE001
                 self._report(debug, "speech_stt_failed", exc)
+                if pipe is not None:
+                    pipe.shutdown()
                 pipe = None
-            if speaker is None and pipe is None:
-                return
-            self._speaker = speaker
-            self._pipeline = pipe
-            self._detach = detach
-            self.available = True
+            self._finish_start(speaker, pipe, detach)
+
+    def _finish_start(self, speaker, pipe, detach):
+        self._speaker = speaker
+        self._pipeline = pipe
+        self._detach = detach
+        self.available = speaker is not None or pipe is not None
+        if self.available:
             print("Речь: инициализация завершена.", flush=True)
 
     def speak_result(self, text: str) -> dict[str, Any]:

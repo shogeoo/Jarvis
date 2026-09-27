@@ -16,7 +16,7 @@ class DebugTests(unittest.TestCase):
         output = io.StringIO()
         debug = Debugger(stream=output)
         event = Event(
-            type="take_screenshot",
+            type="image_notice",
             data={"text": "2026-09-20-005028_jarvis.png"},
             parts=(
                 InputPart("image", "image/png", "aGVsbG8="),

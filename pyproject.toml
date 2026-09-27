@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,19 +7,25 @@ name = "jarvis"
 description = "Jarvis — event-thinking-action система"
 readme = "README.md"
 license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{name = "Georgiy Shonichev"}]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: POSIX :: Linux"]
 requires-python = ">=3.10"
 dynamic = ["version"]
 dependencies = [
-    "openai>=1.0",
+    "openai>=1.55",
     "python-dotenv>=1.0",
     "requests>=2.31",
     "jsonschema>=4.20",
     "faster-whisper>=1.2",
-    "numpy>=2.5",
-    "onnxruntime>=1.29",
-    "nvidia-cublas-cu12>=12.9",
-    "nvidia-cudnn-cu12>=9.24",
+    "numpy>=1.26",
+    "onnxruntime>=1.17",
+    "huggingface-hub>=0.23",
 ]
+
+[project.optional-dependencies]
+cuda = ["nvidia-cublas-cu12>=12", "nvidia-cudnn-cu12>=9"]
+dev = ["build>=1.2", "ruff>=0.8"]
 
 [project.scripts]
 jarvis = "jarvis.bootstrap:main"
@@ -29,3 +35,9 @@ include = ["jarvis*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "jarvis.__version__" }
+
+[tool.setuptools.package-data]
+jarvis = ["assets/*.txt", "speech/assets/voices/*.mp3", "speech/assets/voices/*.txt"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]

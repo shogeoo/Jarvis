@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from importlib.resources import files
 from typing import Any
 
 from ..infrastructure.model_capabilities import ModelCapabilities
@@ -10,14 +11,17 @@ from .protocol import json_text
 from .registry import ActionRegistry
 
 
-def read_master_prompt(path: Path) -> str:
+def read_master_prompt(path: Path | None = None) -> str:
     """Прочитать общий мастер-промпт среды.
 
     Текст содержит только общие для всех агентов правила среды и протокола.
     """
 
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        resource = path if path is not None else files("jarvis").joinpath("assets", "master_prompt.txt")
+        text = resource.read_text(encoding="utf-8").strip()
+        if path is None:
+            text += "\n\n" + files("jarvis").joinpath("assets", "capability_sdk.txt").read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise RuntimeError(f"Не удалось прочитать мастер-промпт {path}: {exc}") from exc
     if not text:
@@ -58,6 +62,7 @@ def agent_system_prompt(
         event["type"] for event in capability_catalog.get("events", [])
     }
     catalog = {
+        "storage_root": capability_catalog.get("storage_root", ""),
         "core_protocol": {
             "actions": ActionRegistry.catalog(
                 {

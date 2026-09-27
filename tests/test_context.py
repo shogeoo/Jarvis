@@ -80,7 +80,7 @@ class MemoryStoreTests(unittest.TestCase):
                     "content": [
                         {
                             "type": "text",
-                            "text": '{"type":"screenshot","data":{}}',
+                            "text": '{"type":"image_notice","data":{}}',
                         },
                         {
                             "type": "image_url",

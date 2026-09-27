@@ -53,9 +53,7 @@ class JarvisApplication:
             config.base_url,
             config.api_key,
         )
-        master_prompt = read_master_prompt(
-            config.project_root / "master_prompt.txt"
-        )
+        master_prompt = read_master_prompt()
         self.agents = AgentManager(
             model=config.model,
             client=self.client,
@@ -78,6 +76,8 @@ class JarvisApplication:
             emit=self._emit_speech,
             debug=self.debug,
         )
+        if not speech_service.can_speak:
+            self.actions.unregister_owner("core:speech")
         self.main_agent = self.agents.restore(name="main", preset="main")
         if self.main_agent is not None:
             self.bus.publish(

@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 
 
 def terminate_process(proc: subprocess.Popen, *, group: bool = False) -> None:
@@ -39,18 +40,39 @@ class ProcessManager:
         self._lock = threading.Lock()
         self._closed = False
         self._processes = set()
+        self._owners = {}
+        self._cancelled = set()
+        self._calls = {}
 
-    def start(self, *args, **kwargs):
+    def reserve_call(self, agent_id, call_id):
         with self._lock:
-            if self._closed:
+            owner = (agent_id, call_id, uuid.uuid4().hex)
+            self._calls[(agent_id, call_id)] = owner
+            return owner
+
+    def start(self, *args, owner=None, **kwargs):
+        with self._lock:
+            if self._closed or owner in self._cancelled:
                 raise RuntimeError("runtime_stopping")
             proc = subprocess.Popen(*args, **kwargs, start_new_session=True)
             self._processes.add(proc)
+            self._owners[proc] = owner
             return proc
 
     def finish(self, proc):
         with self._lock:
             self._processes.discard(proc)
+            self._owners.pop(proc, None)
+
+    def cancel_call(self, agent_id, call_id):
+        with self._lock:
+            owner = self._calls.get((agent_id, call_id))
+            if owner is None:
+                return
+            self._cancelled.add(owner)
+            processes = [proc for proc in self._processes if self._owners.get(proc) == owner]
+        for proc in processes:
+            terminate_process(proc, group=True)
 
     def stop(self):
         with self._lock:

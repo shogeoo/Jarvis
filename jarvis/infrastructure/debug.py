@@ -78,6 +78,10 @@ class Debugger:
         намеренно подавляются.
         """
 
+    def reply(self, text: str, *, agent_id: str = "main") -> None:
+        if self.enabled:
+            self._write(agent_id, error=False, rendered=text)
+
     def error(self, message: str) -> None:
         """Напечатать исходный текст ошибки красным, без заголовка."""
 
