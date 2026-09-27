@@ -1,7 +1,8 @@
 """Create runtime structure and synchronize built-in preset personalities."""
 from __future__ import annotations
+
+from .console import logger
 import json
-import sys
 import traceback
 from pathlib import Path
 from importlib.resources import files
@@ -30,7 +31,7 @@ def _state_if_missing(path: Path, default: dict) -> None:
         ):
             raise ValueError("Invalid capability state")
     except Exception:
-        print(f"Jarvis cannot read {path}; original file preserved:\n{traceback.format_exc()}", file=sys.stderr)
+        logger.error(f"Jarvis cannot read {path}; original file preserved:\n{traceback.format_exc()}")
 
 
 def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:

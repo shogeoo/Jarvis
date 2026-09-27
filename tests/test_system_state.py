@@ -106,9 +106,9 @@ class SystemStateTests(unittest.TestCase):
         disabled = self.root / "presets" / "main" / "disabled_capabilities.json"
         global_file.write_text("broken-global", encoding="utf-8")
         disabled.write_text("broken-disabled", encoding="utf-8")
-        with patch("sys.stderr") as stderr:
+        with patch("jarvis.infrastructure.runtime_layout.logger") as log:
             ensure_runtime_layout(self.root)
-        self.assertTrue(stderr.write.called)
+        self.assertTrue(log.error.called)
         self.assertEqual(global_file.read_text(), "broken-global")
         self.assertEqual(disabled.read_text(), "broken-disabled")
 

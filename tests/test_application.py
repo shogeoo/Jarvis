@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import tempfile
 import time
@@ -50,7 +51,8 @@ class ApplicationTests(unittest.TestCase):
             )
             with tempfile.TemporaryDirectory() as temporary:
                 memory = MemoryStore(Path(temporary))
-                app = JarvisApplication(config, memory=memory).start()
+                output = io.StringIO()
+                app = JarvisApplication(config, memory=memory, stream=output).start()
                 try:
                     self.assertEqual(
                         json.loads((root / "automations.json").read_text(encoding="utf-8")),
@@ -133,6 +135,8 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(len(started), 1)
                     timestamp = datetime.fromisoformat(started[0]["data"]["datetime"])
                     self.assertIsNotNone(timestamp.tzinfo)
+                    self.assertTrue(output.getvalue().startswith("Инициализация системы Jarvis....\nСистема инициализирована.\n\n{"))
+                    self.assertNotIn("\n\n\n", output.getvalue())
                 finally:
                     app.stop()
 

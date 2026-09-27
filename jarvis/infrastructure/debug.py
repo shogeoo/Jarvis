@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 from typing import Any
+from .console import logger
 
 
 _MAIN_COLOR = "\033[32m"  # зелёный: всё, что связано с main
@@ -26,8 +27,8 @@ class Debugger:
 
     Сломанный (невалидный) ответ модели в консоль не выводится вовсе:
     модель видит только structure_error, содержащий его текст.
-    structure_error и capability_error подсвечиваются красным. Ошибки LLM API
-    печатаются отдельными красными строками без заголовка и JSON-обёртки.
+    structure_error и capability_error подсвечиваются красным. Технические
+    ошибки и текст reply сохраняются в файловой диагностике, не в trace.
 
     Между блоками — одна пустая строка. Завершающие переводы строк убираются,
     чтобы соседние сообщения не создавали двойной интервал. Всё, что связано
@@ -43,11 +44,31 @@ class Debugger:
     event-action протокол.
     """
 
-    def __init__(self, *, enabled: bool = True, stream=None):
+    def __init__(self, *, enabled: bool = True, stream=None, buffered: bool = False):
         self.enabled = enabled
-        self.stream = stream or sys.stderr
+        self.stream = stream or sys.stdout
         self._lock = threading.Lock()
         self._started = False
+        self._buffered = buffered
+        self._buffer = []
+
+    def initializing(self) -> None:
+        if self.enabled:
+            with self._lock:
+                self.stream.write("Инициализация системы Jarvis....\n")
+                self.stream.flush()
+
+    def initialized(self) -> None:
+        with self._lock:
+            if self.enabled:
+                self.stream.write("Система инициализирована.\n")
+                self.stream.flush()
+                self._started = True
+            buffered = self._buffer
+            self._buffer = []
+            self._buffered = False
+            for agent_id, error, rendered in buffered:
+                self._write_locked(agent_id, error=error, rendered=rendered)
 
     def _color(self, agent_id: str, *, error: bool) -> str:
         detect = getattr(self.stream, "isatty", None)
@@ -58,38 +79,35 @@ class Debugger:
         return _MAIN_COLOR if agent_id == "main" else _SUB_COLOR
 
     def _write(self, agent_id: str, *, error: bool, rendered: str) -> None:
-        color = self._color(agent_id, error=error)
         with self._lock:
-            if self._started:
-                self.stream.write("\n")
-            self._started = True
-            if color:
-                self.stream.write(color)
-            self.stream.write(rendered)
-            if color:
-                self.stream.write(_RESET)
+            if self._buffered:
+                self._buffer.append((agent_id, error, rendered))
+                return
+            self._write_locked(agent_id, error=error, rendered=rendered)
+
+    def _write_locked(self, agent_id: str, *, error: bool, rendered: str) -> None:
+        color = self._color(agent_id, error=error)
+        if self._started:
             self.stream.write("\n")
-            self.stream.flush()
+        self._started = True
+        if color:
+            self.stream.write(color)
+        self.stream.write(rendered.rstrip("\r\n"))
+        if color:
+            self.stream.write(_RESET)
+        self.stream.write("\n")
+        self.stream.flush()
 
     def log(self, event_name: str, **data: Any) -> None:
-        """Совместимость со старыми диагностическими вызовами.
-
-        Технические логи не являются частью представления модели и поэтому
-        намеренно подавляются.
-        """
+        """Техническая диагностика сохраняется только в файл."""
+        logger.info("%s %s", event_name, json.dumps(data, ensure_ascii=False, default=str))
 
     def reply(self, text: str, *, agent_id: str = "main") -> None:
-        if self.enabled:
-            self._write(agent_id, error=False, rendered=text)
+        logger.info("reply %s: %s", agent_id, text)
 
     def error(self, message: str) -> None:
-        """Напечатать исходный текст ошибки красным, без заголовка."""
-
-        if not self.enabled:
-            return
-        rendered = str(message).rstrip("\r\n")
-        if rendered:
-            self._write("main", error=True, rendered=rendered)
+        """Ошибки API не смешиваются с model-facing JSON."""
+        logger.error("%s", message)
 
     def message(self, content: Any, *, agent_id: str = "main") -> None:
         """Вывести блок строго как отформатированный JSON.

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from ..infrastructure.console import logger
+
 class Transcriber:
     def __init__(self, model_name: str = "large-v3-turbo", device: str = "cuda",
                  language: str | None = None, compute_type: str | None = None,
@@ -24,10 +26,9 @@ class Transcriber:
     def load(self):
         from faster_whisper import WhisperModel
 
-        print(
+        logger.info(
             f"STT Whisper: загрузка модели {self.model_name} на {self.device} "
             f"({self.compute_type})...",
-            flush=True,
         )
         try:
             self.model = WhisperModel(
@@ -40,7 +41,7 @@ class Transcriber:
                 "Для CUDA нужны библиотеки cuBLAS/cuDNN — они входят в "
                 "зависимости проекта: pip install -e ."
             ) from exc
-        print(f"STT Whisper: модель {self.model_name} готова.", flush=True)
+        logger.info(f"STT Whisper: модель {self.model_name} готова.")
 
     def _transcribe(self, path: str, language: str | None) -> tuple[str, str]:
         segments, info = self.model.transcribe(

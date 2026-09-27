@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from ..infrastructure.console import logger
+
 import json
 import queue
 import re
 import secrets
-import sys
 import threading
 import time
 import traceback
@@ -366,6 +367,7 @@ class Agent:
         disabled_actions: set[str] | None = None,
         disabled_handlers: set[str] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
+        automated_call_ids: list[str] | None = None,
         person_prompt: str | None = None,
         protected: bool | None = None,
     ):
@@ -398,6 +400,13 @@ class Agent:
         self._generation_lock = threading.RLock()
         self._active_stream = None
         self._used_call_ids = self._scan_call_ids(self.history)
+        if automated_call_ids is not None and (
+            not isinstance(automated_call_ids, list) or
+            not all(isinstance(call_id, str) for call_id in automated_call_ids)
+        ):
+            raise ValueError("Invalid persisted automated_call_ids")
+        self._automated_call_ids = set(automated_call_ids if automated_call_ids is not None else
+                                      (call_id for call_id in self._used_call_ids if call_id.startswith("auto_act-")))
 
     @staticmethod
     def _scan_call_ids(messages: list[dict[str, Any]]) -> set[str]:
@@ -545,6 +554,7 @@ class Agent:
             "disabled_actions": sorted(disabled["actions"]),
             "disabled_handlers": sorted(disabled["handlers"]),
             "messages": list(self.history[1:]),
+            "automated_call_ids": sorted(self._automated_call_ids),
         }
 
     def _persist_context(self) -> None:
@@ -754,13 +764,15 @@ class Agent:
 
                 automation = self.manager.matching_automation(model_value)
                 if not automation:
-                    requires_model = True
+                    if not isinstance(item, CallResult) or item.call_id not in self._automated_call_ids:
+                        requires_model = True
                     continue
                 automated_actions = self.manager.automation_requests(
                     automation, specs=specs, agent=self
                 )
                 if automated_actions is None:
-                    requires_model = True
+                    if not isinstance(item, CallResult) or item.call_id not in self._automated_call_ids:
+                        requires_model = True
                     continue
                 assistant_content = json.dumps(
                     {"actions": [action.model_value() for action in automated_actions]},
@@ -769,6 +781,7 @@ class Agent:
                 )
                 self.history.append({"role": "assistant", "content": assistant_content})
                 self._used_call_ids.update(self._scan_call_ids([self.history[-1]]))
+                self._automated_call_ids.update(action.call_id for action in automated_actions)
                 self.manager.debug.model(self.agent_id, assistant_content)
                 self._persist_context()
                 self._set_state("acting", action_count=len(automated_actions), automated=True)
@@ -1180,7 +1193,7 @@ class AgentManager:
 
         records = self.memory.load_all() if self.memory is not None else []
         if not records and self.memory is not None and self.memory.has_existing_state():
-            print("Jarvis restore failed: сохранённая память есть, но не содержит целого состояния; данные сохранены", file=sys.stderr, flush=True)
+            logger.error("Jarvis restore failed: сохранённая память есть, но не содержит целого состояния; данные сохранены")
             return None
         if not records:
             return self.spawn_root(name=name, preset=preset)
@@ -1204,7 +1217,7 @@ class AgentManager:
             )
         if primary is None:
             self.debug.log("memory_restore_failed", error="Нет сохранённого корневого агента")
-            print("Jarvis restore failed: нет целого корневого агента; сохранённые данные оставлены", file=sys.stderr, flush=True)
+            logger.error("Jarvis restore failed: нет целого корневого агента; сохранённые данные оставлены")
             return None
         primary = {**primary, "name": PRIMARY_AGENT_NAME}
         try:
@@ -1216,7 +1229,7 @@ class AgentManager:
                 error=str(exc),
                 traceback=traceback.format_exc(),
             )
-            print(f"Jarvis restore failed for {primary.get('agent_id')}: {traceback.format_exc()}", file=sys.stderr, flush=True)
+            logger.error(f"Jarvis restore failed for {primary.get('agent_id')}: {traceback.format_exc()}")
             return None
 
         spawned = {main_agent.agent_id}
@@ -1237,7 +1250,7 @@ class AgentManager:
                             error=str(exc),
                             traceback=traceback.format_exc(),
                         )
-                        print(f"Jarvis restore failed for {record['agent_id']}: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                        logger.error(f"Jarvis restore failed for {record['agent_id']}: {traceback.format_exc()}")
                     else:
                         spawned.add(record["agent_id"])
                     remaining.remove(record)
@@ -1248,7 +1261,7 @@ class AgentManager:
                 agent_id=record["agent_id"],
                 reason="missing_parent",
             )
-            print(f"Jarvis restore skipped {record['agent_id']}: parent {record['parent_id']} отсутствует", file=sys.stderr, flush=True)
+            logger.error(f"Jarvis restore skipped {record['agent_id']}: parent {record['parent_id']} отсутствует")
         return main_agent
 
     def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
@@ -1270,6 +1283,7 @@ class AgentManager:
                 "handlers": set(record.get("disabled_handlers") or ()),
             },
             restored_messages=record["messages"],
+            automated_call_ids=record.get("automated_call_ids"),
             person_prompt=record.get("person_prompt"),
             protected=record.get("protected"),
             persist_initial=False,
@@ -1297,6 +1311,7 @@ class AgentManager:
         capabilities_override: dict[str, set[str]] | None = None,
         disabled_override: dict[str, set[str]] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
+        automated_call_ids: list[str] | None = None,
         persist_initial: bool = True,
         person_prompt: str | None = None,
         protected: bool | None = None,
@@ -1357,6 +1372,7 @@ class AgentManager:
                 disabled_actions=(disabled_override or {}).get("actions"),
                 disabled_handlers=(disabled_override or {}).get("handlers"),
                 restored_messages=restored_messages,
+                automated_call_ids=automated_call_ids,
                 person_prompt=person_prompt,
                 protected=protected,
             )
@@ -1399,7 +1415,7 @@ class AgentManager:
                 self.memory.save(agent.memory_record())
             except Exception as exc:  # noqa: BLE001
                 self.debug.log("memory_save_error", agent_id=agent.agent_id, error=str(exc))
-                print(f"Jarvis persistence failed for {agent.agent_id}: {traceback.format_exc()}", file=sys.stderr, flush=True)
+                logger.error(f"Jarvis persistence failed for {agent.agent_id}: {traceback.format_exc()}")
 
     def require_agent(self, agent_id: str) -> Agent:
         agent = self.agents.get(agent_id)
@@ -1457,6 +1473,7 @@ class AgentManager:
             with agent._generation_lock:
                 agent.history.clear()
                 agent._used_call_ids.clear()
+                agent._automated_call_ids.clear()
                 agent.person_prompt = ""
             with agent._capabilities_lock:
                 agent._enabled_modules.clear()

@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+from unittest.mock import patch
 
 from jarvis.infrastructure.debug import Debugger
 from jarvis.core.protocol import CallResult, Event, InputPart
@@ -12,6 +13,31 @@ class _Tty(io.StringIO):
 
 
 class DebugTests(unittest.TestCase):
+    def test_initialization_precedes_buffered_json_with_one_blank_line(self):
+        output = io.StringIO()
+        debug = Debugger(stream=output, buffered=True)
+        debug.initializing()
+        event = Event("system_started", {"datetime": "2026-09-27T12:00:00+03:00"})
+        debug.input(event)
+        self.assertEqual(output.getvalue(), "Инициализация системы Jarvis....\n")
+        debug.initialized()
+        debug.result(CallResult(call_id="x", data={}))
+        expected = "Инициализация системы Jarvis....\nСистема инициализирована.\n\n"
+        expected += json.dumps(event.model_value(), ensure_ascii=False, indent=2) + "\n\n"
+        expected += json.dumps(CallResult(call_id="x", data={}).model_value(), indent=2) + "\n"
+        self.assertEqual(output.getvalue(), expected)
+        self.assertNotIn("\n\n\n", output.getvalue())
+
+    def test_non_protocol_errors_and_reply_are_file_diagnostics_only(self):
+        output = io.StringIO()
+        debug = Debugger(stream=output)
+        with patch("jarvis.infrastructure.debug.logger") as log:
+            debug.error("API unavailable")
+            debug.reply("Hello")
+            debug.log("technical", error="failure")
+        self.assertEqual(output.getvalue(), "")
+        log.error.assert_called_once()
+        self.assertEqual(log.info.call_count, 2)
     def test_trace_contains_only_raw_protocol_json(self):
         output = io.StringIO()
         debug = Debugger(stream=output)

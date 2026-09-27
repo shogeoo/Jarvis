@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-import sys
+from ..infrastructure.console import logger
+
 import shutil
 import threading
 from pathlib import Path
@@ -56,7 +57,7 @@ class SpeechService:
                     speaker = Speaker(config)
                     speaker.start()
                 elif TTS_ENABLED:
-                    print("s2 binary not found; speech action is unavailable. STT remains independent.", file=sys.stderr)
+                    logger.info("s2 binary not found; speech action is unavailable. STT remains independent.")
             except Exception as exc:  # noqa: BLE001
                 self._report(debug, "speech_tts_failed", exc)
                 speaker = None
@@ -94,7 +95,7 @@ class SpeechService:
         self._detach = detach
         self.available = speaker is not None or pipe is not None
         if self.available:
-            print("Речь: инициализация завершена.", flush=True)
+            logger.info("Речь: инициализация завершена.")
 
     def speak_result(self, text: str) -> dict[str, Any]:
         """Озвучить text. Результат — только статус; сбой является ошибкой."""
@@ -140,13 +141,13 @@ class SpeechService:
 
         if debug is not None:
             debug.log("speech_stt_error", error=message)
-        print(f"Ошибка речи: {message}", file=sys.stderr, flush=True)
+        logger.error(f"Ошибка речи: {message}")
 
     @staticmethod
     def _report(debug: Any, event: str, exc: Exception) -> None:
         if debug is not None:
             debug.log(event, error=str(exc))
-        print(f"Речь недоступна: {exc}", file=sys.stderr, flush=True)
+        logger.error(f"Речь недоступна: {exc}")
 
 
 service = SpeechService()

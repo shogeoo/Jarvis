@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from jarvis.capabilities.manager import CapabilityManager
-from jarvis.core.protocol import ActionRequest, Event
+from jarvis.core.protocol import ActionRequest, CallResult, Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
 from jarvis.infrastructure.automations import AutomationStore
@@ -233,6 +233,43 @@ class RuntimeTests(unittest.TestCase):
             [item["call_id"] for item in self.call_results(agent)],
             ["auto_act-1", "auto_act-2"],
         )
+        self.assertEqual(client.chat.completions.calls, [])
+
+    def test_automated_result_does_not_request_model_after_restore(self):
+        memory = MemoryStore(self.root / "memory")
+        client = _Client([_no_action("unexpected")])
+        manager = self.manager(client, memory=memory)
+        agent = manager.spawn_root(name="main", preset="main")
+        agent._automated_call_ids.add("auto_act-42")
+        manager.persist_agent(agent)
+        record = memory.load("main", "main")
+        self.assertEqual(record["automated_call_ids"], ["auto_act-42"])
+        manager.shutdown()
+        restored_manager = self.manager(client, memory=memory)
+        restored = restored_manager.restore(name="main", preset="main")
+        restored.enqueue_result(CallResult(call_id="auto_act-42", agent_id="main", data={"spoken": True, "text": "done"}))
+        self.assertTrue(_wait(lambda: len(self.call_results(restored)) == 1))
+        self.assertTrue(_wait(lambda: restored.state == "waiting"))
+        self.assertEqual(client.chat.completions.calls, [])
+
+    def test_automatic_result_and_normal_event_batch_requests_model_once(self):
+        client = _Client([_no_action("batch-done")])
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        agent._automated_call_ids.add("auto_act-1")
+        agent._turn([
+            CallResult(call_id="auto_act-1", agent_id="main", data={"spoken": True}),
+            Event("tick.event", {"text": "normal"}, handler_id="tick"),
+        ], agent._generation)
+        self.assertEqual(len(client.chat.completions.calls), 1)
+        self.assertIn("auto_act-1", str(client.chat.completions.calls[0]["messages"]))
+
+    def test_normal_call_with_auto_prefix_is_not_an_automation(self):
+        client = _Client([_no_action("normal-done")])
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        agent.enqueue_result(CallResult(call_id="auto_act-99", agent_id="main", data={"spoken": True}))
+        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) == 1))
 
     def test_call_result_automation_ignores_real_call_id_and_uses_normal_dispatch(self):
         client = _Client([_no_action("after-call-result-automation")])
@@ -267,6 +304,7 @@ class RuntimeTests(unittest.TestCase):
             if message["role"] == "assistant" and "auto_act-1" in message["content"]
         )
         self.assertEqual(follow_up["actions"][0]["data"], {"text": "follow-up"})
+        self.assertEqual(client.chat.completions.calls, [])
 
     def test_management_actions_return_their_declared_result_shapes(self):
         client = _Client([_no_action("after-management")])

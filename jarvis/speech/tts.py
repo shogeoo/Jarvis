@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from ..infrastructure.console import logger
+
 import ctypes
 import json
 import os
@@ -86,14 +88,13 @@ class Speaker:
         return parsed.hostname or "127.0.0.1", parsed.port or 80
 
     def start(self) -> "Speaker":
-        print(
+        logger.info(
             f"TTS Fish Audio: подключение к {self.cfg.tts_url} "
             f"(голос: {self.cfg.tts_voice})...",
-            flush=True,
         )
         server_running = self._port_open()
         if server_running:
-            print("TTS Fish Audio: сервер уже запущен.", flush=True)
+            logger.info("TTS Fish Audio: сервер уже запущен.")
         self._ensure_voice()
         if not server_running:
             self._start_server()
@@ -106,7 +107,7 @@ class Speaker:
     def stop(self, timeout: float = 2.0) -> None:
         if self._stop.is_set():
             return
-        print("TTS Fish Audio: остановка.", flush=True)
+        logger.info("TTS Fish Audio: остановка.")
         self._stop.set()
         self._ready.set()
         self.interrupt()
@@ -234,9 +235,8 @@ class Speaker:
         cmd += self.cfg.tts_server_args
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
         self._log_path().parent.mkdir(parents=True, exist_ok=True)
-        print(
+        logger.info(
             f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
-            flush=True,
         )
         with open(self._log_path(), "ab") as log:
             self._server = subprocess.Popen(
@@ -260,14 +260,14 @@ class Speaker:
         self._server = None
         if proc.poll() is not None:
             return
-        print("TTS Fish Audio: остановка сервера...", flush=True)
+        logger.info("TTS Fish Audio: остановка сервера...")
         terminate_process(proc, group=True)
 
     def _wait_server(self) -> None:
         deadline = time.time() + SERVER_START_TIMEOUT
         while time.time() < deadline:
             if self._http_ready():
-                print("TTS Fish Audio: веб-сервер готов.", flush=True)
+                logger.info("TTS Fish Audio: веб-сервер готов.")
                 return
             if self._server is not None and self._server.poll() is not None:
                 raise RuntimeError(
@@ -308,7 +308,7 @@ class Speaker:
             "--text", VOICE_BOOTSTRAP_TEXT,
             "--output", str(output),
         ]
-        print(f"Создание профиля голоса «{self.cfg.tts_voice}»...", flush=True)
+        logger.info(f"Создание профиля голоса «{self.cfg.tts_voice}»...")
         self._bootstrap = subprocess.Popen(
             cmd, start_new_session=True, preexec_fn=_set_pdeathsig
         )
@@ -370,7 +370,7 @@ class Speaker:
                 raise SpeechInterrupted("interrupted") from None
             if isinstance(exc, SpeechInterrupted):
                 raise
-            print(f"Ошибка синтеза речи: {exc}", file=os.sys.stderr, flush=True)
+            logger.error(f"Ошибка синтеза речи: {exc}")
             raise
         finally:
             with self._lock:
@@ -402,9 +402,8 @@ class Speaker:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True)
                 self._player = proc
         except FileNotFoundError:
-            print(
+            logger.info(
                 "ffplay не найден (пакет ffmpeg). Установи ffmpeg для озвучки.",
-                file=os.sys.stderr, flush=True,
             )
             raise RuntimeError("ffplay_not_found")
         try:

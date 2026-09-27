@@ -14,6 +14,7 @@ from .core.runtime import AgentManager, EventBus, register_core_protocol
 from .infrastructure.config import Config
 from .infrastructure.context import MemoryStore
 from .infrastructure.debug import Debugger
+from .infrastructure.console import configure_logging
 from .infrastructure.model_capabilities import discover_model_capabilities
 from .infrastructure.runtime_layout import ensure_runtime_layout
 from .capabilities.manager import CapabilityManager
@@ -23,12 +24,14 @@ from .speech.config import build_config
 
 
 class JarvisApplication:
-    def __init__(self, config: Config, *, memory: MemoryStore | None = None):
+    def __init__(self, config: Config, *, memory: MemoryStore | None = None, stream=None):
         if not config.llm_enabled:
             raise RuntimeError("LLM_MODEL не задан")
         self.config = config
+        configure_logging(config.jarvis_dir)
+        self.debug = Debugger(enabled=True, stream=stream, buffered=True)
+        self.debug.initializing()
         ensure_runtime_layout(config.jarvis_dir)
-        self.debug = Debugger(enabled=True)
         self.memory = memory or MemoryStore(config.jarvis_dir / "memory")
         self.actions = ActionRegistry()
         self.events = EventRegistry()
@@ -84,6 +87,7 @@ class JarvisApplication:
             self.actions.unregister_owner("core:speech")
         self.main_agent = self.agents.restore(name="main", preset="main")
         if self.main_agent is not None:
+            self.debug.initialized()
             self.bus.publish(
                 Event(
                     type="system_started",
