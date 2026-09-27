@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import shutil
 
 from openai import OpenAI
 
@@ -18,6 +19,7 @@ from .infrastructure.runtime_layout import ensure_runtime_layout
 from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
 from .speech import service as speech_service
+from .speech.config import build_config
 
 
 class JarvisApplication:
@@ -71,6 +73,8 @@ class JarvisApplication:
         )
 
     def start(self) -> "JarvisApplication":
+        if shutil.which(str(build_config(self.config.jarvis_dir).tts_server_bin)):
+            self.actions.unregister_owner("core:reply")
         speech_service.start(
             self.config.jarvis_dir,
             emit=self._emit_speech,

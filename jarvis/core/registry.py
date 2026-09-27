@@ -151,6 +151,7 @@ class ActionRegistry:
         if primary:
             owners.add("core:speech")
             owners.add("core:primary")
+            owners.add("core:reply")
         if developer:
             owners.add("core:developer")
         with self._lock:

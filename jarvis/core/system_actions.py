@@ -512,7 +512,7 @@ def register_state_actions(registry):
 def register_system_actions(registry):
     from .developer_actions import register_developer_actions
     register_developer_actions(registry)
-    registry.register(replace(action_definition("Reply to the user with plain text in the terminal. Use when speech is unavailable or a written answer is appropriate.", object_schema({"text": {"type": "string"}}), object_schema({"status": {"type": "string", "enum": ["successful"]}}), reply), id="reply", owner="core:primary"))
+    registry.register(replace(action_definition("Reply to the user with plain text in the terminal. Available only when the configured s2 binary is absent.", object_schema({"text": {"type": "string"}}), object_schema({"status": {"type": "string", "enum": ["successful"]}}), reply), id="reply", owner="core:reply"))
     register_state_actions(registry)
     for action_id in ["spawn_agent","interrupt_agent","delete_agent","list_agents","send_message_to_agent","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities","list_capabilities","capability_info","toggle_capability"]:
         definition = globals()["define_" + action_id]()

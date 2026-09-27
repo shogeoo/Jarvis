@@ -73,13 +73,14 @@ class DistributionTests(unittest.TestCase):
             service.shutdown()
 
     @patch("jarvis.application.speech_service")
+    @patch("jarvis.application.shutil.which", return_value=None)
     @patch(
         "jarvis.application.discover_model_capabilities",
         return_value=ModelCapabilities("test", ("text",)),
     )
     @patch("jarvis.application.OpenAI")
     def test_fresh_start_without_s2_omits_speech_and_can_spawn_module_manager(
-        self, openai, discovery, speech
+        self, openai, discovery, which, speech
     ):
         client = _Client([])
         client.close = Mock()
@@ -94,6 +95,7 @@ class DistributionTests(unittest.TestCase):
                 self.assertIsNotNone(app.main_agent)
                 specs, _ = app.main_agent._contract()
                 self.assertNotIn("speech", specs)
+                self.assertIn("reply", specs)
                 self.assertIn("speech_detected", app.events.all())
                 self.assertFalse(app.capabilities._hosts)
                 result = app.agents.spawn(
@@ -132,3 +134,25 @@ class DistributionTests(unittest.TestCase):
                 self.assertNotIn(developer.agent_id, app.agents.agents)
             finally:
                 app.stop()
+
+    def test_present_s2_omits_reply_even_when_tts_is_unavailable(self):
+        for can_speak in (True, False):
+            with self.subTest(can_speak=can_speak), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                client = _Client([])
+                client.close = Mock()
+                with patch("jarvis.application.OpenAI", return_value=client), patch(
+                    "jarvis.application.discover_model_capabilities",
+                    return_value=ModelCapabilities("test", ("text",)),
+                ), patch("jarvis.application.shutil.which", return_value="/usr/bin/s2"), patch(
+                    "jarvis.application.speech_service"
+                ) as speech:
+                    speech.can_speak = can_speak
+                    app = JarvisApplication(Config("test", "http://invalid", "test", root, root / "storage")).start()
+                    try:
+                        specs, _ = app.main_agent._contract()
+                        self.assertNotIn("reply", specs)
+                        self.assertNotIn("reply", app.actions.all())
+                        self.assertEqual("speech" in specs, can_speak)
+                    finally:
+                        app.stop()

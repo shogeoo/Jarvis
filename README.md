@@ -66,7 +66,7 @@ GGUF и tokenizer из [хранилища весов](https://huggingface.co/ro
 
 Если s2 отсутствует, Jarvis запускается штатно, **action speech исключается из
 каталога и схемы модели**. Распознавание речи и speech_detected работают
-независимо. Для ответа в терминале есть системный reply. Отключённый или не
+независимо. Только при отсутствии s2 доступен системный reply для ответа в терминале. Отключённый или не
 запустившийся TTS также не рекламируется как
 доступное действие. Для CUDA-сборки s2 задайте
 `TTS_SERVER_ARGS=["--cuda", "0", "-ngl", "-1"]`; для CPU — `[]`.
@@ -96,7 +96,7 @@ Contexts, credentials, logs, веса и пользовательские рас
 - Presets main (protected singleton) и module_manager.
 - Системное управление агентами, presets, automation и назначениями.
 - send_message_to_agent для каждого агента.
-- reply для текстовых ответов main в терминале.
+- reply для текстовых ответов main в терминале, только при отсутствии s2.
 - Файловые и bash-инструменты module_manager: read_file, write_file, edit_file,
   execute_command, плюс обзор, описание и глобальная пауза capabilities.
 - STT/VAD и опциональная озвучка speech через s2.
