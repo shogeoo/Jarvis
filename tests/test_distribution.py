@@ -21,6 +21,17 @@ from test_runtime import _Client, _wait
 
 
 class DistributionTests(unittest.TestCase):
+    def test_reasoning_effort_is_optional_and_configurable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertIsNone(Config("test", None, None, root, root).reasoning_effort)
+            for value, expected in ((None, None), ("", None), ("high", "high")):
+                with self.subTest(value=value):
+                    env = root / ".env"
+                    env.write_text("LLM_MODEL=test\n" + (f"LLM_REASONING_EFFORT={value}\n" if value is not None else ""))
+                    with patch.dict(os.environ, {}, clear=True):
+                        self.assertEqual(load_config(env).reasoning_effort, expected)
+
     def test_config_paths_are_relative_to_environment_file_not_package(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

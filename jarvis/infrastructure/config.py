@@ -21,7 +21,7 @@ class Config:
     api_key: str | None
     project_root: Path
     jarvis_dir: Path
-    reasoning_effort: str | None = "low"
+    reasoning_effort: str | None = None
 
     @property
     def llm_enabled(self) -> bool:
@@ -47,5 +47,5 @@ def load_config(env_path: str | os.PathLike | None = None) -> Config:
         api_key=os.environ.get("LLM_API_KEY"),
         project_root=project_root,
         jarvis_dir=jarvis_dir,
-        reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low") or None,
+        reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip() or None,
     )

@@ -788,8 +788,8 @@ class Agent:
                     model=self.manager.model,
                     messages=list(self.history),
                     response_format=response_format(schemas),
-                    **({"reasoning_effort": self.manager.config.reasoning_effort if self.manager.config is not None else "low"}
-                       if self.manager.config is None or self.manager.config.reasoning_effort is not None else {}),
+                    **({"reasoning_effort": self.manager.config.reasoning_effort}
+                       if self.manager.config is not None and self.manager.config.reasoning_effort is not None else {}),
                     stream=True,
                 )
                 with self._generation_lock:
