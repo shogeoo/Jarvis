@@ -10,13 +10,15 @@ import uuid
 import hashlib
 from pathlib import Path
 from typing import Any
+from ..core.protocol import canonical_event_value
 
 
 class AutomationStore:
     """Read, append, and remove validated JSON automation rules."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, resolve_handler=None):
         self.path = Path(path)
+        self.resolve_handler = resolve_handler
         self._lock = threading.RLock()
 
     @staticmethod
@@ -33,10 +35,10 @@ class AutomationStore:
             trigger = automation["event"]
             valid_event = (
                 isinstance(trigger, dict)
-                and set(trigger) in ({"handler_id", "data"}, {"type", "data"})
+                and set(trigger) == {"event_id", "data"}
                 and isinstance(trigger.get("data"), dict)
-                and isinstance(trigger.get("handler_id", trigger.get("type")), str)
-                and bool(trigger.get("handler_id", trigger.get("type")))
+                and isinstance(trigger.get("event_id"), str)
+                and bool(trigger.get("event_id"))
             )
             if not valid_event:
                 raise ValueError("event must be a model-facing event object")
@@ -44,8 +46,8 @@ class AutomationStore:
             trigger = automation["call_result"]
             if (
                 not isinstance(trigger, dict)
-                or set(trigger) != {"type", "call_id", "data"}
-                or trigger.get("type") != "call_result"
+                or set(trigger) != {"event_id", "call_id", "data"}
+                or trigger.get("event_id") != "call_result"
                 or not isinstance(trigger.get("call_id"), str)
                 or not trigger["call_id"].strip()
                 or not isinstance(trigger.get("data"), dict)
@@ -80,6 +82,10 @@ class AutomationStore:
                 raise ValueError(f"{self.path} must contain a JSON array")
             result = []
             for item in value:
+                item = dict(item)
+                for key in ("event", "call_result"):
+                    if isinstance(item.get(key), dict):
+                        item[key] = canonical_event_value(item[key], self.resolve_handler)
                 rule = self.validate(item)
                 if "automation_id" in item:
                     rule["automation_id"] = item["automation_id"]

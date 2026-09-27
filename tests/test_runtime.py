@@ -54,14 +54,14 @@ class _Client:
         self.chat = type("Chat", (), {"completions": completions})()
 
 
-def _action_file(args_schema, result_schema, run_body):
+def _action_file(data_schema, result_schema, run_body):
     return (
         "from jarvis.capabilities import action_definition\n\n\n"
         f"def run(data, context):\n{run_body}\n\n\n"
         "def create_action():\n"
         "    return action_definition(\n"
         '        "test",\n'
-        f"        {args_schema!r},\n"
+        f"        {data_schema!r},\n"
         f"        {result_schema!r},\n"
         "        run,\n"
         "    )\n"
@@ -159,18 +159,18 @@ class RuntimeTests(unittest.TestCase):
     def publish(self, agent, text):
         self.bus.publish(
             Event(
-                type="tick.event",
+                event_id="tick.event",
                 data={"text": text},
                 target=agent.agent_id,
                 handler_id="tick",
             )
         )
 
-    def write_action(self, action_id, args_schema, result_schema, run_body):
+    def write_action(self, action_id, data_schema, result_schema, run_body):
         fixtures.write_action(
             self.root / "actions",
             action_id,
-            _action_file(args_schema, result_schema, run_body),
+            _action_file(data_schema, result_schema, run_body),
         )
 
     def call_results(self, agent):
@@ -209,7 +209,7 @@ class RuntimeTests(unittest.TestCase):
         agent = manager.spawn_root(name="main", preset="main")
         AutomationStore(self.root / "automations.json").append(
             {
-                "event": {"handler_id": "tick", "data": {"text": "go"}},
+                "event": {"event_id": "tick.event", "data": {"text": "go"}},
                 "actions": [{"action_id": "say", "data": {"text": "automated"}}],
             }
         )
@@ -278,7 +278,7 @@ class RuntimeTests(unittest.TestCase):
         AutomationStore(self.root / "automations.json").append(
             {
                 "call_result": {
-                    "type": "call_result",
+                    "event_id": "call_result",
                     "call_id": "example-id-not-used-at-runtime",
                     "data": {"spoken": True, "text": "origin"},
                 },
@@ -318,7 +318,7 @@ class RuntimeTests(unittest.TestCase):
             action=ActionRequest(
                 "create_automation",
                 {
-                    "event": {"handler_id": "tick", "data": {"text": "saved"}},
+                    "event": {"event_id": "tick.event", "data": {"text": "saved"}},
                     "actions": [{"action_id": "say", "data": {"text": "ok"}}],
                 },
                 "create-automation-call",
@@ -373,7 +373,7 @@ class RuntimeTests(unittest.TestCase):
             stored,
             [
                 {
-                    "event": {"handler_id": "tick", "data": {"text": "saved"}},
+                    "event": {"event_id": "tick.event", "data": {"text": "saved"}},
                     "actions": [{"action_id": "say", "data": {"text": "ok"}}],
                 }
             ],
@@ -390,8 +390,8 @@ class RuntimeTests(unittest.TestCase):
         main_prompt = main.history[0]["content"]
         worker_prompt = manager.require_agent(worker["agent_id"]).history[0]["content"]
         for action_id in ("create_automation", "create_preset"):
-            self.assertIn(f'"type": "{action_id}"', main_prompt)
-            self.assertNotIn(f'"type": "{action_id}"', worker_prompt)
+            self.assertIn(f'"action_id": "{action_id}"', main_prompt)
+            self.assertNotIn(f'"action_id": "{action_id}"', worker_prompt)
 
     def test_create_preset_uses_existing_capability_ids_and_refuses_overwrite(self):
         self.install_project_action("create_preset")
@@ -496,14 +496,14 @@ class RuntimeTests(unittest.TestCase):
                     if message["role"] != "user":
                         continue
                     item = json.loads(message["content"])
-                    if "type" in item:
-                        values[(item["type"], item.get("call_id"))] = item
+                    if "event_id" in item:
+                        values[(item["event_id"], item.get("call_id"))] = item
             values = list(values.values())
             has_error = any(
-                item["type"] == "capability_error" for item in values
+                item["event_id"] == "capability_error" for item in values
             )
             has_result = any(
-                item["type"] == "call_result"
+                item["event_id"] == "call_result"
                 and item["call_id"] == "next-1"
                 for item in values
             )
@@ -516,10 +516,10 @@ class RuntimeTests(unittest.TestCase):
             if values is None:
                 time.sleep(0.01)
         self.assertIsNotNone(values)
-        error = next(item for item in values if item["type"] == "capability_error")
+        error = next(item for item in values if item["event_id"] == "capability_error")
         self.assertEqual(error["data"]["kind"], "action")
         self.assertEqual(error["data"]["id"], "fail")
-        results = [item for item in values if item["type"] == "call_result"]
+        results = [item for item in values if item["event_id"] == "call_result"]
         self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
 
@@ -577,7 +577,7 @@ class RuntimeTests(unittest.TestCase):
         correction_messages = client.chat.completions.calls[1]["messages"]
         self.assertNotIn("second", json.dumps(correction_messages, ensure_ascii=False))
         self.assertEqual(
-            json.loads(correction_messages[-1]["content"])["type"],
+            json.loads(correction_messages[-1]["content"])["event_id"],
             "structure_error",
         )
         self.assertIn("second", json.dumps(client.chat.completions.calls[2]["messages"], ensure_ascii=False))
@@ -600,7 +600,7 @@ class RuntimeTests(unittest.TestCase):
             for message in client.chat.completions.calls[1]["messages"]
             if message["role"] == "user"
         ]
-        self.assertEqual(values[-1]["type"], "structure_error")
+        self.assertEqual(values[-1]["event_id"], "structure_error")
         self.assertEqual(self.call_results(agent), [])
 
     def test_enabled_capabilities_belong_to_current_instance(self):
@@ -739,18 +739,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len([m for m in agent.history if m["role"] == "user"]), 1)
         self.assertEqual(flaky.calls[0]["messages"], flaky.calls[1]["messages"])
 
-    def test_disabled_action_stays_known_and_returns_disabled_result(self):
+    def test_disabled_action_is_hidden_but_an_accepted_call_returns_disabled_result(self):
         manager = self.manager(_Client([_no_action("done")]))
         agent = manager.spawn_root(name="main", preset="main")
+        spec = manager.actions.require("say")
         manager.disable_action(agent.agent_id, "say")
         self.assertIn("say", agent.known_snapshot()["actions"])
         self.assertNotIn("say", agent.capabilities_snapshot()["actions"])
         specs, _ = agent._contract()
-        self.assertIn("say", specs)
+        self.assertNotIn("say", specs)
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
             action=ActionRequest("say", {"text": "ignored"}, "disabled-1"),
-            spec=specs["say"], agent=agent,
+            spec=spec, agent=agent,
         )
         self.assertTrue(_wait(lambda: any(r["call_id"] == "disabled-1" for r in self.call_results(agent))))
         result = next(r for r in self.call_results(agent) if r["call_id"] == "disabled-1")
@@ -853,7 +854,7 @@ class RuntimeTests(unittest.TestCase):
         self.write_action(
             "bad_result", EMPTY_SCHEMA,
             {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False},
-            "    return {'ok': 'wrong'}\n",
+            "    return {'undeclared': 'wrong'}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
         root = manager.spawn_root(name="main", preset="main")
@@ -862,7 +863,7 @@ class RuntimeTests(unittest.TestCase):
         manager.enable_action(child.agent_id, "bad_result")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(action=ActionRequest("bad_result", {}, "bad-1"), spec=manager.actions.require("bad_result"), agent=child)
-        self.assertTrue(_wait(lambda: any('"type":"capability_error"' in str(m.get("content")) for m in child.history)))
+        self.assertTrue(_wait(lambda: any('"event_id":"capability_error"' in str(m.get("content")) for m in child.history)))
         errors = [json.loads(m["content"]) for m in child.history if m["role"] == "user" and isinstance(m["content"], str) and '"capability_error"' in m["content"]]
         self.assertEqual([e["data"]["call_id"] for e in errors], ["bad-1"])
         self.assertFalse(any('"capability_error"' in str(m.get("content")) for m in root.history[1:]))
@@ -883,9 +884,9 @@ class RuntimeTests(unittest.TestCase):
             restored = second.restore(name="main", preset="main")
             self.assertIn("say", restored.disabled_snapshot()["actions"])
             self.assertIn("tick", restored.disabled_snapshot()["handlers"])
-            event = Event(type="tick.event", data={"text": "ignored"}, handler_id="tick")
+            event = Event(event_id="tick.event", data={"text": "ignored"}, handler_id="tick")
             self.assertFalse(second.bus.publish(event))
-            self.assertIn("say", restored._contract()[0])
+            self.assertNotIn("say", restored._contract()[0])
 
     def test_available_list_describes_unloaded_action(self):
         self.write_action("extra", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")

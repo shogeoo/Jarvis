@@ -53,7 +53,7 @@ class EventBusTests(unittest.TestCase):
 
     def test_handler_event_reaches_every_subscribed_agent(self):
         event = Event(
-            type="example.message",
+            event_id="example.message",
             data={"text": "hello"},
             module_id="example",
             handler_id="example.monitor",
@@ -65,7 +65,7 @@ class EventBusTests(unittest.TestCase):
 
     def test_standalone_handler_event_reaches_only_subscribed_agent(self):
         event = Event(
-            type="tick.event",
+            event_id="tick.event",
             data={"text": "tick"},
             handler_id="tick",
         )
@@ -76,7 +76,7 @@ class EventBusTests(unittest.TestCase):
 
     def test_targeted_event_only_reaches_selected_agent(self):
         event = Event(
-            type="example.message",
+            event_id="example.message",
             data={"text": "sent"},
             module_id="example",
             handler_id="example.monitor",

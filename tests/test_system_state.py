@@ -85,7 +85,7 @@ class SystemStateTests(unittest.TestCase):
     def test_concurrent_automation_creations_and_edit_preserve_other_rules(self):
         store = self.manager.automations
         def create(index):
-            store.create({"event": {"type": "tick", "data": {"index": index}}, "actions": [{"action_id": "speech", "data": {"text": str(index)}}]})
+            store.create({"event": {"event_id": "tick", "data": {"index": index}}, "actions": [{"action_id": "speech", "data": {"text": str(index)}}]})
         threads = [threading.Thread(target=create, args=(index,)) for index in range(20)]
         for thread in threads:
             thread.start()
@@ -95,7 +95,7 @@ class SystemStateTests(unittest.TestCase):
         self.assertEqual(len(rules), 20)
         self.assertEqual(len({item["automation_id"] for item in rules}), 20)
         identifier = rules[0]["automation_id"]
-        replacement = {"event": {"type": "new", "data": {}}, "actions": [{"action_id": "speech", "data": {"text": "edited"}}]}
+        replacement = {"event": {"event_id": "new", "data": {}}, "actions": [{"action_id": "speech", "data": {"text": "edited"}}]}
         store.edit(identifier, replacement)
         self.assertEqual(len(store.list()), 20)
         store.remove_id(identifier)

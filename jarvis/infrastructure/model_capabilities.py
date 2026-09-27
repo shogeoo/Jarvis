@@ -22,21 +22,7 @@ class ModelCapabilities:
 
     def prompt_block(self) -> str:
         supported = ", ".join(self.input_modalities) or "нет"
-        unsupported = [
-            name for name in SUPPORTED_INPUT_MODALITIES
-            if name not in self.input_modalities
-        ]
-        lines = [f"Текущие поддерживаемые модальности: {supported}."]
-        if unsupported:
-            lines.extend(
-                [
-                    f"Нативно не поддерживаются: {', '.join(unsupported)}.",
-                    "Не пытайся воспринимать неподдерживаемые "
-                    "модальности. Если задача требует их, сообщи об ограничении "
-                    "через доступное действие.",
-                ]
-            )
-        return "\n".join(lines)
+        return f"Текущая модель поддерживает следующие модальности: {supported}."
 
 
 def discover_model_capabilities(

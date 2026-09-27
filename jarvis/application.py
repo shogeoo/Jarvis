@@ -90,7 +90,7 @@ class JarvisApplication:
             self.debug.initialized()
             self.bus.publish(
                 Event(
-                    type="system_started",
+                    event_id="system_started",
                     data={"datetime": datetime.now().astimezone().isoformat(timespec="seconds")},
                     source="core",
                     target=self.main_agent.agent_id,
@@ -101,7 +101,7 @@ class JarvisApplication:
     def _emit_speech(self, data: dict) -> None:
         self.bus.publish(
             Event(
-                type="speech_detected",
+                event_id="speech_detected",
                 data=data,
                 source="core:speech",
                 handler_id="core:speech",

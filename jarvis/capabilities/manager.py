@@ -17,7 +17,7 @@ import subprocess
 import sys
 import threading
 import venv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +28,7 @@ from ..core.protocol import (
     Event,
     InputPart,
     validate_json,
+    arguments_with_defaults,
 )
 from ..core.registry import ActionRegistry, EventRegistry
 from ..infrastructure.config import DEFAULT_JARVIS_DIR
@@ -287,52 +288,28 @@ class CapabilityManager:
 
     def capability_info(self, *, kind: str, capability_id: str) -> dict[str, Any]:
         if kind == "module":
-            return self._describe("module", capability_id)
+            catalog = self._describe("module", capability_id)
+            return self._module_summary(LoadedModule(capability_id, ModuleDefinition(catalog["description"], (), ()), self.module_path(capability_id), UnitHost(f"module:{capability_id}", "module", capability_id, capability_id, self.module_path(capability_id), catalog)))
         if kind == "action":
-            return self._describe("action", capability_id)
+            item = self._describe("action", capability_id)["actions"][0]
+            return self._action_summary(self._proxy_action(item, f"action:{capability_id}", self.action_path(capability_id)), self.action_path(capability_id))
         if kind == "handler":
-            return self._describe("handler", capability_id)
+            return self._describe("handler", capability_id)["handlers"][0]["event"]
         raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
-    def automation_schemas(self) -> dict[str, dict[str, Any]]:
-        """Describe disk capabilities without loading their runtime processes."""
-
-        action_args: dict[str, Any] = {}
-        action_results: dict[str, Any] = {}
-        handler_events: dict[str, Any] = {}
-
-        def add_catalog(catalog: dict[str, Any]) -> None:
-            for action in catalog.get("actions", []):
-                action_args[action["id"]] = action["args_schema"]
-                action_results[action["id"]] = action["result_schema"]
-            for handler in catalog.get("handlers", []):
-                event = handler.get("event")
-                events = handler.get("events", [])
-                if event is not None:
-                    events = [event]
-                if events:
-                    handler_events[handler["id"]] = events[0]["data_schema"]
-
-        for kind, paths in (
-            ("action", self.discover_actions()),
-            ("handler", self.discover_handlers()),
-            ("module", self.discover_modules()),
-        ):
-            for path in paths:
-                try:
-                    add_catalog(self._describe(kind, path.name))
-                except Exception as exc:  # noqa: BLE001
-                    self.debug.log(
-                        "automation_schema_unavailable",
-                        kind=kind,
-                        capability_id=path.name,
-                        error=str(exc),
-                    )
-        return {
-            "action_args": action_args,
-            "action_results": action_results,
-            "handler_events": handler_events,
-        }
+    def event_id_for_handler(self, handler_id: str) -> str:
+        """Resolve a saved legacy handler envelope using its own declaration."""
+        with self._lock:
+            loaded = self._handlers.get(handler_id)
+            if loaded is not None:
+                return loaded.definition.event.event_id
+        if handler_id == "core:speech":
+            return "speech_detected"
+        if "." in handler_id:
+            catalog = self._describe("module", handler_id.split(".", 1)[0])
+        else:
+            catalog = self._describe("handler", handler_id)
+        return next(item["event"]["event_id"] for item in catalog["handlers"] if item["id"] == handler_id)
 
     def list_available(self, known: dict[str, set[str]]) -> dict[str, Any]:
         result = {"modules": [], "actions": [], "handlers": []}
@@ -354,25 +331,6 @@ class CapabilityManager:
         if runtime is not None:
             return set(runtime.action_ids)
         return {item["id"] for item in self._describe("module", module_id)["actions"]}
-
-    def known_action_definitions(self, snapshot: dict[str, set[str]]) -> dict[str, ActionDefinition]:
-        result: dict[str, ActionDefinition] = {}
-        for action_id in snapshot["actions"]:
-            spec = self.actions.get(action_id)
-            if spec is None:
-                item = self._describe("action", action_id)["actions"][0]
-                spec = self._proxy_action(item, f"action:{action_id}", self.action_path(action_id))
-            result[action_id] = spec
-        for module_id in snapshot["modules"]:
-            with self._lock:
-                runtime = self._modules.get(module_id)
-            catalog = runtime.host.catalog if runtime else self._describe("module", module_id)
-            for item in catalog["actions"]:
-                spec = self.actions.get(item["id"])
-                if spec is None:
-                    spec = self._proxy_action(item, f"module:{module_id}", self.module_path(module_id))
-                result[item["id"]] = spec
-        return result
 
     def _loaded_description(self, kind: str, unit_id: str) -> str:
         with self._lock:
@@ -583,7 +541,7 @@ class CapabilityManager:
                     raw = message["event"]
                     self.event_bus.publish(
                         Event(
-                            type=raw["type"],
+                            event_id=raw["event_id"],
                             data=raw["data"],
                             source=host.key,
                             target=raw.get("target"),
@@ -708,7 +666,7 @@ class CapabilityManager:
         return ActionDefinition(
             id=item["id"],
             description=item["description"],
-            args_schema=item["args_schema"],
+            data_schema=item["data_schema"],
             result_schema=item["result_schema"],
             run=lambda data, context: None,
             source=str(path / "action.py"),
@@ -723,7 +681,7 @@ class CapabilityManager:
             id=item["id"],
             description=item["description"],
             event=EventDefinition(
-                event["type"],
+                event["event_id"],
                 event["description"],
                 event["data_schema"],
             ),
@@ -810,11 +768,11 @@ class CapabilityManager:
                 if module_id not in self.loaded_modules():
                     self.load_module(module_id, start_handlers=False)
                     loaded.append(("module", module_id))
-            for action_id in sorted(snapshot.get("actions", ())):
+            for action_id in snapshot.get("actions", ()):
                 if action_id not in self.loaded_actions():
                     self.load_action(action_id, start_handlers=False)
                     loaded.append(("action", action_id))
-            for handler_id in sorted(snapshot.get("handlers", ())):
+            for handler_id in snapshot.get("handlers", ()):
                 if handler_id not in self.loaded_handlers():
                     self.load_handler(handler_id, start_handlers=False)
                     loaded.append(("handler", handler_id))
@@ -1062,7 +1020,7 @@ class CapabilityManager:
 
     # --- dispatch -----------------------------------------------------
     def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
-        validate_json(action.data, spec.args_schema, where=f"аргументы {action.action_id}")
+        action = replace(action, data=arguments_with_defaults(action.data, spec.data_schema))
         if not spec.owner.startswith("core") and not agent.is_enabled_action(action.action_id):
             self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
@@ -1279,13 +1237,14 @@ class CapabilityManager:
         manager = self._manager()
         if manager is None:
             raise RuntimeError("Менеджер агентов не запущен")
-        manager.invalidate_automation_schema()
         affected = manager.agents_assigned_and_enabled(kind, capability_id)
         agent_ids = [agent.agent_id for agent in affected]
         if not self.is_globally_paused(kind, capability_id):
             with self._lock:
                 self._global_paused[key].add(capability_id)
                 self._save_global_state()
+            for agent in affected:
+                agent.forget_catalog_entry(kind, capability_id)
             if kind == "module":
                 action_ids = self.module_action_ids(capability_id)
             elif kind == "action":
@@ -1417,7 +1376,7 @@ class CapabilityManager:
                     definition = self._proxy_handler(item, f"handler:{handler_id}", self.handler_path(handler_id))
                     handlers.append(self._handler_summary(definition, self.handler_path(handler_id)))
                     event = definition.event
-                    events.append({"type": event.type, "description": event.description, "data_schema": event.data_schema})
+                    events.append({"event_id": event.event_id, "description": event.description, "data_schema": event.data_schema})
                     continue
                 if runtime is None or runtime.module_id is not None:
                     continue
@@ -1425,13 +1384,13 @@ class CapabilityManager:
                 event = runtime.definition.event
                 events.append(
                     {
-                        "type": event.type,
+                        "event_id": event.event_id,
                         "description": event.description,
                         "data_schema": event.data_schema,
                     }
                 )
             modules = []
-            for module_id in sorted(snapshot.get("modules", ())):
+            for module_id in snapshot.get("modules", ()):
                 runtime = self._modules.get(module_id)
                 if runtime is None:
                     if not describe_unloaded:
@@ -1456,12 +1415,10 @@ class CapabilityManager:
     @staticmethod
     def _action_summary(definition: ActionDefinition, path: Path) -> dict[str, Any]:
         return {
-            "id": definition.id,
-            "type": definition.id,
+            "action_id": definition.id,
             "description": definition.description,
-            "args_schema": definition.args_schema,
+            "data_schema": definition.data_schema,
             "result_schema": definition.result_schema,
-            "path": str(path),
         }
 
     @staticmethod
@@ -1472,7 +1429,7 @@ class CapabilityManager:
             "path": str(path),
             "events": [
                 {
-                    "type": definition.event.type,
+                    "event_id": definition.event.event_id,
                     "description": definition.event.description,
                     "data_schema": definition.event.data_schema,
                 }
@@ -1484,27 +1441,18 @@ class CapabilityManager:
         return {
             "module_id": runtime.module_id,
             "description": runtime.definition.description,
-            "path": str(runtime.path),
             "actions": [
                 {
-                    "id": item["id"],
-                    "type": item["id"],
+                    "action_id": item["id"],
                     "description": item["description"],
-                    "args_schema": item["args_schema"],
+                    "data_schema": item["data_schema"],
                     "result_schema": item["result_schema"],
-                    "path": str(
-                        runtime.path / "actions" / item["id"].split(".", 1)[1]
-                    ),
                 }
                 for item in catalog["actions"]
             ],
-            "handlers": [
-                {"id": item["id"], "description": item["description"]}
-                for item in catalog["handlers"]
-            ],
             "events": [
                 {
-                    "type": item["event"]["type"],
+                    "event_id": item["event"]["event_id"],
                     "description": item["event"]["description"],
                     "data_schema": item["event"]["data_schema"],
                 }
@@ -1566,7 +1514,7 @@ class _AgentApi:
         target = manager.require_agent(target_id)
         delivered = manager.bus.publish(
             Event(
-                type="message_from_agent",
+                event_id="message_from_agent",
                 data={
                     "from_agent_id": sender.agent_id,
                     "from_name": sender.name,

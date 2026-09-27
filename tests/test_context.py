@@ -23,7 +23,7 @@ class MemoryStoreTests(unittest.TestCase):
             "actions": ["say", "echo"],
             "handlers": ["tick", "monitor"],
             "messages": [
-                {"role": "user", "content": '{"type":"x","data":{}}'},
+                {"role": "user", "content": '{"event_id":"x","data":{}}'},
                 {"role": "assistant", "content": '{"actions":[]}'},
             ],
         }
@@ -80,7 +80,7 @@ class MemoryStoreTests(unittest.TestCase):
                     "content": [
                         {
                             "type": "text",
-                            "text": '{"type":"image_notice","data":{}}',
+                            "text": '{"event_id":"image_notice","data":{}}',
                         },
                         {
                             "type": "image_url",

@@ -14,15 +14,15 @@ _SUB_COLOR = "\033[33m"  # жёлтый: субагенты и их handlers
 _ERROR_COLOR = "\033[31m"  # красный: structure_error и иные ошибки
 _RESET = "\033[0m"
 
-_ERROR_EVENT_TYPES = frozenset({"structure_error", "capability_error"})
+_ERROR_EVENT_IDS = frozenset({"structure_error", "capability_error"})
 
 
 class Debugger:
     """Печатает только протокольный JSON event-action формата.
 
     Печатается ровно то, что видит модель в своём контексте, и строго
-    как JSON-структура: вход — {"type":..., "data":...} как его задаёт
-    модуль, результат — {"type":"call_result", "call_id":...,
+    как JSON-структура: вход — {"event_id":..., "data":...} как его задаёт
+    модуль, результат — {"event_id":"call_result", "call_id":...,
     "data":...}, выход — content assistant message.
 
     Сломанный (невалидный) ответ модели в консоль не выводится вовсе:
@@ -126,17 +126,17 @@ class Debugger:
                 return
         rendered = json.dumps(content, ensure_ascii=False, indent=2)
         error = isinstance(content, dict) and (
-            content.get("type") in _ERROR_EVENT_TYPES
+            content.get("event_id") in _ERROR_EVENT_IDS
         )
         self._write(agent_id, error=error, rendered=rendered)
 
     def input(self, event: Any, capabilities: Any = None, agent_id: str = "main") -> None:
-        """Вывести входное событие в протокольном формате type/data."""
+        """Вывести входное событие в формате event_id/data."""
 
         self.message(event.model_value(), agent_id=agent_id)
 
     def result(self, result: Any, agent_id: str = "main") -> None:
-        """Вывести результат действия как событие: type/call_id/data."""
+        """Вывести результат как событие: event_id/call_id/data."""
 
         self.message(result.model_value(), agent_id=agent_id)
 

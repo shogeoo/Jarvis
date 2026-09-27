@@ -42,7 +42,7 @@ class ModuleManagerContractTests(unittest.TestCase):
         preset = self.presets.load("module_manager")
         prompt = preset.person_prompt + read_master_prompt()
         for marker in (
-            "НЕ читай исходники ядра Jarvis",
+            "СТРОЖАЙШЕ ЗАПРЕЩЕНО читать исходный код Jarvis",
             "action_definition",
             "handler_definition",
             "module_definition",

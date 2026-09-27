@@ -76,10 +76,10 @@ class CapabilityTests(unittest.TestCase):
             manager, actions, events = self.manager(root)
             try:
                 summary = manager.load_action("say", start_handlers=True)
-                self.assertEqual(summary["id"], "say")
+                self.assertEqual(summary["action_id"], "say")
                 self.assertEqual(
                     summary["result_schema"]["properties"]["spoken"],
-                    {"type": "boolean"},
+                    {"description": "Spoken."},
                 )
                 self.assertIn(
                     "say", actions.for_capabilities(modules=set(), actions={"say"})
@@ -91,7 +91,7 @@ class CapabilityTests(unittest.TestCase):
                 self.assertEqual(
                     results[0].model_value(),
                     {
-                        "type": "call_result",
+                        "event_id": "call_result",
                         "call_id": "run-1",
                         "data": {"spoken": True, "text": "ok"},
                     },
@@ -108,7 +108,7 @@ class CapabilityTests(unittest.TestCase):
                 summary = manager.load_module("echo", start_handlers=True)
                 self.assertEqual(summary["module_id"], "echo")
                 self.assertEqual(
-                    [action["id"] for action in summary["actions"]],
+                    [action["action_id"] for action in summary["actions"]],
                     ["echo.repeat"],
                 )
                 self.assertIn(
@@ -137,7 +137,7 @@ class CapabilityTests(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_hardcoded_ids_are_rejected(self):
+    def test_declared_ids_must_match_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
             fixtures.write_action(
@@ -149,11 +149,11 @@ class CapabilityTests(unittest.TestCase):
                 "def run(data, context):\n"
                 "    return {}\n"
                 "def create_action():\n"
-                "    return replace(action_definition('t', {}, {}, run), id='bad')\n",
+                "    return replace(action_definition('t', object_schema({}), object_schema({}), run), id='different')\n",
             )
             manager, actions, events = self.manager(root)
             try:
-                with self.assertRaisesRegex(ValueError, "захардкожен"):
+                with self.assertRaisesRegex(ValueError, "Declared ID"):
                     manager.load_action("bad", start_handlers=False)
             finally:
                 manager.shutdown()
@@ -183,7 +183,7 @@ class CapabilityTests(unittest.TestCase):
                 self.assertEqual(catalog["modules"][0]["module_id"], "echo")
                 self.assertTrue(
                     all(
-                        item["type"].startswith("echo.")
+                        item["action_id"].startswith("echo.")
                         for item in catalog["modules"][0]["actions"]
                     )
                 )

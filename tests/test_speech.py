@@ -115,7 +115,7 @@ class CoreDispatchTests(unittest.TestCase):
                 self.assertEqual(
                     agent.results[0].model_value(),
                     {
-                        "type": "call_result",
+                        "event_id": "call_result",
                         "call_id": "sp-1",
                         "data": {"status": "successful"},
                     },

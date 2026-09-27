@@ -23,9 +23,7 @@ def run_spawn_agent(data, context):
 
 def define_spawn_agent():
     return action_definition(
-        "Создать независимый живой экземпляр с указанным читаемым name "
-        "из существующего preset. Задачу передавай после получения результата "
-        "отдельным сообщением через действие send_message_to_agent.",
+        'Create a live independent agent from a preset with the given name. Send its task separately using send_message_to_agent after the creation result.',
         object_schema(
             {
                 "name": {"type": "string"},
@@ -53,11 +51,7 @@ def run_interrupt_agent(data, context):
 
 def define_interrupt_agent():
     return action_definition(
-        "Прервать текущий цикл агента agent_id: обращение к модели и передача "
-        "действий прекращаются, необработанные события остаются в очереди, "
-        "контекст сохраняется, агент сразу готов к новым событиям. "
-        "Защищённого агента нельзя прервать извне его самого. Возвращает "
-        "agent_id и state: waiting.",
+        'Interrupt the current model generation only. Preserve history, queued events and running actions. A protected agent can only interrupt itself. Returns waiting state.',
         object_schema({"agent_id": {"type": "string"}}),
         object_schema(
             {
@@ -76,11 +70,7 @@ def run_delete_agent(data, context):
 
 def define_delete_agent():
     return action_definition(
-        "Удалить живой экземпляр agent_id вместе со всеми его экземплярами-"
-        "потомками: остановить потоки, отвязать события, снять незавершённые "
-        "вызовы и стереть долговременную память каждого удалённого. Файлы "
-        "пресетов не удаляются; защищённого агента удалить нельзя. "
-        "Возвращает agent_id и deleted: true.",
+        'Delete an agent and all descendants, cancel their executions and erase their instance memory. Keep presets. Protected agents cannot be deleted.',
         object_schema({"agent_id": {"type": "string"}}),
         object_schema(
             {
@@ -104,8 +94,7 @@ def run_list_agents(data, context):
 
 def define_list_agents():
     return action_definition(
-        "Получить agent_id, name, preset, parent_id, state и активные "
-        "capabilities всех живых экземпляров.",
+        'List live agents, their names, presets, parents, states and enabled capabilities.',
         object_schema({}),
         object_schema(
             {
@@ -155,10 +144,7 @@ def run_send_message_to_agent(data, context):
 
 def define_send_message_to_agent():
     return action_definition(
-        "Адресно передать живому экземпляру по agent_id прямой текст text. "
-        "Пиши в text саму задачу без служебного префикса и без слов "
-        "«сообщение от агента». Получатель увидит обычное событие "
-        "в своей FIFO.",
+        'Send a direct task or message to a live agent. The recipient receives a message_from_agent event.',
         object_schema(
             {
                 "agent_id": {"type": "string"},
@@ -186,7 +172,7 @@ def run_list_agent_presets(data, context):
 
 def define_list_agent_presets():
     return action_definition(
-        "Получить сохранённые presets, их стартовые capabilities и признак protected.",
+        'List saved presets, their initial capability assignments and protected flag.',
         object_schema({}),
         object_schema(
             {
@@ -228,12 +214,7 @@ def run_enable_capability(data, context):
 
 def define_enable_capability():
     return action_definition(
-        "Загрузить capability при необходимости и включить её текущему "
-        "экземпляру: модуль целиком либо отдельное автономное действие или "
-        "handler. Части модуля отдельно не переключаются: id вида "
-        "«модуль.юнит» запрещён — включайте модуль целиком (kind=module, "
-        "id=модуль). Если действие вызвал root-agent main, capability также "
-        "навсегда добавляется в пресет main.",
+        'Assign and enable a capability for this agent, loading runtime if needed. Enable a whole module, not its individual members. Main changes also update its preset.',
         object_schema(
             {
                 "kind": {
@@ -271,11 +252,7 @@ def run_disable_capability(data, context):
 
 def define_disable_capability():
     return action_definition(
-        "Убрать capability только из RAM текущего экземпляра. Если "
-        "пользователей больше нет, её runtime полностью выгружается. "
-        "Части модуля отдельно не переключаются: id вида «модуль.юнит» "
-        "запрещён — выключайте модуль целиком (kind=module, id=модуль). "
-        "Исполняемая capability не может выключить сама себя.",
+        'Disable a capability for this agent only, stop its running calls and unload unused runtime. Remove its descriptions from the current catalog. Main disabled state also updates its preset.',
         object_schema(
             {
                 "kind": {
@@ -309,8 +286,7 @@ def run_list_active_capabilities(data, context):
 def define_list_active_capabilities():
     string_list = {"type": "array", "items": {"type": "string"}}
     return action_definition(
-        "Показать точный набор capabilities текущего живого экземпляра; "
-        "preset и другие экземпляры не учитываются.",
+        'List capabilities currently enabled for this agent instance.',
         object_schema({}),
         object_schema(
             {
@@ -335,8 +311,7 @@ def define_list_available_capabilities():
         "description": {"type": "string"},
     })
     return action_definition(
-        "Перечислить все capabilities системы, ещё не назначенные этому агенту. "
-        "Уже известные, в том числе отключённые, не включаются в ответ.",
+        'List available capabilities not yet assigned to this agent. Assigned but disabled capabilities are excluded.',
         object_schema({}),
         object_schema({
             "modules": {"type": "array", "items": entry},
@@ -391,11 +366,7 @@ def run_capability_info(data, context):
 def define_capability_info():
     open_object = {"type": "object", "x-jarvis-open-object": True, "additionalProperties": True}
     return action_definition(
-        "Вернуть декларацию capability из каталога диска без запуска runtime. "
-        "kind=module — описание модуля и перечни его actions/handlers; "
-        "kind=action или handler — описание, args_schema и result_schema. "
-        "id указывается одиночной единицей; составные id вида «модуль.юнит» "
-        "отдельно не проверяются — модуль запрашивай целиком через kind=module.",
+        'Return the complete description of a capability without starting runtime. Request module members through their whole module.',
         object_schema(
             {"kind": {"type": "string", "enum": ["module", "action", "handler"]}, "id": {"type": "string"}}
         ),

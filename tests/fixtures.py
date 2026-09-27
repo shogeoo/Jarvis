@@ -19,7 +19,7 @@ def run(data, context):
 
 def create_action():
     return action_definition(
-        "Произнести текст и вернуть подтверждение.",
+        "Speak text and return confirmation.",
         object_schema({"text": {"type": "string"}}),
         object_schema({"spoken": {"type": "boolean"}, "text": {"type": "string"}}),
         run,
@@ -33,7 +33,7 @@ from jarvis.core.protocol import object_schema
 
 TICK = event_definition(
     "tick.event",
-    "Тестовое внешнее событие.",
+    "An external test event.",
     object_schema({"text": {"type": "string"}}),
 )
 
@@ -44,7 +44,7 @@ def start(context):
 
 def create_handler():
     return handler_definition(
-        "Тестовый наблюдатель.",
+        "A test observer.",
         TICK,
         start,
     )
@@ -61,7 +61,7 @@ def run(data, context):
 
 def create_action():
     return action_definition(
-        "Вернуть значение.",
+        "Return a value.",
         object_schema({"value": {"type": "string"}}),
         object_schema({"value": {"type": "string"}}),
         run,
@@ -75,7 +75,7 @@ from jarvis.core.protocol import object_schema
 
 ECHOED = event_definition(
     "echo.echoed",
-    "Тестовое событие модуля.",
+    "A module test event.",
     object_schema({"value": {"type": "string"}}),
 )
 
@@ -86,7 +86,7 @@ def start(context):
 
 def create_handler():
     return handler_definition(
-        "Тестовый наблюдатель модуля.",
+        "A module test observer.",
         ECHOED,
         start,
     )
@@ -101,7 +101,7 @@ from .handlers.monitor.handler import create_handler as monitor
 
 def create_module():
     return module_definition(
-        "Тестовый контейнер.",
+        "A test integration.",
         (repeat(),),
         (monitor(),),
     )
