@@ -21,6 +21,7 @@ TTS_SERVER_ARGS = ["--cuda", "0", "-ngl", "-1"]
 TTS_REFERENCE = VOICES_DIR / "jarvis_reference.mp3"
 TTS_REFERENCE_TEXT = VOICES_DIR / "jarvis_reference.txt"
 TTS_START_BUFFER_SECONDS = 0.35
+TTS_GAIN = 2.0
 
 STT_ENABLED = True
 STT_MODEL = "large-v3-turbo"
