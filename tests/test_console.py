@@ -1,12 +1,47 @@
 import json
+import io
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+
+from jarvis.infrastructure.debug import Debugger
 
 
 class ConsoleTests(unittest.TestCase):
+    def test_concurrent_long_messages_are_complete_single_write_blocks(self):
+        class RecordingStream(io.StringIO):
+            def __init__(self):
+                super().__init__()
+                self.blocks = []
+
+            def write(self, value):
+                self.blocks.append(value)
+                return super().write(value)
+
+        stream = RecordingStream()
+        debug = Debugger(stream=stream)
+        messages = [
+            {"type": "message_from_agent", "data": {
+                "from_agent_id": f"agent-{index}",
+                "text": ("Отчёт: задача выполнена.\n" * 500),
+            }}
+            if index % 2 else {"actions": [{"action_id": "execute_command",
+                "call_id": f"act-{index}", "data": {"command": "ls", "cwd": None}}]}
+            for index in range(40)
+        ]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(debug.message, messages))
+        self.assertEqual(len(stream.blocks), len(messages))
+        actual = [json.loads(block) for block in stream.blocks]
+        self.assertCountEqual(actual, messages)
+        self.assertEqual(stream.getvalue(), "\n".join(
+            json.dumps(message, ensure_ascii=False, indent=2) + "\n"
+            for message in actual
+        ))
+
     def test_runtime_captures_python_native_and_child_noise(self):
         with tempfile.TemporaryDirectory() as temporary:
             script = '''

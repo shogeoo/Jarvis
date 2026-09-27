@@ -87,15 +87,15 @@ class Debugger:
 
     def _write_locked(self, agent_id: str, *, error: bool, rendered: str) -> None:
         color = self._color(agent_id, error=error)
-        if self._started:
-            self.stream.write("\n")
+        separator = "\n" if self._started else ""
         self._started = True
-        if color:
-            self.stream.write(color)
-        self.stream.write(rendered.rstrip("\r\n"))
-        if color:
-            self.stream.write(_RESET)
-        self.stream.write("\n")
+        # Keep the separator, color and complete JSON in one stream operation.
+        # A lock protects concurrent agents; a single write also avoids exposing
+        # partial blocks to stream wrappers and terminal capture integrations.
+        self.stream.write(
+            separator + color + rendered.rstrip("\r\n")
+            + (_RESET if color else "") + "\n"
+        )
         self.stream.flush()
 
     def log(self, event_name: str, **data: Any) -> None:
