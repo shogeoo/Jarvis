@@ -6,8 +6,6 @@ import argparse
 import signal
 import threading
 import sys
-from pathlib import Path
-from importlib.resources import files
 
 from .infrastructure.config import load_config
 
@@ -28,32 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Скачать модели речи и выйти; s2 устанавливается отдельно",
     )
     parser.add_argument("--message", help="Передать main стартовое текстовое поручение")
-    parser.add_argument(
-        "--init-env",
-        action="store_true",
-        help="Создать .env из пакетного примера без замены существующего файла",
-    )
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    if args.init_env:
-        destination = (
-            Path(args.env_file).expanduser() if args.env_file else Path.cwd() / ".env"
-        )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with destination.open("x", encoding="utf-8") as stream:
-                stream.write(
-                    files("jarvis")
-                    .joinpath("assets", "env_example.txt")
-                    .read_text(encoding="utf-8")
-                )
-            print(f"Created {destination}; configure LLM before startup.")
-        except FileExistsError:
-            print(f"{destination} already exists; left unchanged.")
-        return 0
     config = load_config(args.env_file)
     if args.download_models:
         from .infrastructure.models import download_models

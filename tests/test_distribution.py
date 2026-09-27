@@ -1,4 +1,4 @@
-"""Clean-install contracts independent of user storage and external hardware."""
+"""Personal configuration contracts isolated from live storage and hardware."""
 
 import json
 import os
@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 from jarvis.application import JarvisApplication
 from jarvis.core.protocol import ActionRequest
 from jarvis.core.prompts import read_master_prompt
-from jarvis.infrastructure.config import Config, load_config
+from jarvis.infrastructure.config import Config, load_config, ROOT, DEFAULT_JARVIS_DIR
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
 from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
 from jarvis.presets import PresetStore
@@ -32,7 +32,7 @@ class DistributionTests(unittest.TestCase):
                     with patch.dict(os.environ, {}, clear=True):
                         self.assertEqual(load_config(env).reasoning_effort, expected)
 
-    def test_config_paths_are_relative_to_environment_file_not_package(self):
+    def test_config_storage_is_fixed_at_project_root(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             env = root / "custom.env"
@@ -42,8 +42,8 @@ class DistributionTests(unittest.TestCase):
             )
             with patch.dict(os.environ, {}, clear=True):
                 config = load_config(env)
-            self.assertEqual(config.project_root, root)
-            self.assertEqual(config.jarvis_dir, root / "storage")
+            self.assertEqual(config.project_root, ROOT)
+            self.assertEqual(config.jarvis_dir, DEFAULT_JARVIS_DIR)
             self.assertIsNone(config.reasoning_effort)
 
     def test_baseline_resources_and_presets_do_not_need_installed_extensions(self):
@@ -58,15 +58,33 @@ class DistributionTests(unittest.TestCase):
             original = root / "presets" / "main" / "personprompt.txt"
             original.write_text("Personal prompt", encoding="utf-8")
             ensure_runtime_layout(root)
-            self.assertEqual(original.read_text(), "Personal prompt")
+            from importlib.resources import files
+            self.assertEqual(original.read_text(), files("jarvis").joinpath("assets", "main.txt").read_text())
+            manager = root / "presets" / "module_manager" / "personprompt.txt"
+            manager.write_text("Changed", encoding="utf-8")
+            ensure_runtime_layout(root)
+            self.assertEqual(manager.read_text(), files("jarvis").joinpath("assets", "module_manager.txt").read_text())
+            custom = root / "presets" / "custom"
+            custom.mkdir()
+            (custom / "personprompt.txt").write_text("Keep this personality")
+            ensure_runtime_layout(root)
+            self.assertEqual((custom / "personprompt.txt").read_text(), "Keep this personality")
 
-    def test_packaged_environment_example_matches_repository_template(self):
-        from importlib.resources import files
+    def test_environment_example_contains_only_model_settings(self):
+        template = (ROOT / ".env.example").read_text()
+        self.assertEqual({line.split("=", 1)[0] for line in template.splitlines()},
+                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_REASONING_EFFORT"})
 
-        self.assertEqual(
-            files("jarvis").joinpath("assets", "env_example.txt").read_text(),
-            (Path(__file__).resolve().parents[1] / ".env.example").read_text(),
-        )
+    def test_speech_constants_ignore_old_environment_settings(self):
+        import importlib
+        from jarvis.speech import config
+        with patch.dict(os.environ, {"STT_DEVICE": "cpu", "STT_COMPUTE_TYPE": "int8", "TTS_SERVER_ARGS": "[]"}):
+            importlib.reload(config)
+            self.assertEqual(config.STT_DEVICE, "cuda")
+            self.assertEqual(config.STT_COMPUTE_TYPE, "float16")
+            self.assertEqual(config.TTS_SERVER_ARGS, ["--cuda", "0", "-ngl", "-1"])
+            self.assertEqual(config.build_config(Path("/temporary/storage")).runtime_dir, Path("/temporary/storage/runtime"))
+        importlib.reload(config)
 
     @patch("jarvis.speech.service.STT_ENABLED", True)
     @patch("jarvis.speech.service.TTS_ENABLED", True)
@@ -114,6 +132,7 @@ class DistributionTests(unittest.TestCase):
                 )
                 developer = app.agents.require_agent(result["agent_id"])
                 dev_specs, _ = developer._contract()
+                self.assertIn(str(app.config.jarvis_dir.resolve()), developer.history[0]["content"])
                 for name in (
                     "read_file",
                     "write_file",

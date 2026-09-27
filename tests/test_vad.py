@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -19,6 +20,11 @@ class _VAD:
 
 
 class VadTests(unittest.TestCase):
+    def test_vad_uses_cpu_independently_of_speech_cuda(self):
+        with patch.object(vad.ort, "InferenceSession") as create:
+            vad.SileroVAD("unused.onnx")
+        create.assert_called_once_with("unused.onnx", providers=["CPUExecutionProvider"])
+
     def test_segmenter_signals_speech_onset_before_transcription(self):
         with tempfile.TemporaryDirectory() as directory:
             segmenter = vad.Segmenter(

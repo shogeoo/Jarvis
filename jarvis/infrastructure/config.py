@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-ROOT = Path.cwd()
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_PATH = ROOT / ".env"
 DEFAULT_JARVIS_DIR = ROOT / ".jarvis"
 
@@ -30,17 +30,11 @@ class Config:
 
 def load_config(env_path: str | os.PathLike | None = None) -> Config:
     environment = (
-        Path(env_path).expanduser().resolve() if env_path else Path.cwd() / ".env"
+        Path(env_path).expanduser().resolve() if env_path else DEFAULT_ENV_PATH
     )
-    project_root = environment.parent
+    project_root = ROOT
     load_dotenv(environment)
-    os.environ["JARVIS_PROJECT_ROOT"] = str(project_root)
-    jarvis_value = os.environ.get("JARVIS_DIR")
-    jarvis_dir = (
-        Path(jarvis_value).expanduser() if jarvis_value else project_root / ".jarvis"
-    )
-    if not jarvis_dir.is_absolute():
-        jarvis_dir = project_root / jarvis_dir
+    jarvis_dir = DEFAULT_JARVIS_DIR
     return Config(
         model=os.environ.get("LLM_MODEL"),
         base_url=os.environ.get("LLM_BASE_URL"),

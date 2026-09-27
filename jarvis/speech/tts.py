@@ -94,7 +94,7 @@ class Speaker:
         server_running = self._port_open()
         if server_running:
             print("TTS Fish Audio: сервер уже запущен.", flush=True)
-        self._ensure_voice(gpu=not server_running)
+        self._ensure_voice()
         if not server_running:
             self._start_server()
         else:
@@ -284,7 +284,7 @@ class Speaker:
     def _profile_path(self) -> Path:
         return self.cfg.tts_voice_dir / f"{self.cfg.tts_voice}.s2voice"
 
-    def _ensure_voice(self, gpu: bool = True) -> None:
+    def _ensure_voice(self) -> None:
         if self._profile_path().exists():
             return
         ref = self.cfg.tts_reference
@@ -298,8 +298,7 @@ class Speaker:
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
         output = self.cfg.runtime_dir / "voice_bootstrap.wav"
         cmd = self._base_cmd()
-        if gpu:
-            cmd += self.cfg.tts_server_args
+        cmd += self.cfg.tts_server_args
         cmd += [
             "--prompt-audio", str(ref),
             "--prompt-text", ref_text.read_text(encoding="utf-8").strip(),

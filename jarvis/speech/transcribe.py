@@ -38,7 +38,7 @@ class Transcriber:
                 f"Не удалось загрузить модель на {self.device}.\n"
                 f"Причина: {exc}\n\n"
                 "Для CUDA нужны библиотеки cuBLAS/cuDNN — они входят в "
-                "CUDA extra проекта: pip install -e '.[cuda]'"
+                "зависимости проекта: pip install -e ."
             ) from exc
         print(f"STT Whisper: модель {self.model_name} готова.", flush=True)
 
