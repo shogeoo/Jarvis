@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from jarvis.speech.ducking import SystemAudioMute
+from jarvis.speech.ducking import SystemAudioMute, SPEECH_APPLICATION_ID
 
 
 def stream(index, pid, muted=False, serial=None):
@@ -13,6 +13,14 @@ def stream(index, pid, muted=False, serial=None):
 
 
 class DuckingTests(unittest.TestCase):
+    def test_marked_voice_without_pid_is_unmuted_not_silenced(self):
+        mute = SystemAudioMute(100)
+        voice = {"index": 1, "mute": True, "properties": {"application.id": SPEECH_APPLICATION_ID}}
+        with patch.object(mute, "_streams", return_value=[voice, stream(2, 200)]), patch.object(mute, "_set_mute") as change:
+            mute._refresh()
+            mute.close()
+        self.assertEqual([call.args for call in change.call_args_list], [(1, False), (2, True), (2, False)])
+
     def test_other_streams_muted_and_original_states_restored(self):
         mute = SystemAudioMute(100)
         initial = [stream(1, 100), stream(2, 200), stream(3, 300, True)]

@@ -7,6 +7,8 @@ import threading
 from ..core.lifecycle import terminate_process
 from ..infrastructure.console import logger
 
+SPEECH_APPLICATION_ID = "jarvis.speech"
+
 
 class SystemAudioMute:
     def __init__(self, player_pid: int):
@@ -60,7 +62,10 @@ class SystemAudioMute:
                 self._saved.pop(index)
             for stream in streams:
                 properties = stream.get("properties", {})
-                if properties.get("application.process.id") == self.player_pid:
+                if (properties.get("application.id") == SPEECH_APPLICATION_ID or
+                        str(properties.get("application.process.id")) == self.player_pid):
+                    if stream["mute"]:
+                        self._set_mute(stream["index"], False)
                     continue
                 index = stream["index"]
                 identity = self._identity(stream)

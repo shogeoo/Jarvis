@@ -35,7 +35,7 @@ class TtsTests(unittest.TestCase):
                     yield b"audio"
                     if fail:
                         raise RuntimeError("stream failed")
-                with patch.object(tts.subprocess, "Popen", return_value=player), patch.object(tts, "SystemAudioMute") as mute:
+                with patch.object(tts.subprocess, "Popen", return_value=player) as spawn, patch.object(tts, "SystemAudioMute") as mute:
                     if fail:
                         with self.assertRaisesRegex(RuntimeError, "stream failed"):
                             speaker._play(chunks(), 1, request)
@@ -45,6 +45,9 @@ class TtsTests(unittest.TestCase):
                 mute.return_value.start.assert_called_once()
                 mute.return_value.close.assert_called_once()
                 self.assertIsNone(speaker._audio_mute)
+                environment = spawn.call_args.kwargs["env"]
+                self.assertEqual(environment["SDL_AUDIODRIVER"], "pulseaudio")
+                self.assertIn("application.id=jarvis.speech", environment["PULSE_PROP"])
 
     def test_voice_profile_creation_uses_cuda_arguments(self):
         from jarvis.speech.config import build_config

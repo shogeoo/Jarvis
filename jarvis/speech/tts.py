@@ -30,7 +30,7 @@ import requests
 from jarvis.core.lifecycle import terminate_process
 
 from .config import Config
-from .ducking import SystemAudioMute
+from .ducking import SystemAudioMute, SPEECH_APPLICATION_ID
 
 SERVER_START_TIMEOUT = 240.0
 VOICE_BOOTSTRAP_TEXT = "Инициализация завершена."
@@ -404,7 +404,12 @@ class Speaker:
             with self._lock:
                 if self._stop.is_set() or request.interrupted.is_set():
                     raise SpeechInterrupted("interrupted")
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True)
+                environment = {
+                    **os.environ,
+                    "SDL_AUDIODRIVER": "pulseaudio",
+                    "PULSE_PROP": f"application.id={SPEECH_APPLICATION_ID} application.name=Jarvis media.role=assistant",
+                }
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True, env=environment)
                 self._player = proc
         except FileNotFoundError:
             logger.info(
