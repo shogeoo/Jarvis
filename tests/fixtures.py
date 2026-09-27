@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -106,7 +107,6 @@ def create_module():
     )
 """
 
-
 def link_environment(unit_dir: Path, python: str | None = None) -> Path:
     """Создать .venv/bin/python единицы симлинком на текущий интерпретатор."""
 
@@ -138,12 +138,6 @@ def write_handler(
     return unit
 
 
-def write_master_prompt(project_root: Path) -> Path:
-    path = Path(project_root) / "master_prompt.txt"
-    path.write_text("environment\n{modalities}\n", encoding="utf-8")
-    return path
-
-
 def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     root = Path(root)
     actions = root / "actions"
@@ -154,15 +148,17 @@ def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     main.mkdir(parents=True, exist_ok=True)
     (main / "personprompt.txt").write_text("main\n", encoding="utf-8")
     (main / "preset.json").write_text('{"protected": true}\n', encoding="utf-8")
-    (main / "modules.json").write_text("[]\n", encoding="utf-8")
-    (main / "actions.json").write_text('["say"]\n', encoding="utf-8")
-    (main / "handlers.json").write_text('["tick"]\n', encoding="utf-8")
+    (main / "capabilities.json").write_text(
+        json.dumps({"modules": [], "actions": ["say"], "handlers": ["tick"]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     worker = root / "presets" / "worker"
     worker.mkdir(parents=True, exist_ok=True)
     (worker / "personprompt.txt").write_text("worker\n", encoding="utf-8")
-    (worker / "modules.json").write_text("[]\n", encoding="utf-8")
-    (worker / "actions.json").write_text('["say"]\n', encoding="utf-8")
-    (worker / "handlers.json").write_text('["tick"]\n', encoding="utf-8")
+    (worker / "capabilities.json").write_text(
+        json.dumps({"modules": [], "actions": ["say"], "handlers": ["tick"]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
     return root
 
 

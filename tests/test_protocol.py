@@ -1,9 +1,12 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
+from jarvis.core.registry import ActionRegistry, EventRegistry
+from jarvis.core.runtime import register_core_protocol
 from jarvis.core.protocol import (
-    ActionResult,
+    CallResult,
     Event,
     InputPart,
     parse_actions,
@@ -13,6 +16,13 @@ from jarvis.core.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_core_actions_register_without_jsonschema_dependency(self):
+        with patch("jarvis.core.protocol.Draft202012Validator", None):
+            actions = ActionRegistry()
+            register_core_protocol(actions, EventRegistry())
+            self.assertIsNotNone(actions.get("no_action"))
+            self.assertIsNotNone(actions.get("speech"))
+
     def test_event_is_one_compact_model_value(self):
         event = Event(type="sample", data={"text": "Привет"})
         self.assertEqual(
@@ -22,7 +32,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_multimodal_event_is_one_message_and_filters_unsupported_parts(self):
         event = Event(
-            type="telegram.message",
+            type="example.message",
             data={"text": "Что на фото?"},
             parts=(InputPart("image", "image/jpeg", "aGVsbG8="),),
         )
@@ -35,15 +45,15 @@ class ProtocolTests(unittest.TestCase):
         text_message = event.model_message(ModelCapabilities("test", ("text",)))
         self.assertIsInstance(text_message["content"], str)
 
-    def test_action_result_is_a_strict_model_value_with_external_action_id(self):
-        result = ActionResult(
-            action_id="say-1", data={"spoken": True}, agent_id="main"
+    def test_call_result_is_a_strict_model_value_with_external_action_id(self):
+        result = CallResult(
+            call_id="say-1", data={"spoken": True}, agent_id="main"
         )
         self.assertEqual(
             json.loads(result.model_content()),
             {
-                "type": "action_result",
-                "action_id": "say-1",
+                "type": "call_result",
+                "call_id": "say-1",
                 "data": {"spoken": True},
             },
         )
@@ -55,8 +65,8 @@ class ProtocolTests(unittest.TestCase):
             parse_actions(
                 {
                     "actions": [
-                        {"action_id": "one", "type": "no_action", "data": {}},
-                        {"action_id": "two", "type": "sample", "data": {}},
+                        {"action_id": "no_action", "call_id": "one", "data": {}},
+                        {"action_id": "sample", "call_id": "two", "data": {}},
                     ]
                 }
             )
@@ -81,26 +91,26 @@ class ProtocolTests(unittest.TestCase):
             validate_json(
                 {
                     "actions": [
-                        {"action_id": "one", "type": "no_action", "data": {}},
-                        {"action_id": "two", "type": "sample", "data": {}},
+                        {"action_id": "no_action", "call_id": "one", "data": {}},
+                        {"action_id": "sample", "call_id": "two", "data": {}},
                     ]
                 },
                 schema,
             )
 
     def test_duplicate_action_id_is_a_structure_error(self):
-        with self.assertRaisesRegex(ValueError, "action_id повторяется"):
+        with self.assertRaisesRegex(ValueError, "call_id повторяется"):
             parse_actions(
                 {
                     "actions": [
                         {
-                            "action_id": "say-1",
-                            "type": "sample",
+                            "action_id": "sample",
+                            "call_id": "say-1",
                             "data": {"text": "one"},
                         },
                         {
-                            "action_id": "say-1",
-                            "type": "sample",
+                            "action_id": "sample",
+                            "call_id": "say-1",
                             "data": {"text": "two"},
                         },
                     ]
@@ -123,8 +133,8 @@ class ProtocolTests(unittest.TestCase):
                 {
                     "actions": [
                         {
-                            "action_id": "say-1",
-                            "type": "sample",
+                            "action_id": "sample",
+                            "call_id": "say-1",
                             "data": {"text": "x", "extra": 1},
                         }
                     ]

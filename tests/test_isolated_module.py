@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
-from jarvis.core.runtime import ActionResultTracker, EventBus
+from jarvis.core.runtime import CallResultTracker, EventBus
 from jarvis.infrastructure.debug import Debugger
 
 
@@ -104,12 +104,16 @@ class _Agent:
     def enqueue_result(self, result):
         self.results.append(result)
 
+    def is_enabled_action(self, action_id):
+        return True
+
 
 class _Manager:
     def __init__(self, agent):
         self.agent = agent
         self.debug = Debugger(enabled=False)
-        self.results = ActionResultTracker(debug=self.debug)
+        self.results = CallResultTracker(debug=self.debug)
+        self.errors = []
 
     def deliver_result(self, result):
         self.agent.enqueue_result(result)
@@ -117,6 +121,13 @@ class _Manager:
 
     def report_capability_error(self, capability, error):
         self.debug.log("capability_error", capability=capability, error=str(error))
+
+    def fail_call(self, agent_id, call_id, error):
+        if self.results.discard(agent_id, call_id) is not None:
+            self.errors.append((agent_id, call_id, str(error)))
+
+    def agents_snapshot(self):
+        return [self.agent]
 
 
 class UnitHostTests(unittest.TestCase):
@@ -153,7 +164,7 @@ class UnitHostTests(unittest.TestCase):
         bus.manager = fake
         return manager, actions, fake
 
-    def test_module_worker_returns_action_result(self):
+    def test_module_worker_returns_call_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
             manager, actions, fake = self._manager(root)
@@ -170,8 +181,8 @@ class UnitHostTests(unittest.TestCase):
                 self.assertEqual(
                     fake.agent.results[0].model_value(),
                     {
-                        "type": "action_result",
-                        "action_id": "run-1",
+                        "type": "call_result",
+                        "call_id": "run-1",
                         "data": {"value": "ok"},
                     },
                 )
@@ -224,6 +235,95 @@ class UnitHostTests(unittest.TestCase):
                 while not marker.exists() and time.time() < deadline:
                     time.sleep(0.01)
                 self.assertEqual(marker.read_text(encoding="utf-8"), "ping:42")
+            finally:
+                manager.shutdown()
+
+    def test_independent_calls_and_no_result_timeout(self):
+        code = ACTION_CODE.replace(
+            '    return {"value": data["value"]}',
+            '    import time\n    if data["value"] == "slow":\n        time.sleep(0.6)\n    return {"value": data["value"]}',
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            unit = root / "actions" / "concurrent"
+            unit.mkdir(parents=True)
+            (unit / "action.py").write_text(code, encoding="utf-8")
+            manager, actions, fake = self._manager(root)
+            try:
+                manager.load_action("concurrent")
+                for call_id, value in (("slow-1", "slow"), ("fast-1", "fast")):
+                    manager.dispatch(action=ActionRequest("concurrent", {"value": value}, call_id), spec=actions.require("concurrent"), agent=fake.agent)
+                deadline = time.monotonic() + 2
+                while not fake.agent.results and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(fake.agent.results[0].call_id, "fast-1")
+                while len(fake.agent.results) < 2 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(fake.agent.results[1].call_id, "slow-1")
+            finally:
+                manager.shutdown()
+
+    def test_complete_then_return_and_double_complete_send_once(self):
+        code = ACTION_CODE.replace(
+            '    return {"value": data["value"]}',
+            '    context.complete({"value": "first"})\n    context.complete({"value": "second"})\n    return {"value": "third"}',
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            unit = root / "actions" / "once"
+            unit.mkdir(parents=True)
+            (unit / "action.py").write_text(code, encoding="utf-8")
+            manager, actions, fake = self._manager(root)
+            try:
+                manager.load_action("once")
+                manager.dispatch(action=ActionRequest("once", {"value": "x"}, "once-1"), spec=actions.require("once"), agent=fake.agent)
+                deadline = time.monotonic() + 2
+                while not fake.agent.results and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual([r.data for r in fake.agent.results], [{"value": "first"}])
+            finally:
+                manager.shutdown()
+
+    def test_input_part_name_crosses_worker_boundary(self):
+        code = ACTION_CODE.replace(
+            'from jarvis.capabilities import action_definition',
+            'from jarvis.capabilities import action_definition, input_part',
+        ).replace(
+            '    return {"value": data["value"]}',
+            '    context.complete({"value": data["value"]}, parts=(input_part("file", "application/pdf", "QUJD", "report.pdf"),))\n    return None',
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            unit = root / "actions" / "named"
+            unit.mkdir(parents=True)
+            (unit / "action.py").write_text(code, encoding="utf-8")
+            manager, actions, fake = self._manager(root)
+            try:
+                manager.load_action("named")
+                manager.dispatch(action=ActionRequest("named", {"value": "x"}, "named-1"), spec=actions.require("named"), agent=fake.agent)
+                deadline = time.monotonic() + 2
+                while not fake.agent.results and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(fake.agent.results[0].parts[0].name, "report.pdf")
+                self.assertEqual(fake.agent.results[0].model_message()["content"][1]["file"]["filename"], "report.pdf")
+            finally:
+                manager.shutdown()
+
+    def test_dead_capability_host_is_removed_without_zombie(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            manager, actions, fake = self._manager(root)
+            try:
+                manager.load_module("isolated")
+                host = manager._modules["isolated"].host
+                process = host.process
+                process.kill()
+                deadline = time.monotonic() + 3
+                while "isolated" in manager.loaded_modules() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertNotIn("isolated", manager.loaded_modules())
+                self.assertNotIn(host.key, manager._hosts)
+                self.assertIsNotNone(process.poll())
             finally:
                 manager.shutdown()
 

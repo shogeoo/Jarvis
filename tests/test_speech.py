@@ -7,7 +7,7 @@ from unittest.mock import patch
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
-from jarvis.core.runtime import ActionResultTracker, EventBus, register_core_protocol
+from jarvis.core.runtime import CallResultTracker, EventBus, register_core_protocol
 from jarvis.infrastructure.debug import Debugger
 from jarvis.speech import service as speech_service
 from jarvis.speech.config import TTS_REFERENCE, TTS_REFERENCE_TEXT
@@ -24,12 +24,15 @@ class _Agent:
     def enqueue_result(self, result):
         self.results.append(result)
 
+    def is_enabled_action(self, action_id):
+        return True
+
 
 class _Manager:
     def __init__(self, agent):
         self.agent = agent
         self.debug = Debugger(enabled=False)
-        self.results = ActionResultTracker(debug=self.debug)
+        self.results = CallResultTracker(debug=self.debug)
 
     def deliver_result(self, result):
         self.agent.enqueue_result(result)
@@ -112,8 +115,8 @@ class CoreDispatchTests(unittest.TestCase):
                 self.assertEqual(
                     agent.results[0].model_value(),
                     {
-                        "type": "action_result",
-                        "action_id": "sp-1",
+                        "type": "call_result",
+                        "call_id": "sp-1",
                         "data": {"status": "successful"},
                     },
                 )

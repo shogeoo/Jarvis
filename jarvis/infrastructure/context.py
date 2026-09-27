@@ -2,12 +2,12 @@
 
 Раскладка::
 
-    memory/<preset_id>/agent.json
-    memory/<preset_id>/context.json
-    memory/<preset_id>/parts/            # бинарные части корневого агента
-    memory/<preset_id>/<agent_id>/agent.json
-    memory/<preset_id>/<agent_id>/context.json
-    memory/<preset_id>/<agent_id>/parts/
+    memory/<preset_id>/current/agent.json
+    memory/<preset_id>/current/context.json
+    memory/<preset_id>/current/parts/
+    memory/<preset_id>/last/agent.json
+    memory/<preset_id>/last/context.json
+    memory/<preset_id>/last/parts/
 
 Корневой агент preset (``main``) хранится без подпапки ``agent_id``.
 ``agent.json`` описывает экземпляр, ``context.json`` содержит историю
@@ -27,6 +27,8 @@ import json
 import os
 import re
 import shutil
+import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -164,7 +166,17 @@ def _externalize_modalities(messages: list[Any], parts_dir: Path) -> list[Any]:
             filename = _safe_part_name(name, mime, payload)
             parts_dir.mkdir(parents=True, exist_ok=True)
             path = parts_dir / filename
-            if not path.exists() or path.read_bytes() != raw:
+            if path.exists() and path.read_bytes() != raw:
+                stem, suffix = Path(filename).stem, Path(filename).suffix
+                index = 1
+                while True:
+                    candidate = parts_dir / f"{stem}({index}){suffix}"
+                    if not candidate.exists() or candidate.read_bytes() == raw:
+                        path = candidate
+                        filename = candidate.name
+                        break
+                    index += 1
+            if not path.exists():
                 path.write_bytes(raw)
             new_content.append(
                 {
@@ -257,6 +269,10 @@ class MemoryStore:
 
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._save_lock = threading.RLock()
+
+    def has_existing_state(self) -> bool:
+        return self.root.exists() and any(self.root.iterdir())
 
     def agent_dir(self, preset: str, agent_id: str) -> Path:
         if not valid_name(preset):
@@ -295,36 +311,64 @@ class MemoryStore:
             return None
 
     def save(self, record: dict[str, Any]) -> None:
+        with self._save_lock:
+            self._save_locked(record)
+
+    def _save_locked(self, record: dict[str, Any]) -> None:
         agent_id = record.get("agent_id")
         preset = record.get("preset") or "main"
         directory = self.agent_dir(preset, agent_id)
+        generation = uuid.uuid4().hex
+        staged = directory / f".staging-{generation}"
         self._write_json(
-            directory / "agent.json",
+            staged / "agent.json",
             {
                 "agent_id": agent_id,
                 "name": record.get("name"),
                 "preset": preset,
+                "person_prompt": record.get("person_prompt"),
+                "protected": record.get("protected"),
                 "parent_id": record.get("parent_id"),
                 "modules": record.get("modules", []),
                 "actions": record.get("actions", []),
                 "handlers": record.get("handlers", []),
+                "disabled_modules": record.get("disabled_modules", []),
+                "disabled_actions": record.get("disabled_actions", []),
+                "disabled_handlers": record.get("disabled_handlers", []),
             },
         )
         messages = record.get("messages", [])
         if not isinstance(messages, list):
             messages = []
         self._write_json(
-            directory / "context.json",
-            _externalize_modalities(messages, directory / "parts"),
+            staged / "context.json",
+            _externalize_modalities(messages, staged / "parts"),
         )
+        current = directory / "current"
+        last = directory / "last"
+        if last.exists():
+            shutil.rmtree(last)
+        if current.exists():
+            os.replace(current, last)
+        os.replace(staged, current)
 
     def load(self, preset: str, agent_id: str) -> dict[str, Any] | None:
         directory = self.agent_dir(preset, agent_id)
-        metadata = self._read_json(directory / "agent.json")
-        messages = self._read_json(directory / "context.json")
+        current = self._current_dir(directory)
+        metadata = self._read_json(current / "agent.json")
+        messages = self._read_json(current / "context.json")
         if not isinstance(metadata, dict) or not isinstance(messages, list):
             return None
-        return self._clean(preset, agent_id, directory, metadata, messages)
+        return self._clean(preset, agent_id, current, metadata, messages)
+
+    def _current_dir(self, directory: Path) -> Path:
+        current = directory / "current"
+        if (current / "agent.json").is_file() and (current / "context.json").is_file():
+            return current
+        last = directory / "last"
+        if (last / "agent.json").is_file() and (last / "context.json").is_file():
+            return last
+        return directory / "invalid-state"
 
     def load_all(self) -> list[dict[str, Any]]:
         if not self.root.exists():
@@ -352,29 +396,41 @@ class MemoryStore:
     def _load_agent_dir(
         self, directory: Path, preset: str, agent_id: str
     ) -> dict[str, Any] | None:
-        metadata = self._read_json(directory / "agent.json")
-        messages = self._read_json(directory / "context.json")
+        current = self._current_dir(directory)
+        metadata = self._read_json(current / "agent.json")
+        messages = self._read_json(current / "context.json")
         if not isinstance(metadata, dict) or not isinstance(messages, list):
             return None
-        return self._clean(preset, agent_id, directory, metadata, messages)
+        return self._clean(preset, agent_id, current, metadata, messages)
 
     def delete(self, preset: str, agent_id: str) -> None:
+        with self._save_lock:
+            self._delete_locked(preset, agent_id)
+
+    def _delete_locked(self, preset: str, agent_id: str) -> None:
         try:
             directory = self.agent_dir(preset, agent_id)
         except ValueError:
             return
         try:
             if agent_id == "main":
-                for name in ("agent.json", "context.json"):
-                    try:
-                        (directory / name).unlink()
-                    except FileNotFoundError:
-                        pass
-                shutil.rmtree(directory / "parts", ignore_errors=True)
+                if (directory / "current").exists():
+                    shutil.rmtree(directory / "current")
+                if (directory / "last").exists():
+                    shutil.rmtree(directory / "last")
+                for staging in directory.glob(".staging-*"):
+                    shutil.rmtree(staging)
             else:
-                shutil.rmtree(directory, ignore_errors=True)
+                if directory.exists():
+                    shutil.rmtree(directory)
         except OSError:
-            return
+            raise
+
+    def delete_preset(self, preset: str) -> None:
+        with self._save_lock:
+            directory = self.agent_dir(preset, "main")
+            if directory.exists():
+                shutil.rmtree(directory)
 
     @staticmethod
     def _clean(
@@ -394,9 +450,14 @@ class MemoryStore:
             "agent_id": agent_id,
             "name": name if isinstance(name, str) and name.strip() else agent_id,
             "preset": preset,
+            "person_prompt": metadata.get("person_prompt"),
+            "protected": metadata.get("protected"),
             "parent_id": parent_id,
             "modules": _clean_capabilities(metadata.get("modules", []), _NAME),
             "actions": _clean_capabilities(metadata.get("actions", []), _CAPABILITY),
             "handlers": _clean_capabilities(metadata.get("handlers", []), _CAPABILITY),
+            "disabled_modules": _clean_capabilities(metadata.get("disabled_modules", []), _NAME),
+            "disabled_actions": _clean_capabilities(metadata.get("disabled_actions", []), _CAPABILITY),
+            "disabled_handlers": _clean_capabilities(metadata.get("disabled_handlers", []), _CAPABILITY),
             "messages": _hydrate_modalities(messages, directory / "parts"),
         }

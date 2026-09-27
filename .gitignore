@@ -3,8 +3,13 @@ __pycache__/
 *.pyc
 .idea/
 .env
+.jarvis/
 *.egg-info/
 build/
 dist/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
 .assistant/
 :memory:.ses

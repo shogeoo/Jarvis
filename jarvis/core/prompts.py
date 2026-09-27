@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from importlib.resources import files
 from typing import Any
 
 from ..infrastructure.model_capabilities import ModelCapabilities
@@ -10,16 +11,17 @@ from .protocol import json_text
 from .registry import ActionRegistry
 
 
-def read_master_prompt(path: Path) -> str:
+def read_master_prompt(path: Path | None = None) -> str:
     """Прочитать общий мастер-промпт среды.
 
-    Текст одинаков для всех агентов; блок модальностей конкретной нейронки
-    подставляется билдером вместо плейсхолдера ``{modalities}``, а не
-    хардкодится в файле.
+    Текст содержит только общие для всех агентов правила среды и протокола.
     """
 
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        resource = path if path is not None else files("jarvis").joinpath("assets", "master_prompt.txt")
+        text = resource.read_text(encoding="utf-8").strip()
+        if path is None:
+            text += "\n\n" + files("jarvis").joinpath("assets", "capability_sdk.txt").read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise RuntimeError(f"Не удалось прочитать мастер-промпт {path}: {exc}") from exc
     if not text:
@@ -49,8 +51,8 @@ def agent_system_prompt(
 ) -> str:
     """Собрать systemprompt из постоянных и динамических частей.
 
-    System prompt — конкатенация personprompt, мастер-промпта с подставленным
-    блоком модальностей и каталога capabilities. Именно он отправляется в API.
+    Итоговый system prompt — строго упорядоченная склейка четырёх отдельных
+    блоков: person_prompt, master_prompt, model_info и capabilities.
     """
 
     standalone_action_ids = {
@@ -60,6 +62,7 @@ def agent_system_prompt(
         event["type"] for event in capability_catalog.get("events", [])
     }
     catalog = {
+        "storage_root": capability_catalog.get("storage_root", ""),
         "core_protocol": {
             "actions": ActionRegistry.catalog(
                 {
@@ -87,9 +90,9 @@ def agent_system_prompt(
                     }
                 }
             ),
-            "action_result": {
-                "type": "action_result",
-                "action_id": "строка, выбранная моделью в действии",
+            "call_result": {
+                "type": "call_result",
+                "call_id": "строка, выбранная моделью для конкретного вызова",
                 "data": "объект по схеме результата конкретного действия",
             },
         },
@@ -100,20 +103,16 @@ def agent_system_prompt(
         },
         "modules": capability_catalog.get("modules", []),
     }
-    parts = [person_prompt.strip(), _master_text(master_prompt, model_capabilities)]
-    parts.append("Доступный контракт capabilities:\n" + json_text(catalog, indent=2))
-    return "\n\n".join(part for part in parts if part)
-
-
-def _master_text(
-    master_prompt: str, model_capabilities: ModelCapabilities | None
-) -> str:
-    """Подставить блок модальностей в мастер-промпт вместо плейсхолдера."""
-
-    block = model_capabilities.prompt_block() if model_capabilities is not None else ""
-    text = master_prompt.strip()
-    if "{modalities}" in text:
-        return text.replace("{modalities}", block)
-    if block:
-        return text + "\n\n" + block
-    return text
+    model_info = (
+        model_capabilities.prompt_block()
+        if model_capabilities is not None
+        else "Информация о возможностях модели недоступна."
+    )
+    capabilities = json_text(catalog, indent=2)
+    blocks = (
+        ("person_prompt", person_prompt.strip()),
+        ("master_prompt", master_prompt.strip()),
+        ("model_info", model_info),
+        ("capabilities", capabilities),
+    )
+    return "\n\n".join(f"{name}:\n{content}" for name, content in blocks)

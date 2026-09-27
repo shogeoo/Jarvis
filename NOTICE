@@ -1,0 +1,7 @@
+Copyright (C) 2026 Georgiy Shonichev
+SPDX-License-Identifier: GPL-3.0-only
+
+Jarvis source code is distributed under the GNU General Public License version 3
+only. See LICENSE for the full terms. Third-party software and downloaded model
+weights remain subject to their respective licenses and are not relicensed by
+this project.

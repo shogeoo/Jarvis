@@ -186,7 +186,7 @@ class Speaker:
 
     # --- server ------------------------------------------------------
     def _log_path(self) -> Path:
-        return self.cfg.runtime_dir / "tts-server.log"
+        return self.cfg.runtime_dir / "logs" / "tts-server.log"
 
     def _base_cmd(self) -> list[str]:
         cmd = [self._resolve_binary(), "--model", str(self.cfg.tts_model)]
@@ -233,6 +233,7 @@ class Speaker:
         cmd += ["--server", "--host", self._host, "--port", str(self._port)]
         cmd += self.cfg.tts_server_args
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self._log_path().parent.mkdir(parents=True, exist_ok=True)
         print(
             f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
             flush=True,
