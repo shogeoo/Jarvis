@@ -24,7 +24,7 @@ class ConsoleTests(unittest.TestCase):
         stream = RecordingStream()
         debug = Debugger(stream=stream)
         messages = [
-            {"type": "message_from_agent", "data": {
+            {"event_id": "message_from_agent", "data": {
                 "from_agent_id": f"agent-{index}",
                 "text": ("Отчёт: задача выполнена.\n" * 500),
             }}
@@ -58,13 +58,13 @@ with runtime_console(Path(sys.argv[1])) as stream:
     subprocess.run([sys.executable, "-c", "print('child diagnostic')"], check=True)
     logger.error("API error")
     debug.initialized()
-    debug.message({"type": "system_started", "data": {}})
+    debug.message({"event_id": "system_started", "data": {}})
     debug.message({"actions": []})
     print("shutdown diagnostic")
 '''
             result = subprocess.run([sys.executable, "-c", script, temporary], capture_output=True, text=True, check=True)
             expected = "Инициализация системы Jarvis....\nСистема инициализирована.\n\n"
-            expected += json.dumps({"type": "system_started", "data": {}}, indent=2) + "\n\n"
+            expected += json.dumps({"event_id": "system_started", "data": {}}, indent=2) + "\n\n"
             expected += json.dumps({"actions": []}, indent=2) + "\n"
             self.assertEqual(result.stdout, expected)
             self.assertEqual(result.stderr, "")

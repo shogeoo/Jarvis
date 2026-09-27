@@ -47,7 +47,7 @@ class DistributionTests(unittest.TestCase):
             self.assertIsNone(config.reasoning_effort)
 
     def test_baseline_resources_and_presets_do_not_need_installed_extensions(self):
-        self.assertIn("action_definition", read_master_prompt())
+        self.assertNotIn("action_definition", read_master_prompt())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ensure_runtime_layout(root)

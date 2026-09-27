@@ -36,6 +36,8 @@ from .protocol import (
     parse_actions,
     response_format,
     validate_json,
+    validate_result,
+    canonical_event_value,
 )
 from .registry import ActionRegistry, EventRegistry
 
@@ -50,10 +52,9 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         ActionDefinition(
             id="no_action",
             description=(
-                "Завершить текущий цикл и ждать новые события. "
-                "Допустимо только как единственное действие ответа."
+                'Finish the current cycle and wait for new events. Must be the only action in the response.'
             ),
-            args_schema=empty_object_schema(),
+            data_schema=empty_object_schema(),
             result_schema=empty_object_schema(),
             run=lambda data, context: {},
             owner="core",
@@ -61,10 +62,9 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
-            type="structure_error",
+            event_id="structure_error",
             description=(
-                "Предыдущий ответ модели нарушил JSON или доступную схему. "
-                "Нужно немедленно вернуть исправленный ответ."
+                'The previous response violated the JSON protocol or available input schema. Return a corrected response with fresh call identifiers.'
             ),
             data_schema=object_schema(
                 {
@@ -78,11 +78,9 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
-            type="message_from_agent",
+            event_id="message_from_agent",
             description=(
-                "Адресное сообщение от другого агента. from_agent_id и from_name "
-                "являются метаданными отправителя; text содержит прямую речь "
-                "или задачу."
+                'A direct message from another agent. from_agent_id and from_name identify the sender; text contains their message or task.'
             ),
             data_schema=object_schema(
                 {
@@ -96,10 +94,9 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
-            type="system_started",
+            event_id="system_started",
             description=(
-                "Jarvis завершил обычный запуск и восстановил доступный runtime. "
-                "Агент может проявить инициативу и начать разговор, но не обязан."
+                'Jarvis has completed startup. datetime is the local ISO 8601 time with timezone. The agent may take initiative but is not required to.'
             ),
             data_schema=object_schema({
                 "datetime": {
@@ -108,15 +105,13 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
                 }
             }),
         ),
-        owner="core",
+        owner="core:primary",
     )
     events.register(
         EventDefinition(
-            type="capability_error",
+            event_id="capability_error",
             description=(
-                "Необработанная ошибка в коде capability: её мог упасть целый "
-                "модуль, автономное действие или handler. kind и id указывают "
-                "источник."
+                'An unhandled capability failure. kind and id identify its source; error contains details and call_id identifies an affected invocation if any.'
             ),
             data_schema=object_schema(
                 {
@@ -136,11 +131,9 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         ActionDefinition(
             id="speech",
             description=(
-                "Озвучить text и вернуть статус озвучки. status равен "
-                "successful после воспроизведения или interrupted, если "
-                "реплика была прервана новой речью пользователя."
+                'Speak text aloud. Returns successful after playback or interrupted if new user speech interrupted it.'
             ),
-            args_schema=object_schema({"text": {"type": "string"}}),
+            data_schema=object_schema({"text": {"type": "string"}}),
             result_schema=object_schema(
                 {
                     "status": {
@@ -155,10 +148,9 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     )
     events.register(
         EventDefinition(
-            type="speech_detected",
+            event_id="speech_detected",
             description=(
-                "Речь пользователя с микрофона: text содержит распознанную "
-                "реплику."
+                'User speech recognized from the microphone. text contains the recognized utterance.'
             ),
             data_schema=object_schema({"text": {"type": "string"}}),
         ),
@@ -204,7 +196,7 @@ class EventBus:
 
     def publish(self, event: Event) -> bool:
         try:
-            self.events.validate(event.type, event.data)
+            self.events.validate(event.event_id, event.data)
         except ValueError as exc:
             self.debug.log("event_rejected", event=event.debug_value(), error=str(exc))
             return False
@@ -222,7 +214,7 @@ class EventBus:
                 recipients = []
             delivered = False
             for agent in recipients:
-                if agent is not None:
+                if agent is not None and (event.handler_id is None or agent.accepts_event(event)):
                     accepted = agent.enqueue(event)
                     delivered = (accepted is not False) or delivered
         if not delivered:
@@ -303,7 +295,7 @@ class CallResultTracker:
             )
             return False
         try:
-            validate_json(
+            validate_result(
                 data,
                 pending.result_schema,
                 where=f"результат {pending.action_id}",
@@ -370,6 +362,7 @@ class Agent:
         automated_call_ids: list[str] | None = None,
         person_prompt: str | None = None,
         protected: bool | None = None,
+        catalog_order: dict[str, list[str]] | None = None,
     ):
         self.agent_id = agent_id
         self.name = name
@@ -378,8 +371,16 @@ class Agent:
         self.manager = manager
         self.primary = primary
         selected = manager.presets.load(preset)
-        self.person_prompt = selected.person_prompt if person_prompt is None else person_prompt
+        self.person_prompt = selected.person_prompt if person_prompt is None or preset == "module_manager" else person_prompt
         self.protected = selected.protected if protected is None else protected
+        if not isinstance(catalog_order or {}, dict) or not all(isinstance(key, str) and isinstance(value, list) and all(isinstance(name, str) for name in value) for key, value in (catalog_order or {}).items()):
+            raise ValueError("Invalid persisted catalog order")
+        self._catalog_order = {key: list(value) for key, value in (catalog_order or {}).items()}
+        self._assignment_order = {
+            "modules": list(enabled_modules or ()),
+            "actions": list(enabled_actions or ()),
+            "handlers": list(enabled_handlers or ()),
+        }
         self._enabled_modules = set(enabled_modules or ())
         self._enabled_actions = set(enabled_actions or ())
         self._enabled_handlers = set(enabled_handlers or ())
@@ -391,6 +392,23 @@ class Agent:
             {"role": "system", "content": ""},
             *[dict(message) for message in (restored_messages or ())],
         ]
+        for message in self.history[1:]:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            text = content if isinstance(content, str) else content[0].get("text") if isinstance(content, list) and content and isinstance(content[0], dict) else None
+            try:
+                value = json.loads(text)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(value, dict):
+                continue
+            current = canonical_event_value(value, self.manager.capabilities.event_id_for_handler)
+            if current != value:
+                if isinstance(content, str):
+                    message["content"] = json.dumps(current, ensure_ascii=False, separators=(",", ":"))
+                else:
+                    message["content"] = [{**content[0], "text": json.dumps(current, ensure_ascii=False, separators=(",", ":"))}, *content[1:]]
         self._events: "queue.Queue[Event | CallResult | None]" = queue.Queue()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -472,6 +490,12 @@ class Agent:
         with self._capabilities_lock:
             return {"modules": set(self._disabled_modules), "actions": set(self._disabled_actions), "handlers": set(self._disabled_handlers)}
 
+    def forget_catalog_entry(self, kind: str, capability_id: str) -> None:
+        key = {"action": "actions", "handler": "events", "module": "modules"}[kind]
+        identifier = self.manager.capabilities.event_id_for_handler(capability_id) if kind == "handler" else capability_id
+        with self._capabilities_lock:
+            self._catalog_order[key] = [name for name in self._catalog_order.get(key, []) if name != identifier]
+
     def is_enabled_action(self, action_id: str) -> bool:
         if action_id in {"no_action", "speech"}:
             return True
@@ -483,36 +507,46 @@ class Agent:
 
     def enable_module(self, module_id: str) -> None:
         with self._capabilities_lock:
+            if module_id not in self._enabled_modules:
+                self._assignment_order["modules"] = [name for name in self._assignment_order["modules"] if name != module_id] + [module_id]
             self._enabled_modules.add(module_id)
             self._disabled_modules.discard(module_id)
         self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
         with self._capabilities_lock:
+            self._catalog_order["modules"] = [name for name in self._catalog_order.get("modules", []) if name != module_id]
             self._enabled_modules.discard(module_id)
             self._disabled_modules.add(module_id)
         self._persist_context()
 
     def enable_action(self, action_id: str) -> None:
         with self._capabilities_lock:
+            if action_id not in self._enabled_actions:
+                self._assignment_order["actions"] = [name for name in self._assignment_order["actions"] if name != action_id] + [action_id]
             self._enabled_actions.add(action_id)
             self._disabled_actions.discard(action_id)
         self._persist_context()
 
     def disable_action(self, action_id: str) -> None:
         with self._capabilities_lock:
+            self._catalog_order["actions"] = [name for name in self._catalog_order.get("actions", []) if name != action_id]
             self._enabled_actions.discard(action_id)
             self._disabled_actions.add(action_id)
         self._persist_context()
 
     def enable_handler(self, handler_id: str) -> None:
         with self._capabilities_lock:
+            if handler_id not in self._enabled_handlers:
+                self._assignment_order["handlers"] = [name for name in self._assignment_order["handlers"] if name != handler_id] + [handler_id]
             self._enabled_handlers.add(handler_id)
             self._disabled_handlers.discard(handler_id)
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
+        event_id = self.manager.capabilities.event_id_for_handler(handler_id)
         with self._capabilities_lock:
+            self._catalog_order["events"] = [name for name in self._catalog_order.get("events", []) if name != event_id]
             self._enabled_handlers.discard(handler_id)
             self._disabled_handlers.add(handler_id)
         self._persist_context()
@@ -538,8 +572,11 @@ class Agent:
     def memory_record(self) -> dict[str, Any]:
         """Снимок экземпляра для долговременной памяти."""
 
-        snapshot = self.capabilities_snapshot()
-        disabled = self.disabled_snapshot()
+        with self._capabilities_lock:
+            snapshot = self.capabilities_snapshot()
+            disabled = self.disabled_snapshot()
+            assignments = {key: [name for name in self._assignment_order[key] if name in snapshot[key]] for key in ("modules", "actions", "handlers")}
+            catalog_order = {key: list(value) for key, value in self._catalog_order.copy().items()}
         return {
             "agent_id": self.agent_id,
             "name": self.name,
@@ -547,9 +584,8 @@ class Agent:
             "person_prompt": self.person_prompt,
             "protected": self.protected,
             "parent_id": self.parent_id,
-            "modules": sorted(snapshot["modules"]),
-            "actions": sorted(snapshot["actions"]),
-            "handlers": sorted(snapshot["handlers"]),
+            **assignments,
+            "catalog_order": catalog_order,
             "disabled_modules": sorted(disabled["modules"]),
             "disabled_actions": sorted(disabled["actions"]),
             "disabled_handlers": sorted(disabled["handlers"]),
@@ -564,8 +600,10 @@ class Agent:
         self,
         snapshot: dict[str, set[str]] | None = None,
     ) -> tuple[dict[str, ActionDefinition], dict[str, EventDefinition]]:
-        if snapshot is None:
-            snapshot = self.known_snapshot()
+        assigned = self.capabilities_snapshot()
+        paused = self.manager.capabilities.global_paused()
+        enabled = {key: assigned[key] - paused[key] for key in assigned}
+        snapshot = enabled if snapshot is None else {key: set(snapshot[key]) & enabled[key] for key in enabled}
         missing = self.manager.capabilities.missing(
             self.manager.capabilities.runnable_snapshot(self.capabilities_snapshot())
         )
@@ -579,30 +617,37 @@ class Agent:
             primary=self.primary,
             developer=self.preset == "module_manager",
         )
-        actions.update(self.manager.capabilities.known_action_definitions(snapshot))
+        actions = {name: spec for name, spec in actions.items() if name not in self._disabled_actions and name not in paused["actions"]}
+        assigned_actions = [name for name in self._assignment_order["actions"] if name in actions]
+        actions = {**{name: spec for name, spec in actions.items() if name not in assigned_actions},
+                   **{name: actions[name] for name in assigned_actions}}
         events = self.manager.events.for_capabilities(
             modules=snapshot["modules"], handlers=snapshot["handlers"],
             primary=self.primary,
         )
+        assigned_events = [self.manager.capabilities.event_id_for_handler(name) for name in self._assignment_order["handlers"] if name in snapshot["handlers"]]
+        events = {**{name: spec for name, spec in events.items() if name not in assigned_events},
+                  **{name: events[name] for name in assigned_events}}
         if self.primary:
             for name in ("create_automation", "edit_automation"):
                 if name in actions:
-                    schema = self.manager.automation_args_schema()
+                    schema = self.manager.automation_data_schema()
                     if name == "edit_automation":
                         schema = object_schema({"automation_id": {"type": "string"}, "automation": schema})
-                    actions[name] = replace(actions[name], args_schema=schema)
+                    actions[name] = replace(actions[name], data_schema=schema)
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt,
+                self.person_prompt + ("\n\nCapability storage root: " + str(self.manager.capabilities.root.resolve()) if self.preset == "module_manager" else ""),
                 self.manager.master_prompt,
                 actions,
                 events,
                 self.manager.capabilities.catalog(
-                    {**snapshot, "actions": {name for name in snapshot["actions"] if not (self.manager.actions.get(name) and self.manager.actions.get(name).owner.startswith("core"))}},
+                    {key: [name for name in self._assignment_order[key] if name in snapshot[key] and not (key == "actions" and self.manager.actions.get(name) and self.manager.actions.get(name).owner.startswith("core"))] for key in snapshot},
                     describe_unloaded=True,
                 ),
                 model_capabilities=self.manager.model_capabilities,
+                catalog_order=self._catalog_order,
             ),
         }
         return actions, events
@@ -792,7 +837,7 @@ class Agent:
             self._set_state("waiting")
             return
 
-        schemas = {name: spec.args_schema for name, spec in specs.items()}
+        schemas = {name: spec.data_schema for name, spec in specs.items()}
 
         failures = 0
         while not self._stop.is_set() and generation == self._generation:
@@ -911,7 +956,7 @@ class Agent:
 
     def _append_structure_error_locked(self, code: str, message: str, response: str) -> None:
         event = Event(
-            type="structure_error",
+            event_id="structure_error",
             data={"code": code, "message": message, "response": response},
             source="core",
             target=self.agent_id,
@@ -991,8 +1036,7 @@ class AgentManager:
             if config is not None
             else presets.root.parent / "automations.json"
         )
-        self.automations = AutomationStore(automation_path)
-        self._automation_args_schema_cache: dict[str, Any] | None = None
+        self.automations = AutomationStore(automation_path, resolve_handler=self.capabilities.event_id_for_handler)
         self.stopping = threading.Event()
         self.processes = ProcessManager()
         self.services.setdefault("process_manager", self.processes)
@@ -1030,7 +1074,7 @@ class AgentManager:
                     return None
                 try:
                     validate_json(
-                        item["data"], spec.args_schema,
+                        item["data"], spec.data_schema,
                         where=f"automation action {item['action_id']}",
                     )
                 except ValueError as exc:
@@ -1056,105 +1100,27 @@ class AgentManager:
         agent._used_call_ids.update(action.call_id for action in requests)
         return requests
 
-    def automation_args_schema(self) -> dict[str, Any]:
-        """Build a strict, disk-aware input schema for arbitrary automation JSON."""
-
-        if self._automation_args_schema_cache is not None:
-            return self._automation_args_schema_cache
-
-        action_args = {
-            action_id: spec.args_schema
-            for action_id, spec in self.actions.all().items()
-            if action_id not in {"no_action", "create_automation", "edit_automation", "list_automations"}
-        }
-        action_results = {
-            action_id: spec.result_schema
-            for action_id, spec in self.actions.all().items()
-            if action_id not in {"no_action", "list_automations", "capability_info"}
-        }
-        on_disk = self.capabilities.automation_schemas()
-        for action_id, schema in on_disk["action_args"].items():
-            action_args.setdefault(action_id, schema)
-        for action_id, schema in on_disk["action_results"].items():
-            action_results.setdefault(action_id, schema)
-
-        action_variants = [
-            object_schema(
-                {
-                    "action_id": {"type": "string", "enum": [action_id]},
-                    "data": schema,
-                }
-            )
-            for action_id, schema in sorted(action_args.items())
-        ]
-        if not action_variants:
-            raise ValueError("Automation requires at least one existing action")
-        actions_schema = {
-            "type": "array",
-            "minItems": 1,
-            "items": {"anyOf": action_variants},
-        }
-
-        event_variants = [
-            object_schema(
-                {
-                    "handler_id": {"type": "string", "enum": [handler_id]},
-                    "data": schema,
-                }
-            )
-            for handler_id, schema in sorted(on_disk["handler_events"].items())
-        ]
-        event_variants.extend(
-            object_schema(
-                {
-                    "type": {"type": "string", "enum": [event_type]},
-                    "data": spec.data_schema,
-                }
-            )
-            for event_type, spec in sorted(self.events.all().items())
-        )
-        event_trigger = {"anyOf": event_variants}
-
-        result_schemas = list(action_results.values())
-        result_schemas.extend(
-            (
-                object_schema(
-                    {
-                        "status": {"type": "string", "enum": ["disabled"]},
-                        "info": {"type": "string"},
-                    }
-                ),
-                object_schema(
-                    {
-                        "status": {"type": "string", "enum": ["paused"]},
-                        "info": {"type": "string"},
-                    }
-                ),
-            )
-        )
-        unique_results = {
-            json.dumps(schema, ensure_ascii=False, sort_keys=True): schema
-            for schema in result_schemas
-        }
-        call_result_trigger = object_schema(
-            {
-                "type": {"type": "string", "enum": ["call_result"]},
-                "call_id": {"type": "string"},
-                "data": {"anyOf": list(unique_results.values())},
-            }
-        )
-        self._automation_args_schema_cache = {
-            "anyOf": [
-                object_schema({"event": event_trigger, "actions": actions_schema}),
-                object_schema(
-                    {"call_result": call_result_trigger, "actions": actions_schema}
-                ),
-            ]
-        }
-        return self._automation_args_schema_cache
-
-    def invalidate_automation_schema(self) -> None:
-        self._automation_args_schema_cache = None
+    def automation_data_schema(self) -> dict[str, Any]:
+        """Describe automation structure once, without copying capability catalogs."""
+        data = object_schema({}, additional_properties=True)
+        action = object_schema({
+            "action_id": {"type": "string", "description": "An available action identifier."},
+            "data": {**data, "description": "Arguments matching that action's data_schema."},
+        })
+        actions = {"type": "array", "minItems": 1, "items": action, "description": "Actions to execute when the trigger matches, without call identifiers."}
+        event = object_schema({
+            "event_id": {"type": "string", "description": "The exact event identifier."},
+            "data": {**data, "description": "The complete event data to match exactly."},
+        })
+        result = object_schema({
+            "event_id": {"type": "string", "enum": ["call_result"]},
+            "call_id": {"type": "string", "description": "Example invocation identifier; its value is ignored when matching."},
+            "data": {**data, "description": "The complete result data to match exactly."},
+        })
+        return {"anyOf": [
+            object_schema({"event": event, "actions": actions}),
+            object_schema({"call_result": result, "actions": actions}),
+        ]}
 
     def _new_id(self) -> str:
         with self._lock:
@@ -1266,9 +1232,9 @@ class AgentManager:
 
     def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
         snapshot = {
-            "modules": set(record.get("modules") or ()),
-            "actions": set(record.get("actions") or ()),
-            "handlers": set(record.get("handlers") or ()),
+            "modules": list(record.get("modules") or ()),
+            "actions": list(record.get("actions") or ()),
+            "handlers": list(record.get("handlers") or ()),
         }
         return self._spawn(
             name=record["name"],
@@ -1286,6 +1252,7 @@ class AgentManager:
             automated_call_ids=record.get("automated_call_ids"),
             person_prompt=record.get("person_prompt"),
             protected=record.get("protected"),
+            catalog_order=record.get("catalog_order"),
             persist_initial=False,
         )
 
@@ -1315,6 +1282,7 @@ class AgentManager:
         persist_initial: bool = True,
         person_prompt: str | None = None,
         protected: bool | None = None,
+        catalog_order: dict[str, list[str]] | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
@@ -1345,7 +1313,6 @@ class AgentManager:
         from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL
         system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "module_manager" else set())
         initial["actions"].difference_update(system_ids)
-        disabled_override["actions"].difference_update(system_ids)
         self.capabilities.load_snapshot(
             self.capabilities.runnable_snapshot(initial), start_handlers=False
         )
@@ -1365,9 +1332,9 @@ class AgentManager:
                 self,
                 parent_id=parent_id,
                 primary=primary,
-                enabled_modules=initial["modules"],
-                enabled_actions=initial["actions"],
-                enabled_handlers=initial["handlers"],
+                enabled_modules=[name for name in (capabilities_override or {"modules": selected.modules})["modules"] if name in initial["modules"]],
+                enabled_actions=[name for name in (capabilities_override or {"actions": selected.actions})["actions"] if name in initial["actions"]],
+                enabled_handlers=[name for name in (capabilities_override or {"handlers": selected.handlers})["handlers"] if name in initial["handlers"]],
                 disabled_modules=(disabled_override or {}).get("modules"),
                 disabled_actions=(disabled_override or {}).get("actions"),
                 disabled_handlers=(disabled_override or {}).get("handlers"),
@@ -1375,6 +1342,7 @@ class AgentManager:
                 automated_call_ids=automated_call_ids,
                 person_prompt=person_prompt,
                 protected=protected,
+                catalog_order=catalog_order,
             )
             self.agents[resolved_id] = agent
             self.bus.bind(agent)
@@ -1562,7 +1530,6 @@ class AgentManager:
 
     def enable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
-        self.invalidate_automation_schema()
         if self.capabilities.is_globally_paused("module", module_id):
             agent.enable_module(module_id)
             return {"agent_id": agent_id, "module_id": module_id, "enabled": True, "globally_paused": True}
@@ -1592,7 +1559,6 @@ class AgentManager:
         if spec is not None and spec.owner.startswith("core"):
             agent.enable_action(action_id)
             return {"agent_id": agent_id, "action_id": action_id, "enabled": True}
-        self.invalidate_automation_schema()
         if self.capabilities.is_globally_paused("action", action_id):
             agent.enable_action(action_id)
             return {"agent_id": agent_id, "action_id": action_id, "enabled": True, "globally_paused": True}
@@ -1618,7 +1584,6 @@ class AgentManager:
 
     def enable_handler(self, agent_id: str, handler_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
-        self.invalidate_automation_schema()
         if self.capabilities.is_globally_paused("handler", handler_id):
             agent.enable_handler(handler_id)
             return {"agent_id": agent_id, "handler_id": handler_id, "enabled": True, "globally_paused": True}
@@ -1683,14 +1648,14 @@ class AgentManager:
         *, agent_id: str | None = None, call_id: str | None = None,
     ) -> None:
         target = agent_id
-        event_type = "capability_error"
+        event_id = "capability_error"
         data = {"kind": kind, "id": capability_id, "error": str(error), "call_id": call_id}
         if target is None:
-            self.debug.log(event_type, **data)
+            self.debug.log(event_id, **data)
             return
         self.bus.publish(
             Event(
-                type=event_type,
+                event_id=event_id,
                 data=data,
                 source="core",
                 target=target,

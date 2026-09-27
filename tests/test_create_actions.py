@@ -65,7 +65,7 @@ class CreateActionsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "main"):
             module.run(
                 {
-                    "event": {"handler_id": "tick", "data": {"text": "go"}},
+                    "event": {"event_id": "tick.event", "data": {"text": "go"}},
                     "actions": [{"action_id": "say", "data": {"text": "ok"}}],
                 },
                 self.automation_context("agent-001"),
@@ -75,7 +75,7 @@ class CreateActionsTests(unittest.TestCase):
     def test_create_automation_appends_validated_rule_for_main(self):
         module = self.load_action("create_automation")
         rule = {
-            "event": {"handler_id": "tick", "data": {"text": "go"}},
+            "event": {"event_id": "tick.event", "data": {"text": "go"}},
             "actions": [{"action_id": "say", "data": {"text": "ok"}}],
         }
         result = module.run(rule, self.automation_context("main"))
@@ -89,7 +89,7 @@ class CreateActionsTests(unittest.TestCase):
         module = self.load_action("create_automation")
         result = module.run(
                 {
-                    "event": {"handler_id": "tick", "data": {"text": "go"}},
+                    "event": {"event_id": "tick.event", "data": {"text": "go"}},
                     "actions": [{"action_id": "say", "call_id": "smuggled", "data": {}}],
                 },
                 self.automation_context("main"),

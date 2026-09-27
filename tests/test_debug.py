@@ -42,7 +42,7 @@ class DebugTests(unittest.TestCase):
         output = io.StringIO()
         debug = Debugger(stream=output)
         event = Event(
-            type="image_notice",
+            event_id="image_notice",
             data={"text": "2026-09-20-005028_jarvis.png"},
             parts=(
                 InputPart("image", "image/png", "aGVsbG8="),
@@ -80,7 +80,7 @@ class DebugTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
 
         event = Event(
-            type="structure_error",
+            event_id="structure_error",
             data={
                 "code": "json",
                 "message": "Невалидный JSON",
@@ -89,14 +89,14 @@ class DebugTests(unittest.TestCase):
         )
         debug.input(event, agent_id="main")
         text = output.getvalue()
-        self.assertIn('"type": "structure_error"', text)
+        self.assertIn('"event_id": "structure_error"', text)
         self.assertIn('"response": "Привет чем могу помочь?"', text)
 
     def test_structure_error_is_red(self):
         output = _Tty()
         debug = Debugger(stream=output)
         event = Event(
-            type="structure_error",
+            event_id="structure_error",
             data={"code": "json", "message": "broken", "response": "{}"},
         )
         debug.input(event, agent_id="main")
@@ -106,7 +106,7 @@ class DebugTests(unittest.TestCase):
     def test_subagent_output_is_yellow_and_separated(self):
         output = _Tty()
         debug = Debugger(stream=output)
-        event = Event(type="tick.event", data={"text": "ok"})
+        event = Event(event_id="tick.event", data={"text": "ok"})
         call_result = CallResult(call_id="r-1", data={"value": 1})
 
         debug.input(event, agent_id="agent-001")
@@ -128,7 +128,7 @@ class DebugTests(unittest.TestCase):
         output = _Tty()
         debug = Debugger(stream=output)
         event = Event(
-            type="capability_error",
+            event_id="capability_error",
             data={"kind": "module", "id": "x", "error": "boom"},
         )
         debug.input(event, agent_id="agent-001")

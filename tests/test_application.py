@@ -61,16 +61,16 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
-                    ordered_blocks = ["person_prompt:", "master_prompt:", "model_info:", "capabilities:"]
+                    ordered_blocks = ["personprompt:", "masterprompt:", "Текущая модель поддерживает следующие модальности:", "CAPABILITY:"]
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
-                    self.assertIn("event-thinking-action", system_prompt)
-                    self.assertIn("Текущие поддерживаемые модальности: text", system_prompt)
-                    self.assertIn('"type": "say"', system_prompt)
-                    self.assertIn('"type": "tick.event"', system_prompt)
-                    self.assertIn('"type": "structure_error"', system_prompt)
+                    self.assertIn("среде Jarvis", system_prompt)
+                    self.assertIn("Текущая модель поддерживает следующие модальности: text", system_prompt)
+                    self.assertIn('"action_id": "say"', system_prompt)
+                    self.assertIn('"event_id": "tick.event"', system_prompt)
+                    self.assertIn('"event_id": "structure_error"', system_prompt)
                     self.assertIn(
-                        '"type": "capability_error"', system_prompt
+                        '"event_id": "capability_error"', system_prompt
                     )
                     self.assertIn("call_result", system_prompt)
                     self.assertEqual(
@@ -121,7 +121,7 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(
                         results[0],
                         {
-                            "type": "call_result",
+                            "event_id": "call_result",
                             "call_id": "say-1",
                             "data": {"spoken": True, "text": "test"},
                         },

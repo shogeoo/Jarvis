@@ -35,7 +35,7 @@ from .api import (
     HandlerDefinition,
     ModuleDefinition,
 )
-from ..core.protocol import validate_strict_schema
+from ..core.protocol import validate_data_schema, validate_result_schema, validate_catalog_text, validate_json
 
 
 _protocol = sys.stdout
@@ -117,11 +117,9 @@ def _unit_entries(directory: Path) -> list[Path]:
 def _check_action(definition: ActionDefinition) -> None:
     if not callable(definition.run):
         raise ValueError("Некорректное действие: run должен быть функцией")
-    for name, schema in (
-        ("аргументов", definition.args_schema),
-        ("результата", definition.result_schema),
-    ):
-        validate_strict_schema(schema, where=f"схема {name} действия")
+    validate_data_schema(definition.data_schema, where="action data schema")
+    validate_result_schema(definition.result_schema)
+    validate_catalog_text({"description": definition.description, "data_schema": definition.data_schema, "result_schema": definition.result_schema})
 
 
 def _check_handler(definition: HandlerDefinition) -> None:
@@ -132,12 +130,15 @@ def _check_handler(definition: HandlerDefinition) -> None:
     event = definition.event
     if not isinstance(event, EventDefinition):
         raise ValueError("Handler обязан объявлять ровно одно событие")
-    validate_strict_schema(event.data_schema, where=f"схема события {event.type}")
+    if not isinstance(event.event_id, str) or not event.event_id:
+        raise ValueError("Handler must declare a non-empty event_id")
+    validate_data_schema(event.data_schema, where=f"event schema {event.event_id}")
+    validate_catalog_text({"description": event.description, "data_schema": event.data_schema})
 
 
 def _assign(definition, unit_id: str):
-    if getattr(definition, "id", ""):
-        raise ValueError("ID захардкожен: назначается из имени каталога")
+    if getattr(definition, "id", "") not in {"", unit_id}:
+        raise ValueError(f"Declared ID must match directory ID {unit_id}")
     return replace(definition, id=unit_id)
 
 
@@ -184,7 +185,7 @@ class _Unit:
                 {
                     "id": spec.id,
                     "description": spec.description,
-                    "args_schema": spec.args_schema,
+                    "data_schema": spec.data_schema,
                     "result_schema": spec.result_schema,
                 }
                 for spec in self.actions.values()
@@ -194,7 +195,7 @@ class _Unit:
                     "id": handler.id,
                     "description": handler.description,
                     "event": {
-                        "type": handler.event.type,
+                        "event_id": handler.event.event_id,
                         "description": handler.event.description,
                         "data_schema": handler.event.data_schema,
                     },
@@ -275,13 +276,14 @@ def _load_module(root: Path, rel: Path, module_id: str) -> _Unit:
     definition = factory()
     if not isinstance(definition, ModuleDefinition):
         raise TypeError("create_module должен вернуть ModuleDefinition")
+    if definition.module_id not in {"", module_id}:
+        raise ValueError("Declared module_id must match its directory")
+    validate_catalog_text({"description": definition.description})
 
     by_source: dict[str, tuple[str, Any]] = {}
     for item in definition.actions:
         if not isinstance(item, ActionDefinition):
             raise TypeError(f"Модуль {module_id} вернул не действие")
-        if item.id:
-            raise ValueError("ID действия захардкожен: назначается из каталога")
         if not item.source:
             raise ValueError("Действие без файла-источника")
         key = str(Path(item.source).resolve())
@@ -291,8 +293,6 @@ def _load_module(root: Path, rel: Path, module_id: str) -> _Unit:
     for item in definition.handlers:
         if not isinstance(item, HandlerDefinition):
             raise TypeError(f"Модуль {module_id} вернул не handler")
-        if item.id:
-            raise ValueError("ID handler захардкожен: назначается из каталога")
         if not item.source:
             raise ValueError("Handler без файла-источника")
         key = str(Path(item.source).resolve())
@@ -327,6 +327,8 @@ def _load_module(root: Path, rel: Path, module_id: str) -> _Unit:
         definition_item = entry[1]
         full_id = f"{module_id}.{unit_dir.name}"
         assigned = _assign(definition_item, full_id)
+        if not assigned.event.event_id.startswith(module_id + "."):
+            raise ValueError("Module event_id must include the module namespace")
         _check_handler(assigned)
         handlers.append(assigned)
         prepare.extend(hook for hook in (definition_item.prepare,) if hook)
@@ -621,11 +623,15 @@ def main(argv=None) -> int:
 
     def emit(handler_id: str):
         def _emit(event) -> None:
+            declared = next(handler.event for handler in unit.handlers if handler.id == handler_id)
+            if event.event_id != declared.event_id:
+                raise ValueError("Handler emitted an undeclared event_id")
+            validate_json(event.data, declared.data_schema, where="handler event data")
             _send(
                 {
                     "kind": "event",
                     "event": {
-                        "type": event.type,
+                        "event_id": event.event_id,
                         "data": event.data,
                         "target": event.target,
                         "reply_to": event.reply_to,
@@ -650,6 +656,7 @@ def main(argv=None) -> int:
     for handler in unit.handlers:
         context = HandlerContext(
             handler_id=handler.id,
+            event_id=handler.event.event_id,
             unit_path=unit.path,
             emit_event=emit(handler.id),
             module_id=unit.module_id,

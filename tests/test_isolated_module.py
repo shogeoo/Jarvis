@@ -181,7 +181,7 @@ class UnitHostTests(unittest.TestCase):
                 self.assertEqual(
                     fake.agent.results[0].model_value(),
                     {
-                        "type": "call_result",
+                        "event_id": "call_result",
                         "call_id": "run-1",
                         "data": {"value": "ok"},
                     },
