@@ -29,7 +29,7 @@ import requests
 
 from jarvis.core.lifecycle import terminate_process
 
-from .config import Config, TTS_GAIN
+from .config import Config
 from .ducking import SystemAudioMute, SPEECH_APPLICATION_ID
 
 SERVER_START_TIMEOUT = 240.0
@@ -398,7 +398,7 @@ class Speaker:
             return
         cmd = [
             "ffplay", "-autoexit", "-nodisp", "-loglevel", "error", "-infbuf",
-            "-af", f"volume={TTS_GAIN},alimiter=limit=0.95:level=false",
+            "-volume", "100",
             "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
         ]
         try:

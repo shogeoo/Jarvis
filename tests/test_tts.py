@@ -49,7 +49,8 @@ class TtsTests(unittest.TestCase):
                 self.assertEqual(environment["SDL_AUDIODRIVER"], "pulseaudio")
                 self.assertIn("application.id=jarvis.speech", environment["PULSE_PROP"])
                 argv = spawn.call_args.args[0]
-                self.assertEqual(argv[argv.index("-af") + 1], "volume=2.0,alimiter=limit=0.95:level=false")
+                self.assertEqual(argv[argv.index("-volume") + 1], "100")
+                self.assertNotIn("-af", argv)
 
     def test_voice_profile_creation_uses_cuda_arguments(self):
         from jarvis.speech.config import build_config
