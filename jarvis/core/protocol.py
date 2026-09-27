@@ -169,7 +169,10 @@ def validate_schema(schema: JSONSchema, *, where: str = "schema") -> None:
     """Проверить саму схему, не требуя от неё подходящего экземпляра данных."""
 
     if Draft202012Validator is None:  # pragma: no cover
-        if not isinstance(schema, dict) or not schema.get("type"):
+        if not isinstance(schema, dict) or not (
+            schema.get("type")
+            or (isinstance(schema.get("anyOf"), list) and bool(schema["anyOf"]))
+        ):
             raise ValueError(f"Некорректная {where}: отсутствует type")
         return
     try:
@@ -228,7 +231,9 @@ def _fallback_validate(value: Any, schema: JSONSchema, where: str) -> None:
                 _fallback_validate(value, variant, where)
                 return
             except ValueError as exc:
-                errors.append(str(exc))
+                message = str(exc)
+                if message not in errors:
+                    errors.append(message)
         raise ValueError(f"Данные не соответствуют anyOf в {where}: {'; '.join(errors)}")
     if "enum" in schema and value not in schema["enum"]:
         raise ValueError(f"Недопустимое значение в {where}: {value!r}")

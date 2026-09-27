@@ -1,4 +1,5 @@
 import copy
+import importlib.util
 import json
 import os
 import tempfile
@@ -6,11 +7,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from jarvis.capabilities.manager import CapabilityManager
-from jarvis.core.protocol import Event
+from jarvis.core.protocol import ActionRequest, Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
+from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.presets import PresetStore
@@ -22,6 +25,12 @@ class _Response:
     def __init__(self, content):
         message = type("Message", (), {"content": content, "refusal": None})()
         self.choices = [type("Choice", (), {"message": message})()]
+
+    def __iter__(self):
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=self.choices[0].message)])
+
+    def close(self):
+        pass
 
 
 class _Completions:
@@ -86,14 +95,28 @@ def _wait(predicate, timeout=2):
 
 class RuntimeTests(unittest.TestCase):
     def install_project_action(self, action_id):
-        source = Path(__file__).resolve().parents[1] / ".jarvis" / "actions" / action_id / "action.py"
-        if source.is_file():
-            code = source.read_text(encoding="utf-8")
-        elif action_id == "toggle_capability":
-            code = fixtures.toggle_capability_action()
-        else:
-            code = fixtures.CONTROL_ACTIONS[action_id]
-        fixtures.write_action(self.root / "actions", action_id, code)
+        self.actions.require(action_id)
+
+    def enable_for_main(self, *action_ids):
+        path = self.root / "presets" / "main" / "capabilities.json"
+        capabilities = json.loads(path.read_text(encoding="utf-8"))
+        capabilities["actions"] = sorted(
+            set(capabilities["actions"]) | set(action_ids)
+        )
+        path.write_text(
+            json.dumps(capabilities, indent=2) + "\n", encoding="utf-8"
+        )
+
+    def load_installed_action(self, action_id):
+        if self.actions.get(action_id) is not None:
+            return SimpleNamespace(run=self.actions.require(action_id).run)
+        path = self.root / "actions" / action_id / "action.py"
+        spec = importlib.util.spec_from_file_location(
+            f"installed_{action_id}_action", path
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -180,6 +203,222 @@ class RuntimeTests(unittest.TestCase):
             ["say-1", "say-2"],
         )
 
+    def test_automation_dispatches_as_an_assistant_action_into_agent_context(self):
+        client = _Client([_no_action("after-automation")])
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        AutomationStore(self.root / "automations.json").append(
+            {
+                "event": {"handler_id": "tick", "data": {"text": "go"}},
+                "actions": [{"action_id": "say", "data": {"text": "automated"}}],
+            }
+        )
+
+        self.publish(agent, "go")
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 1))
+        assistant_actions = [
+            json.loads(message["content"])
+            for message in agent.history
+            if message["role"] == "assistant"
+            and "auto_act-" in message["content"]
+        ]
+        self.assertEqual(
+            assistant_actions,
+            [{"actions": [{"action_id": "say", "call_id": "auto_act-1", "data": {"text": "automated"}}]}],
+        )
+        self.assertEqual(self.call_results(agent)[0]["call_id"], "auto_act-1")
+        self.publish(agent, "go")
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
+        self.assertEqual(
+            [item["call_id"] for item in self.call_results(agent)],
+            ["auto_act-1", "auto_act-2"],
+        )
+
+    def test_call_result_automation_ignores_real_call_id_and_uses_normal_dispatch(self):
+        client = _Client([_no_action("after-call-result-automation")])
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        AutomationStore(self.root / "automations.json").append(
+            {
+                "call_result": {
+                    "type": "call_result",
+                    "call_id": "example-id-not-used-at-runtime",
+                    "data": {"spoken": True, "text": "origin"},
+                },
+                "actions": [{"action_id": "say", "data": {"text": "follow-up"}}],
+            }
+        )
+
+        manager.capabilities.dispatch(
+            action=ActionRequest(
+                "say", {"text": "origin"}, "a-real-unrelated-call-id"
+            ),
+            spec=self.actions.require("say"),
+            agent=agent,
+        )
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
+        self.assertEqual(
+            [result["call_id"] for result in self.call_results(agent)],
+            ["a-real-unrelated-call-id", "auto_act-1"],
+        )
+        follow_up = next(
+            json.loads(message["content"])
+            for message in agent.history
+            if message["role"] == "assistant" and "auto_act-1" in message["content"]
+        )
+        self.assertEqual(follow_up["actions"][0]["data"], {"text": "follow-up"})
+
+    def test_management_actions_return_their_declared_result_shapes(self):
+        client = _Client([_no_action("after-management")])
+        self.install_project_action("create_automation")
+        self.install_project_action("create_preset")
+        self.enable_for_main("create_automation", "create_preset")
+        manager = self.manager(client)
+        agent = manager.spawn_root(name="main", preset="main")
+        contract = agent._contract()[0]
+        manager.capabilities.dispatch(
+            action=ActionRequest(
+                "create_automation",
+                {
+                    "event": {"handler_id": "tick", "data": {"text": "saved"}},
+                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
+                },
+                "create-automation-call",
+            ),
+            spec=contract["create_automation"],
+            agent=agent,
+        )
+        manager.capabilities.dispatch(
+            action=ActionRequest(
+                "create_preset",
+                {
+                    "preset_id": "empty-preset",
+                    "person_prompt": "An empty preset.",
+                    "actions": ["missing-action"],
+                    "handlers": [],
+                    "modules": [],
+                },
+                "create-preset-call",
+            ),
+            spec=contract["create_preset"],
+            agent=agent,
+        )
+        manager.capabilities.dispatch(
+            action=ActionRequest(
+                "create_preset",
+                {
+                    "preset_id": "empty-preset",
+                    "person_prompt": "An empty preset.",
+                    "actions": [],
+                    "handlers": [],
+                    "modules": [],
+                },
+                "create-preset-success-call",
+            ),
+            spec=contract["create_preset"],
+            agent=agent,
+        )
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 3))
+        results = {item["call_id"]: item["data"] for item in self.call_results(agent)}
+        self.assertEqual(results["create-automation-call"]["status"], "created")
+        self.assertIsNone(results["create-automation-call"]["error"])
+        self.assertEqual(results["create-preset-call"]["status"], "not_created")
+        self.assertIn("missing-action", results["create-preset-call"]["error"])
+        self.assertEqual(
+            results["create-preset-success-call"],
+            {"status": "created", "preset_id": "empty-preset", "error": None},
+        )
+        self.assertTrue((self.root / "presets" / "empty-preset").is_dir())
+        stored = AutomationStore(self.root / "automations.json").list()
+        stored = [{key: value for key, value in rule.items() if key != "automation_id"} for rule in stored]
+        self.assertEqual(
+            stored,
+            [
+                {
+                    "event": {"handler_id": "tick", "data": {"text": "saved"}},
+                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
+                }
+            ],
+        )
+
+    def test_primary_only_management_actions_are_not_in_subagent_prompt(self):
+        client = _Client([_no_action("main-ready"), _no_action("worker-ready")])
+        self.install_project_action("create_automation")
+        self.install_project_action("create_preset")
+        self.enable_for_main("create_automation", "create_preset")
+        manager = self.manager(client)
+        main = manager.spawn_root(name="main", preset="main")
+        worker = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
+        main_prompt = main.history[0]["content"]
+        worker_prompt = manager.require_agent(worker["agent_id"]).history[0]["content"]
+        for action_id in ("create_automation", "create_preset"):
+            self.assertIn(f'"type": "{action_id}"', main_prompt)
+            self.assertNotIn(f'"type": "{action_id}"', worker_prompt)
+
+    def test_create_preset_uses_existing_capability_ids_and_refuses_overwrite(self):
+        self.install_project_action("create_preset")
+        manager = self.manager(_Client([]))
+        manager.spawn_root(name="main", preset="main")
+        module = self.load_installed_action("create_preset")
+        context = SimpleNamespace(
+            agent_id="main",
+            action_id="create_preset",
+            agent_manager=manager.capabilities._agent_api,
+            metadata={"preset": "main"},
+            capabilities=manager.capabilities,
+            config=SimpleNamespace(jarvis_dir=self.root),
+        )
+        created = module.run(
+            {
+                "preset_id": "researcher",
+                "person_prompt": "Research carefully.",
+                "actions": ["say"],
+                "handlers": [],
+                "modules": [],
+            },
+            context,
+        )
+        self.assertEqual(
+            created,
+            {"status": "created", "preset_id": "researcher", "error": None},
+        )
+        preset = self.presets.load("researcher")
+        self.assertEqual(preset.person_prompt, "Research carefully.")
+        self.assertEqual(preset.actions, ("say",))
+        self.assertFalse(preset.protected)
+        refused = module.run(
+            {
+                "preset_id": "researcher",
+                "person_prompt": "Do not replace me.",
+                "actions": [],
+                "handlers": [],
+                "modules": [],
+            },
+            context,
+        )
+        self.assertEqual(refused["status"], "not_created")
+        self.assertIn("существует", refused["error"])
+        self.assertEqual(
+            self.presets.load("researcher").person_prompt,
+            "Research carefully.",
+        )
+
+    def test_delete_agent_removes_memory_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            memory = MemoryStore(Path(temporary))
+            manager = self.manager(_Client([_no_action("done")]), memory=memory)
+            main = manager.spawn_root(name="main", preset="main")
+            created = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
+            worker_id = created["agent_id"]
+            manager.persist_agent(manager.require_agent(worker_id))
+            worker_dir = Path(temporary) / "worker" / worker_id
+            self.assertTrue(worker_dir.is_dir())
+            self.assertEqual(
+                manager.delete(agent_id=worker_id),
+                {"agent_id": worker_id, "deleted": True},
+            )
+            self.assertFalse(worker_dir.exists())
+
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(
             "fail",
@@ -240,7 +479,8 @@ class RuntimeTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertIsNotNone(values)
         error = next(item for item in values if item["type"] == "capability_error")
-        self.assertEqual(error["data"]["capability"], "action:fail")
+        self.assertEqual(error["data"]["kind"], "action")
+        self.assertEqual(error["data"]["id"], "fail")
         results = [item for item in values if item["type"] == "call_result"]
         self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
@@ -518,8 +758,10 @@ class RuntimeTests(unittest.TestCase):
         special = self.root / "presets" / "special"
         special.mkdir()
         (special / "personprompt.txt").write_text("special", encoding="utf-8")
-        for name in ("modules", "actions", "handlers"):
-            (special / f"{name}.json").write_text("[]", encoding="utf-8")
+        (special / "capabilities.json").write_text(
+            json.dumps({"modules": [], "actions": [], "handlers": []}),
+            encoding="utf-8",
+        )
         (special / "preset.json").write_text('{"protected": true}', encoding="utf-8")
         manager = self.manager(_Client([_no_action("done")]))
         manager.spawn_root(name="main", preset="main")

@@ -30,11 +30,11 @@ class EventBusTests(unittest.TestCase):
         events = EventRegistry()
         events.register(
             EventDefinition(
-                "telegram.message",
+                "example.message",
                 "message",
                 object_schema({"text": {"type": "string"}}),
             ),
-            owner="module:telegram",
+            owner="module:example",
         )
         events.register(
             EventDefinition(
@@ -45,18 +45,18 @@ class EventBusTests(unittest.TestCase):
             owner="handler:tick",
         )
         self.bus = EventBus(events, debug=Debugger(enabled=False))
-        self.first = _Agent("agent-001", modules={"telegram"})
-        self.second = _Agent("agent-002", modules={"telegram"})
+        self.first = _Agent("agent-001", modules={"example"})
+        self.second = _Agent("agent-002", modules={"example"})
         self.other = _Agent("agent-003", handlers={"tick"})
         for agent in (self.first, self.second, self.other):
             self.bus.bind(agent)
 
     def test_handler_event_reaches_every_subscribed_agent(self):
         event = Event(
-            type="telegram.message",
+            type="example.message",
             data={"text": "hello"},
-            module_id="telegram",
-            handler_id="telegram.monitor",
+            module_id="example",
+            handler_id="example.monitor",
         )
         self.assertTrue(self.bus.publish(event))
         self.assertEqual(self.first.events, [event])
@@ -76,10 +76,10 @@ class EventBusTests(unittest.TestCase):
 
     def test_targeted_event_only_reaches_selected_agent(self):
         event = Event(
-            type="telegram.message",
+            type="example.message",
             data={"text": "sent"},
-            module_id="telegram",
-            handler_id="telegram.monitor",
+            module_id="example",
+            handler_id="example.monitor",
             target="agent-002",
         )
         self.assertTrue(self.bus.publish(event))

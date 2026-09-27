@@ -16,7 +16,7 @@ class DebugTests(unittest.TestCase):
         output = io.StringIO()
         debug = Debugger(stream=output)
         event = Event(
-            type="take_screenshot",
+            type="image_notice",
             data={"text": "2026-09-20-005028_jarvis.png"},
             parts=(
                 InputPart("image", "image/png", "aGVsbG8="),
@@ -103,7 +103,7 @@ class DebugTests(unittest.TestCase):
         debug = Debugger(stream=output)
         event = Event(
             type="capability_error",
-            data={"capability": "module:x", "error": "boom"},
+            data={"kind": "module", "id": "x", "error": "boom"},
         )
         debug.input(event, agent_id="agent-001")
         self.assertIn("\033[31m", output.getvalue())

@@ -15,6 +15,7 @@ from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
 
 import fixtures
+from test_runtime import _Response
 
 
 class ApplicationTests(unittest.TestCase):
@@ -33,13 +34,12 @@ class ApplicationTests(unittest.TestCase):
             content = json.dumps({
                 "actions": [{"action_id": "no_action", "call_id": call_id, "data": {}}]
             })
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content, refusal=None))])
+            return _Response(content)
 
         client.chat.completions.create.side_effect = model_response
         discover.return_value = ModelCapabilities("test", ("text",))
         with tempfile.TemporaryDirectory() as project_dir:
             project = Path(project_dir)
-            fixtures.write_master_prompt(project)
             root = fixtures.write_jarvis_root(project / ".jarvis")
             config = Config(
                 model="test",
@@ -52,13 +52,17 @@ class ApplicationTests(unittest.TestCase):
                 memory = MemoryStore(Path(temporary))
                 app = JarvisApplication(config, memory=memory).start()
                 try:
+                    self.assertEqual(
+                        json.loads((root / "automations.json").read_text(encoding="utf-8")),
+                        [],
+                    )
                     self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
                     ordered_blocks = ["person_prompt:", "master_prompt:", "model_info:", "capabilities:"]
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
-                    self.assertIn("environment", system_prompt)
+                    self.assertIn("event-thinking-action", system_prompt)
                     self.assertIn("Текущие поддерживаемые модальности: text", system_prompt)
                     self.assertIn('"type": "say"', system_prompt)
                     self.assertIn('"type": "tick.event"', system_prompt)

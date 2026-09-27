@@ -130,16 +130,27 @@ class CapabilityManager:
         self._handlers: dict[str, LoadedHandler] = {}
         self._modules: dict[str, LoadedModule] = {}
         self._global_state_path = self.root / "capability_state.json"
+        self._global_state_error = None
         try:
             raw_state = json.loads(self._global_state_path.read_text(encoding="utf-8"))
+            if not isinstance(raw_state, dict) or not isinstance(raw_state.get("paused"), dict):
+                raise ValueError("Invalid global capability state")
+            for key in ("modules", "actions", "handlers"):
+                if not isinstance(raw_state["paused"].get(key), list) or not all(isinstance(item, str) for item in raw_state["paused"][key]):
+                    raise ValueError("Invalid global capability state: " + key)
         except FileNotFoundError:
+            raw_state = {}
+        except Exception as exc:
+            self._global_state_error = str(exc)
+            self.debug.error("Cannot read capability_state.json; file preserved: " + str(exc))
             raw_state = {}
         old_paused = raw_state.get("paused", {})
         self._global_paused = {
             kind: set(old_paused.get(kind, raw_state.get(kind, [])))
             for kind in ("modules", "actions", "handlers")
         }
-        self._save_global_state()
+        if self._global_state_error is None:
+            self._save_global_state()
         self._agent_api = _AgentApi(self)
         self._closing = threading.Event()
         self._cancel_waiters: dict[tuple[str, str], threading.Event] = {}
@@ -283,6 +294,46 @@ class CapabilityManager:
             return self._describe("handler", capability_id)
         raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
+    def automation_schemas(self) -> dict[str, dict[str, Any]]:
+        """Describe disk capabilities without loading their runtime processes."""
+
+        action_args: dict[str, Any] = {}
+        action_results: dict[str, Any] = {}
+        handler_events: dict[str, Any] = {}
+
+        def add_catalog(catalog: dict[str, Any]) -> None:
+            for action in catalog.get("actions", []):
+                action_args[action["id"]] = action["args_schema"]
+                action_results[action["id"]] = action["result_schema"]
+            for handler in catalog.get("handlers", []):
+                event = handler.get("event")
+                events = handler.get("events", [])
+                if event is not None:
+                    events = [event]
+                if events:
+                    handler_events[handler["id"]] = events[0]["data_schema"]
+
+        for kind, paths in (
+            ("action", self.discover_actions()),
+            ("handler", self.discover_handlers()),
+            ("module", self.discover_modules()),
+        ):
+            for path in paths:
+                try:
+                    add_catalog(self._describe(kind, path.name))
+                except Exception as exc:  # noqa: BLE001
+                    self.debug.log(
+                        "automation_schema_unavailable",
+                        kind=kind,
+                        capability_id=path.name,
+                        error=str(exc),
+                    )
+        return {
+            "action_args": action_args,
+            "action_results": action_results,
+            "handler_events": handler_events,
+        }
+
     def list_available(self, known: dict[str, set[str]]) -> dict[str, Any]:
         result = {"modules": [], "actions": [], "handlers": []}
         for kind, paths, key in (
@@ -343,10 +394,19 @@ class CapabilityManager:
 
     def _worker_command(self, kind: str, unit_id: str) -> list[str]:
         path = self._unit_path(kind, unit_id)
+        package = Path(__file__).resolve().parents[1]
+        # Load only the SDK package, not the core environment's site-packages.
+        bootstrap = (
+            "import importlib.util,runpy,sys;"
+            f"spec=importlib.util.spec_from_file_location('jarvis',{str(package / '__init__.py')!r},submodule_search_locations=[{str(package)!r}]);"
+            "module=importlib.util.module_from_spec(spec);sys.modules['jarvis']=module;"
+            "spec.loader.exec_module(module);"
+            "runpy.run_module('jarvis.capabilities.worker',run_name='__main__',alter_sys=True)"
+        )
         return [
             str(self._python(path)),
-            "-m",
-            "jarvis.capabilities.worker",
+            "-c",
+            bootstrap,
             "--jarvis-dir",
             str(self.root.resolve()),
             "--unit",
@@ -354,18 +414,7 @@ class CapabilityManager:
         ]
 
     def _worker_env(self) -> dict[str, str]:
-        environment = dict(os.environ)
-        project_root = str(self.config.project_root if self.config else Path.cwd())
-        package_root = str(Path(__file__).resolve().parents[2])
-        paths = []
-        for item in (project_root, package_root):
-            if item not in paths:
-                paths.append(item)
-        previous = environment.get("PYTHONPATH")
-        if previous:
-            paths.append(previous)
-        environment["PYTHONPATH"] = os.pathsep.join(paths)
-        return environment
+        return dict(os.environ)
 
     def _cwd(self) -> Path:
         return self.config.project_root if self.config else Path.cwd()
@@ -402,7 +451,7 @@ class CapabilityManager:
         )
 
     def _host_log(self, host: UnitHost):
-        log_dir = (self.config.jarvis_dir if self.config else DEFAULT_ROOT) / "runtime" / "logs"
+        log_dir = self.root / "runtime" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         return open(log_dir / f"{host.kind}-{host.unit_id}.log", "ab")
 
@@ -575,7 +624,7 @@ class CapabilityManager:
             self.unload_action(host.unit_id)
         else:
             self.unload_handler(host.unit_id)
-        self.debug.log("capability_error", capability=host.key, error=error)
+        self.debug.log("capability_error", kind=host.kind, id=host.unit_id, error=error)
 
     def cancel_call(self, agent_id: str, call_id: str) -> None:
         manager = self._manager()
@@ -587,6 +636,9 @@ class CapabilityManager:
         self.cancel_execution(agent_id, call_id, pending.action_id)
 
     def cancel_execution(self, agent_id: str, call_id: str, action_id: str) -> None:
+        manager = self._manager()
+        if manager is not None:
+            manager.processes.cancel_call(agent_id, call_id)
         with self._lock:
             runtime = self._actions.get(action_id)
         if runtime is not None and runtime.host.started:
@@ -1011,7 +1063,7 @@ class CapabilityManager:
     # --- dispatch -----------------------------------------------------
     def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
         validate_json(action.data, spec.args_schema, where=f"аргументы {action.action_id}")
-        if not agent.is_enabled_action(action.action_id):
+        if not spec.owner.startswith("core") and not agent.is_enabled_action(action.action_id):
             self._manager().deliver_result(CallResult(
                 call_id=action.call_id, agent_id=agent.agent_id,
                 data={"status": "disabled", "info": "Action is currently disabled."},
@@ -1047,9 +1099,11 @@ class CapabilityManager:
                 result_schema=spec.result_schema,
             )
         if core:
+            processes = getattr(manager, "processes", None)
+            owner = processes.reserve_call(agent.agent_id, action.call_id) if processes is not None else None
             threading.Thread(
                 target=self._run_core_action,
-                args=(spec, action, agent),
+                args=(spec, action, agent, owner),
                 name=f"jarvis-core-{action.action_id}",
                 daemon=True,
             ).start()
@@ -1071,34 +1125,41 @@ class CapabilityManager:
             raise
 
     def _run_core_action(
-        self, spec: ActionDefinition, action: ActionRequest, agent: Any
+        self, spec: ActionDefinition, action: ActionRequest, agent: Any, owner=None
     ) -> None:
         """Исполнить захардкоженное действие ядра в собственном потоке."""
 
         manager = self._manager()
+        def current_caller():
+            return not hasattr(manager, "agents") or manager.agents.get(agent.agent_id) is agent
+        def complete(data, parts=()):
+            if current_caller():
+                return self._complete_action(agent.agent_id, action.call_id, data, parts)
+            return False
         context = ActionContext(
             agent_id=agent.agent_id,
             call_id=action.call_id,
             action_id=action.action_id,
             capability_id=action.action_id,
             module_id=None,
-            complete=lambda data, parts=(): self._complete_action(
-                agent.agent_id, action.call_id, data, parts
-            ),
+            complete=complete,
             config=self.config,
-            agent_manager=manager,
+            agent_manager=self._agent_api,
             capabilities=self,
             services=self.services,
-            metadata={"preset": agent.preset, "agent_name": agent.name},
+            metadata={"preset": agent.preset, "agent_name": agent.name, "execution_owner": owner},
         )
+        if not current_caller():
+            return
         try:
             result = spec.run(dict(action.data), context)
         except Exception as exc:  # noqa: BLE001
-            manager.fail_call(agent.agent_id, action.call_id, exc)
+            if current_caller():
+                manager.fail_call(agent.agent_id, action.call_id, exc)
             return
         if result is PENDING:
             return
-        self._complete_action(agent.agent_id, action.call_id, result)
+        complete(result)
 
     def _manager(self) -> Any:
         return getattr(self.event_bus, "manager", None)
@@ -1142,12 +1203,12 @@ class CapabilityManager:
             return
         manager.results.discard(agent_id, call_id)
 
-    def _report_error(self, capability: str, exc: Exception | str) -> None:
+    def _report_error(self, kind: str, capability_id: str, exc: Exception | str) -> None:
         manager = self._manager()
         if manager is not None:
-            manager.report_capability_error(capability, exc)
+            manager.report_capability_error(kind, capability_id, exc)
         else:
-            self.debug.log("capability_error", capability=capability, error=str(exc))
+            self.debug.log("capability_error", kind=kind, id=capability_id, error=str(exc))
 
     # --- выгрузка -----------------------------------------------------
     def unload_action(self, action_id: str) -> None:
@@ -1189,9 +1250,10 @@ class CapabilityManager:
 
     def runnable_snapshot(self, snapshot: dict[str, set[str]]) -> dict[str, set[str]]:
         paused = self.global_paused()
+        system_actions = {name for name, spec in self.actions.all().items() if spec.owner.startswith("core")}
         return {
             "modules": set(snapshot.get("modules", ())) - paused["modules"],
-            "actions": set(snapshot.get("actions", ())) - paused["actions"],
+            "actions": set(snapshot.get("actions", ())) - paused["actions"] - system_actions,
             "handlers": set(snapshot.get("handlers", ())) - paused["handlers"],
         }
 
@@ -1207,6 +1269,8 @@ class CapabilityManager:
             return self._toggle_global_state_locked(kind, capability_id)
 
     def _toggle_global_state_locked(self, kind: str, capability_id: str) -> dict[str, Any]:
+        if self._global_state_error is not None:
+            raise ValueError("Cannot update unreadable capability state: " + self._global_state_error)
         kind_to_key = {"module": "modules", "action": "actions", "handler": "handlers"}
         key = kind_to_key.get(kind)
         if key is None:
@@ -1215,6 +1279,7 @@ class CapabilityManager:
         manager = self._manager()
         if manager is None:
             raise RuntimeError("Менеджер агентов не запущен")
+        manager.invalidate_automation_schema()
         affected = manager.agents_assigned_and_enabled(kind, capability_id)
         agent_ids = [agent.agent_id for agent in affected]
         if not self.is_globally_paused(kind, capability_id):
@@ -1381,6 +1446,7 @@ class CapabilityManager:
                     continue
                 modules.append(self._module_summary(runtime))
             return {
+                "storage_root": str(self.root.resolve()),
                 "actions": actions,
                 "handlers": handlers,
                 "events": events,
@@ -1513,7 +1579,18 @@ class _AgentApi:
         )
         return {"delivered": delivered, "agent_id": target.agent_id}
 
+    @staticmethod
+    def _reject_module_part(kind: str, capability_id: str) -> None:
+        if kind != "module" and "." in capability_id:
+            module_id = capability_id.split(".", 1)[0]
+            raise ValueError(
+                f"Часть модуля отдельно не переключается: {capability_id!r} "
+                f"принадлежит модулю {module_id!r} — укажите kind='module', "
+                f"id={module_id!r}"
+            )
+
     def enable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
+        self._reject_module_part(kind, capability_id)
         manager = self._manager
         if kind == "module":
             manager.enable_module(agent_id, capability_id)
@@ -1536,6 +1613,7 @@ class _AgentApi:
         }
 
     def disable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
+        self._reject_module_part(kind, capability_id)
         manager = self._manager
         if kind == "module":
             manager.disable_module(agent_id, capability_id)

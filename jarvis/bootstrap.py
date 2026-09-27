@@ -4,10 +4,6 @@ from __future__ import annotations
 
 
 def main() -> int:
-    from .speech.cuda import prepare as prepare_speech_cuda
-
-    prepare_speech_cuda()
-
     from .cli import main as cli_main
 
     return cli_main()

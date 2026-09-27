@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import signal
 import threading
+import sys
+from pathlib import Path
+from importlib.resources import files
 
-from .application import JarvisApplication
 from .infrastructure.config import load_config
 
 
@@ -20,11 +22,54 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Файл переменных окружения (по умолчанию .env в корне проекта)",
     )
+    parser.add_argument(
+        "--download-models",
+        action="store_true",
+        help="Скачать модели речи и выйти; s2 устанавливается отдельно",
+    )
+    parser.add_argument("--message", help="Передать main стартовое текстовое поручение")
+    parser.add_argument(
+        "--init-env",
+        action="store_true",
+        help="Создать .env из пакетного примера без замены существующего файла",
+    )
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.init_env:
+        destination = (
+            Path(args.env_file).expanduser() if args.env_file else Path.cwd() / ".env"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with destination.open("x", encoding="utf-8") as stream:
+                stream.write(
+                    files("jarvis")
+                    .joinpath("assets", "env_example.txt")
+                    .read_text(encoding="utf-8")
+                )
+            print(f"Created {destination}; configure LLM before startup.")
+        except FileExistsError:
+            print(f"{destination} already exists; left unchanged.")
+        return 0
+    config = load_config(args.env_file)
+    if args.download_models:
+        from .infrastructure.models import download_models
+
+        try:
+            download_models(config.jarvis_dir)
+            return 0
+        except Exception as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return 1
+    from .speech.cuda import prepare
+
+    prepare()
+    from .application import JarvisApplication
+    from .core.protocol import Event
+
     stop = threading.Event()
     received_signal = None
 
@@ -34,16 +79,31 @@ def main(argv=None) -> int:
         stop.set()
 
     previous = {
-        sig: signal.signal(sig, interrupt)
-        for sig in (signal.SIGINT, signal.SIGTERM)
+        sig: signal.signal(sig, interrupt) for sig in (signal.SIGINT, signal.SIGTERM)
     }
     app = None
     try:
-        app = JarvisApplication(load_config(args.env_file)).start()
+        app = JarvisApplication(config)
+        app.start()
+        if app.main_agent is None:
+            print("Main restore failed; persisted data preserved.", file=sys.stderr)
+            return 1
+        if args.message and app.main_agent is not None:
+            app.bus.publish(
+                Event(
+                    "user_message",
+                    {"text": args.message},
+                    target=app.main_agent.agent_id,
+                    source="cli",
+                )
+            )
         print("Jarvis: система запущена. Ctrl+C — штатное завершение.", flush=True)
         while not stop.wait(0.2):
             pass
         return 128 + (received_signal or signal.SIGINT)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr, flush=True)
+        return 1
     finally:
         if app is not None:
             app.stop()

@@ -1,7 +1,10 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
+from jarvis.core.registry import ActionRegistry, EventRegistry
+from jarvis.core.runtime import register_core_protocol
 from jarvis.core.protocol import (
     CallResult,
     Event,
@@ -13,6 +16,13 @@ from jarvis.core.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_core_actions_register_without_jsonschema_dependency(self):
+        with patch("jarvis.core.protocol.Draft202012Validator", None):
+            actions = ActionRegistry()
+            register_core_protocol(actions, EventRegistry())
+            self.assertIsNotNone(actions.get("no_action"))
+            self.assertIsNotNone(actions.get("speech"))
+
     def test_event_is_one_compact_model_value(self):
         event = Event(type="sample", data={"text": "Привет"})
         self.assertEqual(
@@ -22,7 +32,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_multimodal_event_is_one_message_and_filters_unsupported_parts(self):
         event = Event(
-            type="telegram.message",
+            type="example.message",
             data={"text": "Что на фото?"},
             parts=(InputPart("image", "image/jpeg", "aGVsbG8="),),
         )

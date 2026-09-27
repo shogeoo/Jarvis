@@ -10,9 +10,12 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import importlib.util
 import json
 import multiprocessing
+import os
+import signal
 import queue
 import re
 import sys
@@ -368,6 +371,22 @@ class _RemoteError(RuntimeError):
     """Ошибка, поднятая живым состоянием ядра при RPC-вызове."""
 
 
+def _stop_execution(process) -> None:
+    """Stop the invocation and its subprocesses in its own process group."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        if process.is_alive():
+            process.terminate()
+    process.join(timeout=1)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        if process.is_alive():
+            process.kill()
+    process.join(timeout=1)
+
+
 class _Rpc:
     def __init__(self, send) -> None:
         self._send = send
@@ -476,7 +495,15 @@ def main(argv=None) -> int:
     for hook in unit.prepare:
         hook(config)
 
-    def run_action(spec, message, connection) -> None:
+    def run_action(spec, message, connection, host_pid) -> None:
+        os.setsid()
+        signal.signal(signal.SIGTERM, lambda signum, frame: os.killpg(os.getpgrp(), signal.SIGKILL))
+        # If a host crashes, its independent invocation group must also die.
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(1, signal.SIGTERM) != 0:
+            raise OSError(ctypes.get_errno(), "Cannot register execution parent-death signal")
+        if os.getppid() != host_pid:
+            os.killpg(os.getpgrp(), signal.SIGKILL)
         agent_id = message["agent_id"]
         call_id = message["call_id"]
         finalized = False
@@ -544,7 +571,7 @@ def main(argv=None) -> int:
     def start_action(spec, message):
         key = (message["agent_id"], message["call_id"])
         parent, child = multiprocessing.get_context("fork").Pipe(duplex=True)
-        process = multiprocessing.get_context("fork").Process(target=run_action, args=(spec, message, child), daemon=True)
+        process = multiprocessing.get_context("fork").Process(target=run_action, args=(spec, message, child, os.getpid()), daemon=True)
         process.start()
         child.close()
         with execution_lock:
@@ -583,12 +610,7 @@ def main(argv=None) -> int:
                     for rpc_id, routed in list(rpc_routes.items()):
                         if routed is parent:
                             rpc_routes.pop(rpc_id, None)
-                if process.is_alive():
-                    process.terminate()
-                process.join(timeout=1)
-                if process.is_alive():
-                    process.kill()
-                    process.join(timeout=1)
+                _stop_execution(process)
                 parent.close()
                 if active and not final and not stop.is_set():
                     _send({"kind": "capability_error", "agent_id": key[0], "call_id": key[1], "error": "Исполнение действия завершилось без результата"})
@@ -679,12 +701,7 @@ def main(argv=None) -> int:
                     execution = executions.pop(key, None)
                 if execution is not None:
                     process, connection = execution
-                    if process.is_alive():
-                        process.terminate()
-                    process.join(timeout=1)
-                    if process.is_alive():
-                        process.kill()
-                        process.join(timeout=1)
+                    _stop_execution(process)
                 _send({"kind": "cancelled", "agent_id": key[0], "call_id": key[1]})
                 continue
             if kind == "signal":
@@ -714,12 +731,7 @@ def main(argv=None) -> int:
             active = list(executions.values())
             executions.clear()
         for process, connection in active:
-            if process.is_alive():
-                process.terminate()
-            process.join(timeout=1)
-            if process.is_alive():
-                process.kill()
-                process.join(timeout=1)
+            _stop_execution(process)
         for context, handler in contexts:
             if handler.stop is not None:
                 try:

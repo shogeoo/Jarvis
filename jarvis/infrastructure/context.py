@@ -326,6 +326,8 @@ class MemoryStore:
                 "agent_id": agent_id,
                 "name": record.get("name"),
                 "preset": preset,
+                "person_prompt": record.get("person_prompt"),
+                "protected": record.get("protected"),
                 "parent_id": record.get("parent_id"),
                 "modules": record.get("modules", []),
                 "actions": record.get("actions", []),
@@ -402,20 +404,33 @@ class MemoryStore:
         return self._clean(preset, agent_id, current, metadata, messages)
 
     def delete(self, preset: str, agent_id: str) -> None:
+        with self._save_lock:
+            self._delete_locked(preset, agent_id)
+
+    def _delete_locked(self, preset: str, agent_id: str) -> None:
         try:
             directory = self.agent_dir(preset, agent_id)
         except ValueError:
             return
         try:
             if agent_id == "main":
-                shutil.rmtree(directory / "current", ignore_errors=True)
-                shutil.rmtree(directory / "last", ignore_errors=True)
+                if (directory / "current").exists():
+                    shutil.rmtree(directory / "current")
+                if (directory / "last").exists():
+                    shutil.rmtree(directory / "last")
                 for staging in directory.glob(".staging-*"):
-                    shutil.rmtree(staging, ignore_errors=True)
+                    shutil.rmtree(staging)
             else:
-                shutil.rmtree(directory, ignore_errors=True)
+                if directory.exists():
+                    shutil.rmtree(directory)
         except OSError:
-            return
+            raise
+
+    def delete_preset(self, preset: str) -> None:
+        with self._save_lock:
+            directory = self.agent_dir(preset, "main")
+            if directory.exists():
+                shutil.rmtree(directory)
 
     @staticmethod
     def _clean(
@@ -435,6 +450,8 @@ class MemoryStore:
             "agent_id": agent_id,
             "name": name if isinstance(name, str) and name.strip() else agent_id,
             "preset": preset,
+            "person_prompt": metadata.get("person_prompt"),
+            "protected": metadata.get("protected"),
             "parent_id": parent_id,
             "modules": _clean_capabilities(metadata.get("modules", []), _NAME),
             "actions": _clean_capabilities(metadata.get("actions", []), _CAPABILITY),

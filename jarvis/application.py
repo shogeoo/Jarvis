@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import shutil
 
 from openai import OpenAI
 
@@ -18,6 +19,7 @@ from .infrastructure.runtime_layout import ensure_runtime_layout
 from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
 from .speech import service as speech_service
+from .speech.config import build_config
 
 
 class JarvisApplication:
@@ -53,9 +55,7 @@ class JarvisApplication:
             config.base_url,
             config.api_key,
         )
-        master_prompt = read_master_prompt(
-            config.project_root / "master_prompt.txt"
-        )
+        master_prompt = read_master_prompt()
         self.agents = AgentManager(
             model=config.model,
             client=self.client,
@@ -73,11 +73,15 @@ class JarvisApplication:
         )
 
     def start(self) -> "JarvisApplication":
+        if shutil.which(str(build_config(self.config.jarvis_dir).tts_server_bin)):
+            self.actions.unregister_owner("core:reply")
         speech_service.start(
             self.config.jarvis_dir,
             emit=self._emit_speech,
             debug=self.debug,
         )
+        if not speech_service.can_speak:
+            self.actions.unregister_owner("core:speech")
         self.main_agent = self.agents.restore(name="main", preset="main")
         if self.main_agent is not None:
             self.bus.publish(
