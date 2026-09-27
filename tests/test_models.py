@@ -4,10 +4,33 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from jarvis.infrastructure.models import download_models
+from jarvis.infrastructure.models import download_models, ensure_whisper_model
 
 
 class ModelPreparationTests(unittest.TestCase):
+    def test_model_paths_belong_to_runtime_models(self):
+        from jarvis.speech.config import build_config
+        root = Path("/test/Jarvis/.jarvis")
+        config = build_config(root)
+        self.assertEqual(config.tts_model, root / "runtime/models/fish-speech/s2-pro-q4_k_m.gguf")
+        self.assertEqual(config.tts_tokenizer, root / "runtime/models/fish-speech/tokenizer.json")
+
+    def test_whisper_download_uses_local_directory_and_skips_complete_model(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "runtime/models/whisper-large-v3-turbo"
+            with patch("faster_whisper.utils.download_model") as download:
+                self.assertEqual(ensure_whisper_model(root), target)
+                download.assert_called_once_with("large-v3-turbo", output_dir=str(target))
+                target.mkdir(parents=True)
+                for name in ("model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json"):
+                    (target / name).write_bytes(b"asset")
+                ensure_whisper_model(root)
+                self.assertEqual(download.call_count, 1)
+                (target / "config.json").unlink()
+                ensure_whisper_model(root)
+                self.assertEqual(download.call_count, 2)
+
     @patch("jarvis.speech.config.STT_ENABLED", False)
     @patch("jarvis.speech.config.TTS_ENABLED", True)
     @patch("jarvis.infrastructure.models.shutil.which", return_value=None)

@@ -4,17 +4,24 @@ from pathlib import Path
 import shutil
 
 
+def ensure_whisper_model(root: Path) -> Path:
+    from ..speech.config import STT_MODEL
+    from faster_whisper.utils import download_model
+
+    destination = Path(root) / "runtime" / "models" / "whisper-large-v3-turbo"
+    required = ("model.bin", "config.json", "tokenizer.json", "vocabulary.json", "preprocessor_config.json")
+    if not all((destination / name).is_file() for name in required):
+        download_model(STT_MODEL, output_dir=str(destination))
+    return destination
+
+
 def download_models(root: Path) -> None:
-    from ..speech.config import STT_ENABLED, STT_MODEL, TTS_ENABLED, build_config
+    from ..speech.config import STT_ENABLED, TTS_ENABLED, build_config
 
     if STT_ENABLED:
-        from faster_whisper.utils import download_model
         from ..speech.vad import ensure_model
 
-        if Path(STT_MODEL).is_dir():
-            print(f"STT model: {Path(STT_MODEL).resolve()}")
-        else:
-            print(f"STT model: {download_model(STT_MODEL)}")
+        print(f"STT model: {ensure_whisper_model(root)}")
         ensure_model(str(root / "runtime" / "models" / "silero_vad.onnx"))
     config = build_config(root)
     if TTS_ENABLED and shutil.which(str(config.tts_server_bin)):
@@ -26,10 +33,11 @@ def download_models(root: Path) -> None:
         ):
             if not destination.is_file():
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                downloaded = hf_hub_download("rodrigomt/s2-pro-gguf", filename)
-                temporary = destination.with_suffix(destination.suffix + ".tmp")
-                shutil.copyfile(downloaded, temporary)
-                temporary.replace(destination)
+                downloaded = hf_hub_download("rodrigomt/s2-pro-gguf", filename, local_dir=str(destination.parent))
+                if Path(downloaded).resolve() != destination.resolve():
+                    temporary = destination.with_suffix(destination.suffix + ".tmp")
+                    shutil.copyfile(downloaded, temporary)
+                    temporary.replace(destination)
             print(f"TTS asset: {destination}")
     elif TTS_ENABLED:
         print(

@@ -5,6 +5,7 @@
 `.env` содержит только `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` и
 необязательный `LLM_REASONING_EFFORT` (пусто — дефолт провайдера).
 Остальные настройки заданы в коде. Хранилище — `.jarvis` в корне проекта.
+Все модели речи находятся в `.jarvis/runtime/models/`.
 STT и TTS настроены на CUDA без CPU fallback; VAD работает на CPU.
 Для TTS используется установленный бинарник `s2`.
 

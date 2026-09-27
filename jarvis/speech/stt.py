@@ -15,7 +15,6 @@ from .config import (
     STT_KEEP_AUDIO,
     STT_LANGUAGES,
     STT_LANGUAGE,
-    STT_MODEL,
     STT_PRE_ROLL,
     STT_THRESHOLD,
 )
@@ -59,6 +58,7 @@ class Pipeline:
             from .audio import FRAME_SIZE, MicStream
             from .transcribe import Transcriber
             from .vad import Segmenter, SileroVAD, ensure_model
+            from ..infrastructure.models import ensure_whisper_model
 
             runtime_dir = Path(jarvis_dir) / "runtime"
             model_path = runtime_dir / "models" / "silero_vad.onnx"
@@ -73,7 +73,7 @@ class Pipeline:
                 keep_audio=STT_KEEP_AUDIO,
             )
             transcriber = Transcriber(
-                STT_MODEL,
+                str(ensure_whisper_model(Path(jarvis_dir))),
                 STT_DEVICE,
                 STT_LANGUAGE,
                 STT_COMPUTE_TYPE,
