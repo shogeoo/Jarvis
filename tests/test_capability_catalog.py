@@ -11,7 +11,7 @@ import fixtures
 import test_runtime as runtime_tests
 from jarvis.capabilities import action_definition, handler_definition, HandlerContext
 from jarvis.capabilities.worker import _load_leaf, _load_module
-from jarvis.core.prompts import read_master_prompt
+from jarvis.core.prompts import read_master_prompt, agent_system_prompt
 from jarvis.core.protocol import (
     ActionRequest,
     CallResult,
@@ -28,7 +28,7 @@ from jarvis.infrastructure.context import MemoryStore
 
 def catalog(agent):
     agent._contract()
-    return json.loads(agent.history[0]["content"].split("\n\nCAPABILITY:\n", 1)[1])
+    return json.loads(agent.history[0]["content"].rsplit("\n\n", 1)[1])
 
 
 class CatalogRuntimeTests(unittest.TestCase):
@@ -260,6 +260,14 @@ class CatalogRuntimeTests(unittest.TestCase):
 
 
 class DeclarationTests(unittest.TestCase):
+    def test_system_prompt_has_four_blocks_without_section_headers(self):
+        prompt = agent_system_prompt("  Personality.\n", "Environment.\n", {}, {}, {"modules": []})
+        expected = "Personality.\n\nEnvironment.\n\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\n"
+        expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
+        self.assertEqual(prompt, expected)
+        for header in ("personprompt:", "masterprompt:", "CAPABILITY:"):
+            self.assertNotIn(header, prompt)
+
     def description(self):
         return {
             "action_id": "echo",

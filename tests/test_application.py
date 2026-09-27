@@ -61,9 +61,11 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
-                    ordered_blocks = ["personprompt:", "masterprompt:", "Текущая модель поддерживает следующие модальности:", "CAPABILITY:"]
+                    ordered_blocks = [app.main_agent.person_prompt.strip(), app.agents.master_prompt.strip(), "Текущая модель поддерживает следующие модальности:", '{\n  "actions":']
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
+                    for header in ("personprompt:", "masterprompt:", "CAPABILITY:"):
+                        self.assertNotIn(header, system_prompt)
                     self.assertIn("среде Jarvis", system_prompt)
                     self.assertIn("Текущая модель поддерживает следующие модальности: text", system_prompt)
                     self.assertIn('"action_id": "say"', system_prompt)

@@ -93,9 +93,9 @@ def agent_system_prompt(
     )
     return "\n\n".join(
         (
-            "personprompt:\n" + person_prompt.strip(),
-            "masterprompt:\n" + master_prompt.strip(),
+            person_prompt.strip(),
+            master_prompt.strip(),
             modalities,
-            "CAPABILITY:\n" + json_text(catalog, indent=2),
+            json_text(catalog, indent=2),
         )
     )
