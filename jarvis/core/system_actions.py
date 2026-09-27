@@ -430,9 +430,9 @@ def state_action(data, context):
         identifier = data.get("automation_id")
         try:
             if operation == "create":
-                identifier = store.create(data)
+                identifier = store.create({key: value for key, value in data.items() if key not in {"event", "call_result"} or value is not None})
             elif operation == "edit":
-                store.edit(identifier, data["automation"])
+                store.edit(identifier, {key: value for key, value in data["automation"].items() if key not in {"event", "call_result"} or value is not None})
             else:
                 store.remove_id(identifier)
         except Exception as exc:
@@ -477,7 +477,10 @@ def register_state_actions(registry):
                 args = open_object if operation == "create" else object_schema({"automation_id": string, **({"automation": open_object} if operation == "edit" else {})})
             success = {"create": "created", "edit": "edited", "remove": "removed"}[operation]
             result = object_schema({"status": {"type": "string", "enum": [success, "not_" + success]}, noun + "_id": {"type": ["string", "null"]} if noun == "automation" else string, "error": {"type": ["string", "null"]}})
-            registry.register(replace(action_definition(action_id + ": update Jarvis state. Editing a preset affects only future instances. Removing a preset recursively deletes its instances and descendants.", args, result, state_action), id=action_id, owner="core:primary"))
+            description = (action_id + ": update Jarvis state. Editing a preset affects only future instances. Removing a preset recursively deletes its instances and descendants.") if noun == "preset" else (
+                action_id + ": manage an exact-match automation. For create/edit provide exactly one non-null event or call_result trigger and a non-empty actions array without call_id. Omit the other trigger or set it to null. Match the entire event/data structure; only a call_result trigger's call_id value is ignored."
+            )
+            registry.register(replace(action_definition(description, args, result, state_action), id=action_id, owner="core:primary"))
     registry.register(replace(action_definition("List saved automations and their automation_id values.", object_schema({}), object_schema({"automations": {"type": "array", "items": open_object}}), state_action), id="list_automations", owner="core:primary"))
 
 def register_system_actions(registry):

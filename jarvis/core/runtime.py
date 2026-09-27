@@ -1117,10 +1117,11 @@ class AgentManager:
             "call_id": {"type": "string", "description": "Example invocation identifier; its value is ignored when matching."},
             "data": {**data, "description": "The complete result data to match exactly."},
         })
-        return {"anyOf": [
-            object_schema({"event": event, "actions": actions}),
-            object_schema({"call_result": result, "actions": actions}),
-        ]}
+        return object_schema({
+            "event": {**event, "type": ["object", "null"], "description": "Complete event trigger, or null when using a call_result trigger.", "default": None},
+            "call_result": {**result, "type": ["object", "null"], "description": "Complete result trigger, or null when using an event trigger.", "default": None},
+            "actions": actions,
+        }, required=["actions"])
 
     def _new_id(self) -> str:
         with self._lock:

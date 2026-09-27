@@ -5,6 +5,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import fixtures
 import test_runtime as runtime_tests
@@ -171,6 +172,35 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.assertIn("system_started", self.ids("events"))
         self.assertNotIn(
             "system_started", [event["event_id"] for event in catalog(worker)["events"]]
+        )
+
+    def test_automation_tools_use_the_same_object_parameter_contract(self):
+        specs, _ = self.agent._contract()
+        for name in ("create_automation", "edit_automation"):
+            schema = specs[name].data_schema
+            self.assertEqual(schema["type"], "object")
+            self.assertIn("properties", schema)
+            for field, parameter in schema["properties"].items():
+                self.assertIn("type", parameter, field)
+                self.assertIn("default", parameter, field)
+        spec = specs["create_automation"]
+        data = arguments_with_defaults(
+            {
+                "event": {"event_id": "tick.event", "data": {"text": "go"}},
+                "actions": [{"action_id": "say", "data": {"text": "ok"}}],
+            },
+            spec.data_schema,
+        )
+        self.assertIsNone(data["call_result"])
+        context = SimpleNamespace(
+            agent_id="main",
+            action_id="create_automation",
+            agent_manager=SimpleNamespace(_manager=self.manager),
+        )
+        result = spec.run(data, context)
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(
+            self.manager.automations.list()[0]["event"]["event_id"], "tick.event"
         )
 
     def test_optional_default_reaches_normal_dispatch_and_partial_result_is_accepted(
