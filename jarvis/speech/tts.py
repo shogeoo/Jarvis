@@ -30,6 +30,7 @@ import requests
 from jarvis.core.lifecycle import terminate_process
 
 from .config import Config
+from .ducking import SystemAudioMute
 
 SERVER_START_TIMEOUT = 240.0
 VOICE_BOOTSTRAP_TEXT = "Инициализация завершена."
@@ -80,6 +81,7 @@ class Speaker:
         self._current: _SpeechRequest | None = None
         self._response: requests.Response | None = None
         self._player: subprocess.Popen | None = None
+        self._audio_mute: SystemAudioMute | None = None
         self._host, self._port = self._parse_url(config.tts_url)
 
     @staticmethod
@@ -163,11 +165,14 @@ class Speaker:
                 request.interrupted.set()
                 if not request.future.done():
                     request.future.set_exception(SpeechInterrupted("interrupted"))
+            audio_mute = getattr(self, "_audio_mute", None)
         if player is not None and player.poll() is None:
             try:
                 player.terminate()
             except ProcessLookupError:
                 pass
+        if audio_mute is not None:
+            audio_mute.close()
         if response is not None:
             # close() can wait for a concurrent socket read. Never block VAD
             # or the main shutdown path on that read.
@@ -406,7 +411,14 @@ class Speaker:
                 "ffplay не найден (пакет ffmpeg). Установи ffmpeg для озвучки.",
             )
             raise RuntimeError("ffplay_not_found")
+        audio_mute = None
         try:
+            audio_mute = SystemAudioMute(proc.pid)
+            with self._lock:
+                self._audio_mute = audio_mute
+            audio_mute.start()
+            if request.interrupted.is_set():
+                raise SpeechInterrupted("interrupted")
             try:
                 proc.stdin.write(buffer)  # type: ignore[union-attr]
             except (BrokenPipeError, OSError):
@@ -419,15 +431,21 @@ class Speaker:
                 except (BrokenPipeError, OSError):
                     break
         finally:
-            if request.interrupted.is_set() and proc.poll() is None:
-                terminate_process(proc)
             try:
-                proc.stdin.close()  # type: ignore[union-attr]
-            except (BrokenPipeError, OSError):
-                pass
-            proc.wait()
-            with self._lock:
-                if self._player is proc:
-                    self._player = None
+                if request.interrupted.is_set() and proc.poll() is None:
+                    terminate_process(proc)
+                try:
+                    proc.stdin.close()  # type: ignore[union-attr]
+                except (BrokenPipeError, OSError, ValueError):
+                    pass
+                proc.wait()
+            finally:
+                if audio_mute is not None:
+                    audio_mute.close()
+                with self._lock:
+                    if self._player is proc:
+                        self._player = None
+                    if getattr(self, "_audio_mute", None) is audio_mute:
+                        self._audio_mute = None
         if request.interrupted.is_set():
             raise SpeechInterrupted("interrupted")

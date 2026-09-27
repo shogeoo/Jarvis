@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from concurrent.futures import Future
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from jarvis.speech import tts
 
@@ -24,6 +24,28 @@ class _Player:
 
 
 class TtsTests(unittest.TestCase):
+    def test_playback_restores_system_audio_on_success_and_stream_failure(self):
+        from jarvis.speech.config import build_config
+        for fail in (False, True):
+            with self.subTest(fail=fail), tempfile.TemporaryDirectory() as temporary:
+                speaker = tts.Speaker(build_config(Path(temporary)))
+                request = tts._SpeechRequest("text", Future(), threading.Event())
+                player = Mock(pid=100)
+                def chunks():
+                    yield b"audio"
+                    if fail:
+                        raise RuntimeError("stream failed")
+                with patch.object(tts.subprocess, "Popen", return_value=player), patch.object(tts, "SystemAudioMute") as mute:
+                    if fail:
+                        with self.assertRaisesRegex(RuntimeError, "stream failed"):
+                            speaker._play(chunks(), 1, request)
+                    else:
+                        speaker._play(chunks(), 1, request)
+                mute.assert_called_once_with(100)
+                mute.return_value.start.assert_called_once()
+                mute.return_value.close.assert_called_once()
+                self.assertIsNone(speaker._audio_mute)
+
     def test_voice_profile_creation_uses_cuda_arguments(self):
         from jarvis.speech.config import build_config
         with tempfile.TemporaryDirectory() as temporary:
@@ -68,6 +90,7 @@ class TtsTests(unittest.TestCase):
         speaker._lock = threading.RLock()
         speaker._response = None
         speaker._player = _Player()
+        speaker._audio_mute = Mock()
 
         current = tts._SpeechRequest("текущая", Future(), threading.Event())
         queued = [
@@ -80,6 +103,7 @@ class TtsTests(unittest.TestCase):
 
         self.assertEqual(speaker.interrupt(), 3)
         self.assertTrue(speaker._player.terminated)
+        speaker._audio_mute.close.assert_called_once()
         for request in [current, *queued]:
             self.assertTrue(request.interrupted.is_set())
             self.assertIsInstance(request.future.exception(), tts.SpeechInterrupted)
