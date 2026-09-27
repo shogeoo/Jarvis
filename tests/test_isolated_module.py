@@ -11,6 +11,7 @@ from jarvis.core.protocol import ActionRequest
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import CallResultTracker, EventBus
 from jarvis.infrastructure.debug import Debugger
+from jarvis.infrastructure.model_capabilities import ModelCapabilities
 
 
 ACTION_CODE = """
@@ -131,6 +132,46 @@ class _Manager:
 
 
 class UnitHostTests(unittest.TestCase):
+    def test_input_modalities_are_read_only_and_available_through_worker_rpc(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self._root(temporary)
+            path = root / "modules/isolated/actions/run/action.py"
+            path.write_text(
+                ACTION_CODE.replace(
+                    'return {"value": data["value"]}',
+                    'return {"value": ",".join(context.capabilities.model_input_modalities())}',
+                )
+            )
+            manager, actions, fake = self._manager(root)
+            fake.model_capabilities = ModelCapabilities(
+                "test", ("text", "image", "audio", "video", "file")
+            )
+            try:
+                self.assertEqual(
+                    manager.model_input_modalities(),
+                    ["text", "image", "audio", "video", "file"],
+                )
+                manager.load_module("isolated", start_handlers=True)
+                manager.dispatch(
+                    action=ActionRequest(
+                        "isolated.run", {"value": "unused"}, "modalities-1"
+                    ),
+                    spec=actions.require("isolated.run"),
+                    agent=fake.agent,
+                )
+                deadline = time.time() + 5
+                while not fake.agent.results and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(
+                    fake.agent.results[0].data, {"value": "text,image,audio,video,file"}
+                )
+                self.assertEqual(
+                    fake.model_capabilities.input_modalities,
+                    ("text", "image", "audio", "video", "file"),
+                )
+            finally:
+                manager.shutdown()
+
     def _root(self, temporary: str) -> Path:
         root = Path(temporary)
         module = root / "modules" / "isolated"
@@ -252,7 +293,11 @@ class UnitHostTests(unittest.TestCase):
             try:
                 manager.load_action("concurrent")
                 for call_id, value in (("slow-1", "slow"), ("fast-1", "fast")):
-                    manager.dispatch(action=ActionRequest("concurrent", {"value": value}, call_id), spec=actions.require("concurrent"), agent=fake.agent)
+                    manager.dispatch(
+                        action=ActionRequest("concurrent", {"value": value}, call_id),
+                        spec=actions.require("concurrent"),
+                        agent=fake.agent,
+                    )
                 deadline = time.monotonic() + 2
                 while not fake.agent.results and time.monotonic() < deadline:
                     time.sleep(0.01)
@@ -276,18 +321,24 @@ class UnitHostTests(unittest.TestCase):
             manager, actions, fake = self._manager(root)
             try:
                 manager.load_action("once")
-                manager.dispatch(action=ActionRequest("once", {"value": "x"}, "once-1"), spec=actions.require("once"), agent=fake.agent)
+                manager.dispatch(
+                    action=ActionRequest("once", {"value": "x"}, "once-1"),
+                    spec=actions.require("once"),
+                    agent=fake.agent,
+                )
                 deadline = time.monotonic() + 2
                 while not fake.agent.results and time.monotonic() < deadline:
                     time.sleep(0.01)
-                self.assertEqual([r.data for r in fake.agent.results], [{"value": "first"}])
+                self.assertEqual(
+                    [r.data for r in fake.agent.results], [{"value": "first"}]
+                )
             finally:
                 manager.shutdown()
 
     def test_input_part_name_crosses_worker_boundary(self):
         code = ACTION_CODE.replace(
-            'from jarvis.capabilities import action_definition',
-            'from jarvis.capabilities import action_definition, input_part',
+            "from jarvis.capabilities import action_definition",
+            "from jarvis.capabilities import action_definition, input_part",
         ).replace(
             '    return {"value": data["value"]}',
             '    context.complete({"value": data["value"]}, parts=(input_part("file", "application/pdf", "QUJD", "report.pdf"),))\n    return None',
@@ -300,12 +351,21 @@ class UnitHostTests(unittest.TestCase):
             manager, actions, fake = self._manager(root)
             try:
                 manager.load_action("named")
-                manager.dispatch(action=ActionRequest("named", {"value": "x"}, "named-1"), spec=actions.require("named"), agent=fake.agent)
+                manager.dispatch(
+                    action=ActionRequest("named", {"value": "x"}, "named-1"),
+                    spec=actions.require("named"),
+                    agent=fake.agent,
+                )
                 deadline = time.monotonic() + 2
                 while not fake.agent.results and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertEqual(fake.agent.results[0].parts[0].name, "report.pdf")
-                self.assertEqual(fake.agent.results[0].model_message()["content"][1]["file"]["filename"], "report.pdf")
+                self.assertEqual(
+                    fake.agent.results[0].model_message()["content"][1]["file"][
+                        "filename"
+                    ],
+                    "report.pdf",
+                )
             finally:
                 manager.shutdown()
 
@@ -319,7 +379,10 @@ class UnitHostTests(unittest.TestCase):
                 process = host.process
                 process.kill()
                 deadline = time.monotonic() + 3
-                while "isolated" in manager.loaded_modules() and time.monotonic() < deadline:
+                while (
+                    "isolated" in manager.loaded_modules()
+                    and time.monotonic() < deadline
+                ):
                     time.sleep(0.01)
                 self.assertNotIn("isolated", manager.loaded_modules())
                 self.assertNotIn(host.key, manager._hosts)

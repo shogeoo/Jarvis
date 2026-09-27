@@ -1122,6 +1122,13 @@ class CapabilityManager:
     def _manager(self) -> Any:
         return getattr(self.event_bus, "manager", None)
 
+    def model_input_modalities(self) -> list[str]:
+        """Read the configured model's input modalities through capability RPC."""
+        manager = self._manager()
+        if manager is None or manager.model_capabilities is None:
+            raise RuntimeError("Model input modalities are unavailable")
+        return list(manager.model_capabilities.input_modalities)
+
     def _complete_action(
         self,
         agent_id: str | None,

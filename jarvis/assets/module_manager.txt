@@ -109,6 +109,9 @@ context.agent_id — caller, call_id — вызов, action_id — действ�
 module_id — модуль либо None. config.jarvis_dir — storage,
 config.unit_dir — каталог единицы, config.project_root — корень проекта.
 Есть stop_event, metadata и RPC-прокси agent_manager/capabilities.
+context.capabilities.model_input_modalities() возвращает список входных
+модальностей текущей модели: text, image, audio, video, file (поддерживаемое
+подмножество). Проверяй его перед доставкой медиа; не угадывай поддержку.
 Не импортируй живые объекты ядра. Необработанное исключение или нарушение
 протокола становится capability_error вызывающему агенту, без call_result.
 
