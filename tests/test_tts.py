@@ -3,6 +3,8 @@ import io
 import queue
 import threading
 import unittest
+import tempfile
+from pathlib import Path
 from concurrent.futures import Future
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,6 +24,20 @@ class _Player:
 
 
 class TtsTests(unittest.TestCase):
+    def test_voice_profile_creation_uses_cuda_arguments(self):
+        from jarvis.speech.config import build_config
+        with tempfile.TemporaryDirectory() as temporary:
+            speaker = tts.Speaker(build_config(Path(temporary)))
+            def create_profile():
+                speaker._profile_path().write_bytes(b"profile")
+            with patch.object(speaker, "_base_cmd", return_value=["s2"]), patch.object(tts.subprocess, "Popen") as process:
+                process.return_value.wait.side_effect = create_profile
+                process.return_value.returncode = 0
+                speaker._ensure_voice()
+            argv = process.call_args.args[0]
+            index = argv.index("--cuda")
+            self.assertEqual(argv[index:index + 4], ["--cuda", "0", "-ngl", "-1"])
+
     def test_interrupted_stream_error_is_not_reported_as_synthesis_error(self):
         speaker = tts.Speaker.__new__(tts.Speaker)
         speaker.cfg = SimpleNamespace(

@@ -1,4 +1,2 @@
-include .env.example NOTICE CONTRIBUTING.md
-include CHANGELOG.md
-recursive-include docs *.md
+include .env.example
 recursive-include tests *.py
