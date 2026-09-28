@@ -24,9 +24,17 @@ from .speech.config import build_config
 
 
 class JarvisApplication:
-    def __init__(self, config: Config, *, memory: MemoryStore | None = None, stream=None):
+    def __init__(
+        self, config: Config, *, memory: MemoryStore | None = None, stream=None
+    ):
         if not config.llm_enabled:
-            raise RuntimeError("LLM_MODEL не задан")
+            raise RuntimeError("LLM_API_MODEL не задан или режим подписки выключен")
+        if config.subscription_enabled and (
+            not config.model or not config.api_key or not config.subscription_model
+        ):
+            raise RuntimeError(
+                "Subscription mode requires LLM_SUBSCRIPTION_MODEL, LLM_API_MODEL and LLM_API_KEY for fallback"
+            )
         self.config = config
         configure_logging(config.jarvis_dir)
         self.debug = Debugger(enabled=True, stream=stream, buffered=True)
@@ -48,16 +56,48 @@ class JarvisApplication:
             services=self.services,
         )
         self.presets = PresetStore(config.jarvis_dir / "presets")
-        self.client = OpenAI(
+        api_client = OpenAI(
             base_url=config.base_url or None,
             api_key=config.api_key or None,
             timeout=60.0,
         )
-        capabilities = discover_model_capabilities(
-            config.model,
-            config.base_url,
-            config.api_key,
-        )
+        if config.subscription_enabled:
+            from .infrastructure.subscription import (
+                SubscriptionClient,
+                SUBSCRIPTION_MODALITIES,
+            )
+
+            api_capabilities = discover_model_capabilities(
+                config.model,
+                config.base_url,
+                config.api_key,
+            )
+            try:
+                self.client = SubscriptionClient(
+                    api_client=api_client,
+                    api_model=config.model,
+                    subscription_model=config.subscription_model,
+                    api_capabilities=api_capabilities,
+                    project_root=config.project_root,
+                    on_fallback=lambda value: setattr(
+                        self.agents, "model_capabilities", value
+                    ),
+                )
+                self.client.ensure_chatgpt_login()
+            except Exception:
+                if hasattr(self, "client"):
+                    self.client.close()
+                else:
+                    api_client.close()
+                raise
+            capabilities = SUBSCRIPTION_MODALITIES
+        else:
+            self.client = api_client
+            capabilities = discover_model_capabilities(
+                config.model,
+                config.base_url,
+                config.api_key,
+            )
         master_prompt = read_master_prompt()
         self.agents = AgentManager(
             model=config.model,
@@ -91,7 +131,11 @@ class JarvisApplication:
             self.bus.publish(
                 Event(
                     event_id="system_started",
-                    data={"datetime": datetime.now().astimezone().isoformat(timespec="seconds")},
+                    data={
+                        "datetime": datetime.now()
+                        .astimezone()
+                        .isoformat(timespec="seconds")
+                    },
                     source="core",
                     target=self.main_agent.agent_id,
                 )

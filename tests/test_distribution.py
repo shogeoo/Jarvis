@@ -73,7 +73,7 @@ class DistributionTests(unittest.TestCase):
     def test_environment_example_contains_only_model_settings(self):
         template = (ROOT / ".env.example").read_text()
         self.assertEqual({line.split("=", 1)[0] for line in template.splitlines()},
-                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "LLM_REASONING_EFFORT"})
+                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_API_MODEL", "LLM_SUBSCRIPTION_MODEL", "CHATGPT_SUBSCRIPTION_ENABLED", "LLM_REASONING_EFFORT"})
 
     def test_speech_constants_ignore_old_environment_settings(self):
         import importlib
