@@ -753,6 +753,14 @@ class Agent:
             return
         self._run_turn(batch, snapshot, generation)
 
+    def _event_history_message(self, item: Event) -> dict[str, Any]:
+        # Keep original attachments in Jarvis memory even when the subscription
+        # model cannot receive their modality. API fallback gets the same
+        # persisted context and can use its own model capabilities.
+        if self.manager.config is not None and self.manager.config.subscription_enabled:
+            return item.model_message()
+        return item.model_message(self.manager.model_capabilities)
+
     def _run_turn(
         self, batch: list[Event | CallResult], snapshot: dict[str, set[str]], generation: int
     ) -> None:
@@ -776,9 +784,7 @@ class Agent:
                         self.history.append(item.model_message())
                         self.manager.debug.result(item, agent_id=self.agent_id)
                     else:
-                        self.history.append(
-                            item.model_message(self.manager.model_capabilities)
-                        )
+                        self.history.append(self._event_history_message(item))
                         self.manager.debug.input(
                             item, self.manager.model_capabilities, agent_id=self.agent_id
                         )
@@ -799,9 +805,7 @@ class Agent:
                     self.manager.debug.result(item, agent_id=self.agent_id)
                     model_value = item.model_value()
                 else:
-                    self.history.append(
-                        item.model_message(self.manager.model_capabilities)
-                    )
+                    self.history.append(self._event_history_message(item))
                     self.manager.debug.input(
                         item, self.manager.model_capabilities, agent_id=self.agent_id
                     )
