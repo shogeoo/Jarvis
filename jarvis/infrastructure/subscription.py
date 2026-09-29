@@ -1,32 +1,32 @@
-"""ChatGPT-authenticated Codex as a model backend for Jarvis turns.
-
-Jarvis remains the sole owner of agent history and action dispatch. Each turn
-uses an ephemeral Codex thread populated from that history; Codex tools do not
-replace Jarvis actions. Only the existing model-client boundary is adapted.
-"""
+"""Direct ChatGPT subscription model transport; Jarvis owns the agent loop."""
 
 from __future__ import annotations
 
 import json
 import queue
-import tempfile
 import threading
-import webbrowser
 from copy import deepcopy
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from openai_codex import ApprovalMode, Codex, ImageInput, Sandbox, TextInput
-from openai_codex.generated.v2_all import ReasoningEffort
+import requests
 
 from ..core.protocol import validate_json
 from .console import logger
 from .model_capabilities import ModelCapabilities
+from .subscription_auth import SubscriptionAuth
 
 
 SUBSCRIPTION_MODALITIES = ModelCapabilities("ChatGPT subscription", ("text", "image"))
-_QUOTA_CODES = frozenset({"usageLimitExceeded", "rateLimitExceeded"})
+_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
+_QUOTA_CODES = frozenset(
+    {
+        "usage_limit_exceeded",
+        "rate_limit_exceeded",
+        "usageLimitExceeded",
+        "rateLimitExceeded",
+    }
+)
 _UNSUPPORTED_SCHEMA_KEYS = frozenset(
     {
         "default",
@@ -46,15 +46,15 @@ _UNSUPPORTED_SCHEMA_KEYS = frozenset(
 
 
 class SubscriptionQuotaExceeded(RuntimeError):
-    """The Codex account has exhausted an applicable usage window."""
+    """ChatGPT account has exhausted its subscription allowance."""
 
 
 def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Translate Jarvis descriptions to Codex's strict per-turn output schema."""
+    """Convert Jarvis optional and open fields to strict Responses JSON Schema."""
     if schema.get("x-jarvis-open-object") or schema.get("additionalProperties") is True:
         return {
             "type": "string",
-            "description": "JSON-encoded object; provide every member required by its Jarvis action contract.",
+            "description": "JSON-encoded object; Jarvis decodes it after generation.",
         }
     result = {
         key: deepcopy(value)
@@ -86,30 +86,6 @@ def _strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
         if keyword in schema:
             result[keyword] = [_strict_schema(child) for child in schema[keyword]]
     return result
-
-
-def _action_schemas(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Find the action-specific data contracts embedded in response_format."""
-    found: dict[str, dict[str, Any]] = {}
-
-    def visit(node: Any) -> None:
-        if isinstance(node, list):
-            for child in node:
-                visit(child)
-        elif isinstance(node, dict):
-            properties = node.get("properties", {})
-            action_id = properties.get("action_id", {})
-            if (
-                isinstance(action_id, dict)
-                and len(action_id.get("enum", ())) == 1
-                and "data" in properties
-            ):
-                found[action_id["enum"][0]] = properties["data"]
-            for child in node.values():
-                visit(child)
-
-    visit(schema)
-    return found
 
 
 def _restore_object(value: Any, schema: dict[str, Any]) -> Any:
@@ -154,34 +130,27 @@ def _restore_object(value: Any, schema: dict[str, Any]) -> Any:
 
 def _normalize_response(content: str, schema: dict[str, Any]) -> str:
     value = _restore_object(json.loads(content), schema)
-    validate_json(value, schema, where="Codex response")
+    validate_json(value, schema, where="subscription response")
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _user_parts(content: Any) -> tuple[list[dict[str, Any]], list[Any]]:
-    """Preserve text/images; make unsupported historical parts explicit."""
-    from openai_codex import ImageInput, TextInput
-
+def _user_parts(content: Any) -> list[dict[str, Any]]:
+    """Translate Jarvis context parts to direct Responses content items."""
     if isinstance(content, str):
-        return ([{"type": "input_text", "text": content}], [TextInput(content)])
-    response_parts: list[dict[str, Any]] = []
-    turn_parts: list[Any] = []
+        return [{"type": "input_text", "text": content}]
+    parts = []
     for part in content:
         kind = part.get("type")
         if kind == "text":
-            text = part["text"]
-            response_parts.append({"type": "input_text", "text": text})
-            turn_parts.append(TextInput(text))
+            parts.append({"type": "input_text", "text": part["text"]})
         elif kind == "image_url":
-            image = part.get("image_url", {})
-            url = image.get("url")
-            if url:
-                if image.get("name"):
-                    marker = f"Image attachment: {image['name']}"
-                    response_parts.append({"type": "input_text", "text": marker})
-                    turn_parts.append(TextInput(marker))
-                response_parts.append({"type": "input_image", "image_url": url})
-                turn_parts.append(ImageInput(url))
+            image = part.get("image_url") or {}
+            if image.get("name"):
+                parts.append(
+                    {"type": "input_text", "text": "Image attachment: " + image["name"]}
+                )
+            if image.get("url"):
+                parts.append({"type": "input_image", "image_url": image["url"]})
         else:
             name = (
                 (part.get("file") or {}).get("filename")
@@ -189,13 +158,13 @@ def _user_parts(content: Any) -> tuple[list[dict[str, Any]], list[Any]]:
                 or (part.get("video_url") or {}).get("name")
                 or "unnamed"
             )
-            marker = f"[Attachment not available as native subscription input: {name}; type: {kind}]"
-            response_parts.append({"type": "input_text", "text": marker})
-            turn_parts.append(TextInput(marker))
-    if not turn_parts:
-        response_parts = [{"type": "input_text", "text": ""}]
-        turn_parts = [TextInput("")]
-    return response_parts, turn_parts
+            parts.append(
+                {
+                    "type": "input_text",
+                    "text": f"[Attachment not available as native subscription input: {name}; type: {kind}]",
+                }
+            )
+    return parts or [{"type": "input_text", "text": ""}]
 
 
 def _history_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -204,36 +173,36 @@ def _history_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if message["role"] == "assistant":
             result.append(
                 {
-                    "type": "message",
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": message["content"]}],
                 }
             )
-        elif message["role"] == "user":
-            parts, _ = _user_parts(message["content"])
-            result.append({"type": "message", "role": "user", "content": parts})
+        elif message["role"] in {"system", "user"}:
+            result.append(
+                {"role": message["role"], "content": _user_parts(message["content"])}
+            )
     return result
 
 
 def _quota_error(error: Any) -> bool:
-    info = getattr(error, "codex_error_info", None)
-    code = getattr(info, "root", info)
-    value = getattr(code, "value", code)
-    if isinstance(value, str) and value in _QUOTA_CODES:
-        return True
-    if isinstance(code, dict) and any(name in code for name in _QUOTA_CODES):
+    code = getattr(error, "code", None)
+    if isinstance(error, dict):
+        nested = error.get("error")
+        code = error.get("code") or (
+            nested.get("code") if isinstance(nested, dict) else None
+        )
+    if isinstance(code, str) and code in _QUOTA_CODES:
         return True
     message = getattr(error, "message", None) or str(error)
-    if (
-        "you’ve hit your usage limit" in message.lower()
-        or "you've hit your usage limit" in message.lower()
-    ):
-        return True
-    return False
+    lowered = message.lower()
+    return (
+        "you’ve hit your usage limit" in lowered
+        or "you've hit your usage limit" in lowered
+    )
 
 
 class SubscriptionStream:
-    """A cancelable stream compatible with the current Agent loop."""
+    """Cancelable streaming adapter for the existing Agent model-client loop."""
 
     def __init__(self, router: "SubscriptionClient", options: dict[str, Any]):
         self.router = router
@@ -241,11 +210,10 @@ class SubscriptionStream:
         self._closed = threading.Event()
         self._queue: queue.Queue[Any] = queue.Queue()
         self._lock = threading.RLock()
-        self._turn = None
-        self._turn_finished = False
+        self._response = None
         self._api_stream = None
         threading.Thread(
-            target=self._work, name="jarvis-subscription-turn", daemon=True
+            target=self._work, name="jarvis-subscription-request", daemon=True
         ).start()
 
     def __iter__(self):
@@ -268,8 +236,6 @@ class SubscriptionStream:
     def _work(self) -> None:
         try:
             content = self.router._generate(self.options, self)
-            with self._lock:
-                self._turn_finished = True
             if content is not None:
                 self._publish(
                     SimpleNamespace(
@@ -281,8 +247,6 @@ class SubscriptionStream:
                     )
                 )
         except BaseException as exc:
-            with self._lock:
-                self._turn_finished = True
             if isinstance(exc, SubscriptionQuotaExceeded) or _quota_error(exc):
                 self._fallback(exc)
             else:
@@ -307,26 +271,19 @@ class SubscriptionStream:
         except BaseException as exc:
             self._publish(exc)
 
-    def set_turn(self, turn: Any) -> None:
+    def set_response(self, response) -> None:
         with self._lock:
-            self._turn = turn
+            self._response = response
             closed = self._closed.is_set()
         if closed:
-            turn.interrupt()
+            response.close()
 
     def close(self) -> None:
         self._closed.set()
         with self._lock:
-            turn, api_stream, finished = (
-                self._turn,
-                self._api_stream,
-                self._turn_finished,
-            )
-        if turn is not None and not finished:
-            try:
-                turn.interrupt()
-            except Exception:
-                logger.exception("Could not interrupt Codex turn")
+            response, api_stream = self._response, self._api_stream
+        if response is not None:
+            response.close()
         if api_stream is not None:
             close_api = getattr(api_stream, "close", None)
             if close_api is not None:
@@ -335,45 +292,32 @@ class SubscriptionStream:
 
 
 class SubscriptionClient:
-    """Expose ChatGPT-authenticated Codex behind the existing model interface."""
+    """Model-only client for ChatGPT subscription and API fallback."""
 
     def __init__(
         self,
         *,
         api_client: Any,
         api_model: str,
-        subscription_model: str | None,
+        subscription_model: str,
         api_capabilities: ModelCapabilities,
-        project_root: Path,
+        auth: SubscriptionAuth,
         on_fallback=None,
-        codex: Any = None,
+        session=None,
     ):
         self.api_client = api_client
         self.api_model = api_model
         self.subscription_model = subscription_model
         self.api_capabilities = api_capabilities
-        self.project_root = project_root
+        self.auth = auth
         self.on_fallback = on_fallback
-        self.codex = codex or Codex()
+        self.session = session or requests.Session()
         self.chat = SimpleNamespace(completions=self)
         self._lock = threading.RLock()
         self._api_only = False
 
-    def ensure_chatgpt_login(self) -> None:
-        account = self.codex.account().model_dump(by_alias=True).get("account") or {}
-        if account.get("type") == "chatgpt":
-            return
-        handle = self.codex.login_chatgpt()
-        if not handle.auth_url or not webbrowser.open(handle.auth_url):
-            raise RuntimeError("Could not open the ChatGPT login URL in a browser")
-        completion = handle.wait()
-        if not completion.success:
-            raise RuntimeError(f"ChatGPT login failed: {completion.error}")
-        account = self.codex.account().model_dump(by_alias=True).get("account") or {}
-        if account.get("type") != "chatgpt":
-            raise RuntimeError(
-                "Codex did not establish ChatGPT subscription authentication"
-            )
+    def ensure_chatgpt_login(self, announce) -> None:
+        self.auth.ensure_login(announce)
 
     def create(self, **kwargs):
         with self._lock:
@@ -392,8 +336,7 @@ class SubscriptionClient:
 
     def _api_request(self, options: dict[str, Any]):
         messages = deepcopy(options["messages"])
-        system = messages[0]
-        system["content"] = system["content"].replace(
+        messages[0]["content"] = messages[0]["content"].replace(
             SUBSCRIPTION_MODALITIES.prompt_block(),
             self.api_capabilities.prompt_block(),
             1,
@@ -403,117 +346,126 @@ class SubscriptionClient:
                 message.get("content"), list
             ):
                 continue
-            content = []
-            for part in message["content"]:
-                kind = part.get("type")
-                modality = {
-                    "image_url": "image",
-                    "input_audio": "audio",
-                    "video_url": "video",
-                    "file": "file",
-                }.get(kind)
-                if modality is None or self.api_capabilities.supports(modality):
-                    content.append(part)
-            message["content"] = content
+            message["content"] = [
+                part
+                for part in message["content"]
+                if self.api_capabilities.supports(
+                    {
+                        "image_url": "image",
+                        "input_audio": "audio",
+                        "video_url": "video",
+                        "file": "file",
+                    }.get(part.get("type"), "text")
+                )
+            ]
         return self.api_client.chat.completions.create(
             **{**options, "model": self.api_model, "messages": messages}
         )
 
-    @staticmethod
-    def _codex_effort(value: str | None) -> ReasoningEffort | None:
-        if value is None:
-            return None
-        try:
-            return ReasoningEffort(value)
-        except ValueError as exc:
-            raise ValueError(f"Unsupported Codex reasoning effort: {value}") from exc
-
     def _generate(
         self, options: dict[str, Any], stream: SubscriptionStream
     ) -> str | None:
-        messages = options["messages"]
         schema = options["response_format"]["json_schema"]["schema"]
-        if (
-            not messages
-            or messages[0]["role"] != "system"
-            or messages[-1]["role"] != "user"
-        ):
+        messages = options["messages"]
+        if not messages or messages[0].get("role") != "system":
             raise ValueError(
-                "Codex turns require a system prompt and a final user event"
+                "Subscription request must start with Jarvis system prompt"
             )
-        with tempfile.TemporaryDirectory(prefix="jarvis-codex-turn-") as cwd:
-            thread = self.codex.thread_start(
-                base_instructions=messages[0]["content"],
-                developer_instructions=(
-                    "Return only the JSON output required by the per-turn schema. "
-                    "Do not call Codex tools or inspect the filesystem. Jarvis dispatches actions. "
-                    "If a schema field describes a JSON-encoded object, serialize that object's contents "
-                    "as a JSON string; Jarvis reconstructs it before execution."
-                ),
-                model=self.subscription_model,
-                model_provider="openai",
-                cwd=cwd,
-                ephemeral=True,
-                sandbox=Sandbox.read_only,
-                approval_mode=ApprovalMode.deny_all,
+        body: dict[str, Any] = {
+            "model": self.subscription_model,
+            "input": _history_items(messages),
+            "store": False,
+            "stream": True,
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "agent_actions",
+                    "strict": True,
+                    "schema": _strict_schema(schema),
+                }
+            },
+        }
+        if options.get("reasoning_effort"):
+            body["reasoning"] = {"effort": options["reasoning_effort"]}
+        for attempt in range(2):
+            credentials = self.auth.credentials(force_refresh=attempt > 0)
+            headers = {
+                "Authorization": "Bearer " + credentials["access_token"],
+                "ChatGPT-Account-Id": credentials["account_id"],
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "originator": "jarvis",
+            }
+            response = self.session.post(
+                _RESPONSES_URL,
+                json=body,
+                headers=headers,
+                stream=True,
+                timeout=(15, 90),
             )
-            if stream._closed.is_set():
-                return None
-            try:
-                old = _history_items(messages[1:-1])
-                if old:
-                    self.codex._client._request_raw(
-                        "thread/inject_items", {"threadId": thread.id, "items": old}
-                    )
+            stream.set_response(response)
+            if response.status_code == 401 and attempt == 0:
+                response.close()
+                continue
+            if response.status_code == 429:
+                message = response.text[:500]
+                response.close()
+                raise SubscriptionQuotaExceeded(message)
+            if response.status_code >= 400:
+                message = response.text[:1000]
+                response.close()
+                raise RuntimeError(
+                    f"ChatGPT subscription request failed ({response.status_code}): {message}"
+                )
+            break
+        content = ""
+        completed = False
+        try:
+            for raw in response.iter_lines():
                 if stream._closed.is_set():
                     return None
-                _, latest = _user_parts(messages[-1]["content"])
-                turn = thread.turn(
-                    latest,
-                    output_schema=_strict_schema(schema),
-                    effort=self._codex_effort(options.get("reasoning_effort")),
-                    approval_mode=ApprovalMode.deny_all,
-                    sandbox=Sandbox.read_only,
+                line = (
+                    raw.decode("utf-8", errors="replace")
+                    if isinstance(raw, bytes)
+                    else raw
                 )
-                stream.set_turn(turn)
-                answer = None
-                for event in turn.stream():
-                    if stream._closed.is_set():
-                        return None
-                    if event.method == "item/completed":
-                        item = getattr(event.payload.item, "root", event.payload.item)
-                        if getattr(item, "type", None) == "agentMessage" and getattr(
-                            getattr(item, "phase", None), "value", None
-                        ) in {"final_answer", None}:
-                            answer = item.text
-                    elif event.method == "turn/completed":
-                        completed = event.payload.turn
-                        status = getattr(completed.status, "value", completed.status)
-                        if status == "failed":
-                            error = completed.error
-                            message = error.message if error else "Codex turn failed"
-                            if error is not None and _quota_error(error):
-                                raise SubscriptionQuotaExceeded(message)
-                            raise RuntimeError(message)
-                        if status != "completed":
-                            raise RuntimeError(f"Codex turn ended with status {status}")
-                if answer is None:
-                    raise RuntimeError("Codex returned no final assistant message")
-                try:
-                    return _normalize_response(answer, schema)
-                except (ValueError, TypeError) as exc:
-                    # Let Agent record structure_error and request a corrected
-                    # response with a fresh call_id, without a model-API retry.
-                    logger.info("Codex response violated Jarvis schema: %s", exc)
-                    return answer
-            finally:
-                try:
-                    self.codex._client._request_raw(
-                        "thread/unsubscribe", {"threadId": thread.id}
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                event = json.loads(payload)
+                kind = event.get("type")
+                if kind == "response.output_text.delta":
+                    content += event.get("delta") or ""
+                elif kind in {"response.failed", "error"}:
+                    error = (
+                        event.get("error")
+                        or (event.get("response") or {}).get("error")
+                        or event
                     )
-                except Exception:
-                    logger.exception("Could not release an ephemeral Codex thread")
+                    if _quota_error(error):
+                        raise SubscriptionQuotaExceeded(str(error))
+                    raise RuntimeError(
+                        "ChatGPT subscription generation failed: " + str(error)
+                    )
+                elif kind == "response.completed":
+                    completed = True
+                    break
+        finally:
+            response.close()
+        if not completed:
+            raise RuntimeError(
+                "ChatGPT subscription stream ended without response.completed"
+            )
+        try:
+            return _normalize_response(content, schema)
+        except (ValueError, TypeError) as exc:
+            # Let Agent record structure_error and ask the model again with a new call_id.
+            logger.info("Subscription response violated Jarvis schema: %s", exc)
+            return content
 
     def close(self) -> None:
-        self.codex.close()
+        self.session.close()
+        self.auth.close()
         self.api_client.close()
