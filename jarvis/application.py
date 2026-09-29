@@ -66,6 +66,7 @@ class JarvisApplication:
                 SubscriptionClient,
                 SUBSCRIPTION_MODALITIES,
             )
+            from .infrastructure.subscription_auth import SubscriptionAuth
 
             api_capabilities = discover_model_capabilities(
                 config.model,
@@ -78,12 +79,12 @@ class JarvisApplication:
                     api_model=config.model,
                     subscription_model=config.subscription_model,
                     api_capabilities=api_capabilities,
-                    project_root=config.project_root,
+                    auth=SubscriptionAuth(config.jarvis_dir),
                     on_fallback=lambda value: setattr(
                         self.agents, "model_capabilities", value
                     ),
                 )
-                self.client.ensure_chatgpt_login()
+                self.client.ensure_chatgpt_login(self.debug.initialization_notice)
             except Exception:
                 if hasattr(self, "client"):
                     self.client.close()

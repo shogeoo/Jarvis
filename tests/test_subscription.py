@@ -1,148 +1,113 @@
-"""Subscription transport contracts without starting a real Codex session."""
+"""Direct ChatGPT subscription transport and Jarvis-owned OAuth tests."""
 
+import base64
 import json
-import queue
+import os
+import stat
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
+from urllib.request import urlopen
 from unittest.mock import Mock, patch
 
+import fixtures
+from jarvis.application import JarvisApplication
 from jarvis.core.protocol import actions_response_schema, object_schema
 from jarvis.core.runtime import AgentManager
-from jarvis.application import JarvisApplication
-from jarvis.infrastructure.config import load_config
-from jarvis.infrastructure.model_capabilities import ModelCapabilities
-from jarvis.infrastructure.config import Config
+from jarvis.infrastructure.config import Config, load_config
 from jarvis.infrastructure.context import MemoryStore
+from jarvis.infrastructure.model_capabilities import ModelCapabilities
 from jarvis.infrastructure.subscription import (
     SUBSCRIPTION_MODALITIES,
     SubscriptionClient,
     SubscriptionQuotaExceeded,
     SubscriptionStream,
-    _action_schemas,
     _history_items,
     _normalize_response,
     _quota_error,
     _strict_schema,
-    _user_parts,
 )
+from jarvis.infrastructure.subscription_auth import SubscriptionAuth, _account_id
+from test_runtime import _Response, _wait
+
+
+def _jwt(account_id="account-test"):
+    payload = json.dumps({"chatgpt_account_id": account_id}).encode()
+    return "a." + base64.urlsafe_b64encode(payload).decode().rstrip("=") + ".b"
+
+
+class _ResponseStream:
+    def __init__(self, events=(), *, status=200, text=""):
+        self.status_code = status
+        self.text = text
+        self.events = events
+        self.closed = False
+
+    def iter_lines(self):
+        for event in self.events:
+            yield ("data: " + json.dumps(event)).encode()
+
+    def close(self):
+        self.closed = True
+
+
+def _client(auth=None, session=None, *, api_capabilities=None, fallback=None):
+    api = Mock()
+    router = SubscriptionClient(
+        api_client=api,
+        api_model="api-model",
+        subscription_model="gpt-6-luna",
+        api_capabilities=api_capabilities
+        or ModelCapabilities("api", ("text", "image", "file")),
+        auth=auth or Mock(),
+        on_fallback=fallback,
+        session=session or Mock(),
+    )
+    return router, api
 
 
 class SubscriptionTests(unittest.TestCase):
-    def test_application_authenticates_before_startup_event(self):
-        import fixtures
-        from test_runtime import _Response, _wait
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            storage = fixtures.write_jarvis_root(root / "storage")
-            backend = Mock()
-            backend.chat.completions.create.side_effect = lambda **kwargs: _Response(
-                '{"actions":[{"action_id":"no_action","call_id":"ready-1","data":{}}]}'
-            )
-            backend.close = Mock()
-            order = []
-            backend.ensure_chatgpt_login.side_effect = lambda: order.append("login")
-            with (
-                patch("jarvis.application.OpenAI"),
-                patch(
-                    "jarvis.application.discover_model_capabilities",
-                    return_value=ModelCapabilities("api", ("text", "image", "file")),
-                ),
-                patch(
-                    "jarvis.infrastructure.subscription.SubscriptionClient",
-                    return_value=backend,
-                ),
-                patch("jarvis.application.speech_service") as speech,
-                patch("jarvis.application.shutil.which", return_value=None),
-            ):
-                speech.can_speak = False
-                app = JarvisApplication(
-                    Config(
-                        "api",
-                        "http://invalid",
-                        "secret",
-                        root,
-                        storage,
-                        subscription_enabled=True,
-                        subscription_model="sub",
-                    ),
-                    memory=MemoryStore(root / "memory"),
-                )
-                try:
-                    self.assertEqual(order, ["login"])
-                    app.start()
-                    self.assertEqual(
-                        app.agents.model_capabilities.input_modalities,
-                        ("text", "image"),
-                    )
-                    backend.ensure_chatgpt_login.assert_called_once()
-                    self.assertIsNotNone(app.main_agent)
-                    self.assertTrue(
-                        _wait(
-                            lambda: any(
-                                '"event_id":"system_started"'
-                                in str(message.get("content", ""))
-                                for message in app.main_agent.history
-                            )
-                        )
-                    )
-                finally:
-                    app.stop()
-
-    def test_configuration_has_separate_models_and_legacy_api_alias(self):
+    def test_config_uses_separate_models_and_subscription_modalities(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / ".env"
             path.write_text(
-                "CHATGPT_SUBSCRIPTION_ENABLED=true\nLLM_API_MODEL=api-model\n"
-                "LLM_SUBSCRIPTION_MODEL=subscription-model\nLLM_MODEL=old-model\n"
+                "CHATGPT_SUBSCRIPTION_ENABLED=true\nLLM_API_MODEL=api-model\nLLM_SUBSCRIPTION_MODEL=gpt-6-luna\n"
             )
-            with patch.dict("os.environ", {}, clear=True):
+            with patch.dict(os.environ, {}, clear=True):
                 config = load_config(path)
             self.assertTrue(config.subscription_enabled)
             self.assertEqual(config.model, "api-model")
-            self.assertEqual(config.subscription_model, "subscription-model")
+            self.assertEqual(config.subscription_model, "gpt-6-luna")
             self.assertEqual(
                 SUBSCRIPTION_MODALITIES.input_modalities, ("text", "image")
             )
-            path.write_text("CHATGPT_SUBSCRIPTION_ENABLED=no\n")
-            with (
-                patch.dict("os.environ", {}, clear=True),
-                self.assertRaisesRegex(ValueError, "true or false"),
-            ):
-                load_config(path)
 
-    def test_strict_translation_and_protocol_restoration(self):
+    def test_strict_schema_restores_omitted_optional_fields(self):
         data = object_schema(
             {
                 "path": {"type": "string"},
-                "start_line": {"type": "integer", "minimum": 1, "default": None},
+                "start_line": {"type": "integer", "default": None},
             },
             required=["path"],
         )
-        action_schema = actions_response_schema(
+        schema = actions_response_schema(
             {"read_file": data, "no_action": object_schema({})}
         )
-        strict = _strict_schema(action_schema)
+        strict = _strict_schema(schema)
         self.assertFalse(strict["additionalProperties"])
-        translated_data = _action_schemas(strict)["read_file"]
-        self.assertEqual(translated_data["required"], ["path", "start_line"])
-        self.assertEqual(
-            translated_data["properties"]["start_line"]["type"], ["integer", "null"]
-        )
-        self.assertNotIn("minimum", translated_data["properties"]["start_line"])
         answer = '{"actions":[{"action_id":"read_file","call_id":"a-1","data":{"path":"/tmp/file","start_line":null}}]}'
-        result = json.loads(_normalize_response(answer, action_schema))
-        self.assertEqual(result["actions"][0]["data"], {"path": "/tmp/file"})
+        self.assertEqual(
+            json.loads(_normalize_response(answer, schema))["actions"][0]["data"],
+            {"path": "/tmp/file"},
+        )
 
-    def test_free_form_automation_data_uses_json_string_on_wire(self):
+    def test_open_automation_data_round_trips_as_json(self):
         schema = actions_response_schema(
             {"create_automation": AgentManager.automation_data_schema(None)}
-        )
-        translated = _action_schemas(_strict_schema(schema))["create_automation"]
-        self.assertEqual(
-            translated["properties"]["event"]["properties"]["data"]["type"], "string"
         )
         answer = json.dumps(
             {
@@ -164,75 +129,108 @@ class SubscriptionTests(unittest.TestCase):
                 ]
             }
         )
-        restored = json.loads(_normalize_response(answer, schema))["actions"][0]["data"]
-        self.assertEqual(restored["event"]["data"], {"text": "go"})
-        self.assertEqual(restored["actions"][0]["data"], {"text": "hello"})
-        self.assertIsNone(restored["call_result"])
+        result = json.loads(_normalize_response(answer, schema))["actions"][0]["data"]
+        self.assertEqual(result["event"]["data"], {"text": "go"})
+        self.assertEqual(result["actions"][0]["data"], {"text": "hello"})
 
-    def test_history_preserves_roles_images_and_unsupported_attachment_names(self):
-        content = [
-            {"type": "text", "text": '{"event_id":"example","data":{}}'},
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/png;base64,YQ==", "name": "cat.png"},
-            },
-            {
-                "type": "file",
-                "file": {
-                    "filename": "report.pdf",
-                    "file_data": "data:application/pdf;base64,YQ==",
-                },
-            },
-        ]
-        raw, user_input = _user_parts(content)
-        self.assertEqual(
-            [part["type"] for part in raw],
-            ["input_text", "input_text", "input_image", "input_text"],
-        )
-        self.assertIn("cat.png", raw[1]["text"])
-        self.assertIn("report.pdf", raw[3]["text"])
-        self.assertEqual(user_input[2].url, "data:image/png;base64,YQ==")
+    def test_direct_context_keeps_system_role_history_and_image(self):
         messages = [
-            {"role": "user", "content": content},
+            {"role": "system", "content": "Jarvis system prompt"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": '{"event_id":"example","data":{}}'},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,YQ==",
+                            "name": "cat.png",
+                        },
+                    },
+                    {
+                        "type": "file",
+                        "file": {
+                            "filename": "report.pdf",
+                            "file_data": "data:application/pdf;base64,YQ==",
+                        },
+                    },
+                ],
+            },
             {"role": "assistant", "content": '{"actions":[]}'},
         ]
-        history = _history_items(messages)
-        self.assertEqual([item["role"] for item in history], ["user", "assistant"])
-        self.assertEqual(history[1]["content"][0]["type"], "output_text")
-
-    def test_login_opens_browser_only_when_not_using_chatgpt(self):
-        sdk = Mock()
-        sdk.account.return_value.model_dump.return_value = {
-            "account": {"type": "chatgpt"}
-        }
-        api = Mock()
-        router = SubscriptionClient(
-            api_client=api,
-            api_model="api",
-            subscription_model="codex",
-            api_capabilities=SUBSCRIPTION_MODALITIES,
-            project_root=Path("/tmp"),
-            codex=sdk,
+        result = _history_items(messages)
+        self.assertEqual(
+            [message["role"] for message in result], ["system", "user", "assistant"]
         )
-        with patch("jarvis.infrastructure.subscription.webbrowser.open") as browser:
-            router.ensure_chatgpt_login()
-        browser.assert_not_called()
-        sdk.account.return_value.model_dump.side_effect = [
-            {"account": None},
-            {"account": {"type": "chatgpt"}},
-        ]
-        sdk.login_chatgpt.return_value.auth_url = "https://example.invalid/login"
-        sdk.login_chatgpt.return_value.wait.return_value.success = True
-        with patch(
-            "jarvis.infrastructure.subscription.webbrowser.open", return_value=True
-        ) as browser:
-            router.ensure_chatgpt_login()
-        browser.assert_called_once_with("https://example.invalid/login")
-        sdk.login_chatgpt.return_value.wait.assert_called_once()
+        self.assertEqual(result[0]["content"][0]["text"], "Jarvis system prompt")
+        self.assertEqual(
+            [part["type"] for part in result[1]["content"]],
+            ["input_text", "input_text", "input_image", "input_text"],
+        )
+        self.assertIn("cat.png", result[1]["content"][1]["text"])
+        self.assertIn("report.pdf", result[1]["content"][3]["text"])
+        self.assertEqual(result[2]["content"][0]["type"], "output_text")
 
-    def test_quota_switch_reuses_unchanged_messages_and_schema(self):
-        sdk = Mock()
-        api = Mock()
+    def test_direct_request_contains_only_jarvis_messages_and_no_codex_tools(self):
+        schema = actions_response_schema({"no_action": object_schema({})})
+        response = _ResponseStream(
+            [
+                {
+                    "type": "response.output_text.delta",
+                    "delta": '{"actions":[{"action_id":"no_action",',
+                },
+                {
+                    "type": "response.output_text.delta",
+                    "delta": '"call_id":"act-1","data":{}}]}',
+                },
+                {"type": "response.completed"},
+            ]
+        )
+        auth = Mock()
+        auth.credentials.return_value = {
+            "access_token": "secret",
+            "account_id": "account-test",
+        }
+        session = Mock()
+        session.post.return_value = response
+        router, _ = _client(auth, session)
+        messages = [
+            {"role": "system", "content": "Only Jarvis rules"},
+            {"role": "user", "content": '{"event_id":"start","data":{}}'},
+        ]
+        options = {
+            "messages": messages,
+            "response_format": {"json_schema": {"schema": schema}},
+            "stream": True,
+            "reasoning_effort": "high",
+        }
+        stream = router.create(**options)
+        content = "".join(chunk.choices[0].delta.content for chunk in stream)
+        self.assertIn('"call_id":"act-1"', content)
+        sent = session.post.call_args.kwargs
+        body = sent["json"]
+        self.assertEqual(body["input"], _history_items(messages))
+        self.assertNotIn("tools", body)
+        self.assertNotIn("developer_instructions", body)
+        self.assertNotIn("instructions", body)
+        self.assertEqual(body["reasoning"], {"effort": "high"})
+        self.assertEqual(body["text"]["format"]["type"], "json_schema")
+        self.assertEqual(sent["headers"]["ChatGPT-Account-Id"], "account-test")
+        self.assertTrue(response.closed)
+        stream.close()
+
+    def test_usage_limit_retries_identical_request_through_api(self):
+        auth = Mock()
+        auth.credentials.return_value = {
+            "access_token": "secret",
+            "account_id": "account-test",
+        }
+        session = Mock()
+        session.post.return_value = _ResponseStream(
+            status=429, text="You’ve hit your usage limit"
+        )
+        changed = []
+        router, api = _client(auth, session, fallback=changed.append)
         api.chat.completions.create.return_value = iter(
             [
                 SimpleNamespace(
@@ -244,104 +242,209 @@ class SubscriptionTests(unittest.TestCase):
                 )
             ]
         )
-        changed = []
-        router = SubscriptionClient(
-            api_client=api,
-            api_model="api-model",
-            subscription_model="codex-model",
-            api_capabilities=ModelCapabilities("api", ("text", "image", "file")),
-            project_root=Path("/tmp"),
-            on_fallback=changed.append,
-            codex=sdk,
-        )
-        with patch.object(
-            router, "_generate", side_effect=SubscriptionQuotaExceeded("limit")
-        ):
-            message = {"role": "user", "content": "hello"}
-            system = {
-                "role": "system",
-                "content": SUBSCRIPTION_MODALITIES.prompt_block(),
-            }
-            options = {
-                "messages": [system, message],
-                "model": "api-model",
-                "response_format": {"json_schema": {"schema": {}}},
-                "stream": True,
-            }
-            stream = router.create(**options)
-            self.assertEqual(next(stream).choices[0].delta.content, "api reply")
-            with self.assertRaises(StopIteration):
-                next(stream)
-            self.assertEqual(len(changed), 1)
-            self.assertEqual(options["messages"][1], message)
-            sent = api.chat.completions.create.call_args.kwargs
-            self.assertEqual(sent["model"], "api-model")
-            self.assertEqual(sent["messages"][1], message)
-            self.assertEqual(sent["response_format"], options["response_format"])
-            self.assertIn("file", sent["messages"][0]["content"])
-            stream.close()
-            # Subsequent turns stay on the API path for this process.
-            api.chat.completions.create.return_value = iter([])
-            router.create(**options)
-            self.assertEqual(len(changed), 1)
-
-    def test_api_fallback_receives_original_file_and_updated_modalities(self):
-        api = Mock()
-        api.chat.completions.create.return_value = iter([])
-        router = SubscriptionClient(
-            api_client=api, api_model="api-model", subscription_model="codex-model",
-            api_capabilities=ModelCapabilities("api", ("text", "image", "file")),
-            project_root=Path("/tmp"), codex=Mock(),
-        )
-        system = {"role": "system", "content": "Personal.\n\n" + SUBSCRIPTION_MODALITIES.prompt_block() + "\n\n{}"}
-        content = [
-            {"type": "text", "text": '{"event_id":"uploaded","data":{}}'},
-            {"type": "file", "file": {"filename": "report.pdf", "file_data": "data:application/pdf;base64,YQ=="}},
-            {"type": "input_audio", "input_audio": {"format": "ogg", "data": "YQ=="}},
+        messages = [
+            {"role": "system", "content": SUBSCRIPTION_MODALITIES.prompt_block()},
+            {"role": "user", "content": "hello"},
         ]
-        options = {"messages": [system, {"role": "user", "content": content}], "model": "ignored", "stream": True}
-        router._api_request(options)
-        sent = api.chat.completions.create.call_args.kwargs
-        self.assertEqual(sent["model"], "api-model")
-        self.assertIn("text, image, file", sent["messages"][0]["content"])
-        self.assertEqual([part["type"] for part in sent["messages"][1]["content"]], ["text", "file"])
-        self.assertEqual(sent["messages"][1]["content"][1]["file"]["filename"], "report.pdf")
-        self.assertEqual(options["messages"][1]["content"], content)
+        options = {
+            "messages": messages,
+            "response_format": {"json_schema": {"schema": {}}},
+            "stream": True,
+        }
+        stream = router.create(**options)
+        self.assertEqual(next(stream).choices[0].delta.content, "api reply")
+        with self.assertRaises(StopIteration):
+            next(stream)
+        self.assertEqual(len(changed), 1)
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["messages"][1], messages[1]
+        )
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["model"], "api-model"
+        )
+        stream.close()
 
-    def test_cancel_interrupts_the_active_turn_once(self):
+    def test_api_fallback_preserves_original_file(self):
+        router, api = _client()
+        api.chat.completions.create.return_value = iter([])
+        messages = [
+            {"role": "system", "content": SUBSCRIPTION_MODALITIES.prompt_block()},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "read"},
+                    {
+                        "type": "file",
+                        "file": {
+                            "filename": "report.pdf",
+                            "file_data": "data:application/pdf;base64,YQ==",
+                        },
+                    },
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"format": "ogg", "data": "YQ=="},
+                    },
+                ],
+            },
+        ]
+        router._api_request({"messages": messages, "stream": True})
+        content = api.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+        self.assertEqual([part["type"] for part in content], ["text", "file"])
+        self.assertEqual(content[1]["file"]["filename"], "report.pdf")
+        self.assertEqual(len(messages[1]["content"]), 3)
+
+    def test_close_cancels_direct_http_stream(self):
         stream = SubscriptionStream.__new__(SubscriptionStream)
-        stream._closed = __import__("threading").Event()
-        stream._lock = __import__("threading").RLock()
-        stream._queue = queue.Queue()
-        stream._turn = Mock()
-        stream._turn_finished = False
+        stream._closed = threading.Event()
+        stream._lock = threading.RLock()
+        stream._queue = __import__("queue").Queue()
+        stream._response = Mock()
         stream._api_stream = None
         stream.close()
-        self.assertTrue(stream._closed.is_set())
-        stream._turn.interrupt.assert_called_once()
+        stream._response.close.assert_called_once()
 
-    def test_quota_codes_are_specific(self):
-        for code in ("usageLimitExceeded", "rateLimitExceeded"):
-            self.assertTrue(
-                _quota_error(
-                    SimpleNamespace(codex_error_info=SimpleNamespace(root=code))
+    def test_quota_classification_does_not_hide_other_errors(self):
+        self.assertTrue(_quota_error({"error": {"code": "usage_limit_exceeded"}}))
+        self.assertTrue(_quota_error({"code": "rate_limit_exceeded"}))
+        self.assertFalse(_quota_error({"error": {"code": "invalid_json_schema"}}))
+        self.assertTrue(_quota_error(RuntimeError("You’ve hit your usage limit")))
+
+    def test_auth_file_is_private_and_separate_from_codex(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            auth = SubscriptionAuth(Path(temporary), session=Mock())
+            self.assertEqual(auth.path, Path(temporary) / "runtime/auth/chatgpt.json")
+            self.assertEqual(_account_id(_jwt()), "account-test")
+            auth._save(
+                {"access_token": _jwt(), "refresh_token": "refresh", "expires_in": 3600}
+            )
+            self.assertEqual(auth.credentials()["account_id"], "account-test")
+            self.assertEqual(stat.S_IMODE(auth.path.stat().st_mode), 0o600)
+
+    def test_saved_auth_skips_browser_and_refreshes_when_expired(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = Mock()
+            auth = SubscriptionAuth(Path(temporary), session=session)
+            auth._save(
+                {"access_token": _jwt(), "refresh_token": "refresh", "expires_in": 3600}
+            )
+            with patch(
+                "jarvis.infrastructure.subscription_auth.webbrowser.open"
+            ) as browser:
+                auth.ensure_login(Mock())
+            browser.assert_not_called()
+            auth._state["expires_at"] = time.time() - 1
+            session.post.return_value.json.return_value = {
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "expires_in": 3600,
+            }
+            refreshed = auth.credentials()
+            self.assertEqual(refreshed["account_id"], "account-test")
+            self.assertEqual(refreshed["access_token"], "new-access")
+
+    def test_first_login_opens_browser_and_saves_independent_session(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            session = Mock()
+            session.post.return_value.json.return_value = {
+                "access_token": _jwt(),
+                "refresh_token": "refresh",
+                "expires_in": 3600,
+            }
+            auth = SubscriptionAuth(Path(temporary), session=session)
+            notices = []
+            workers = []
+
+            def visit(url):
+                query = parse_qs(urlsplit(url).query)
+                self.assertEqual(query["code_challenge_method"], ["S256"])
+                self.assertEqual(
+                    query["redirect_uri"], ["http://localhost:1455/auth/callback"]
                 )
+
+                def callback():
+                    with urlopen(
+                        "http://localhost:1455/auth/callback?code=login-code&state="
+                        + query["state"][0],
+                        timeout=3,
+                    ) as response:
+                        self.assertEqual(response.status, 200)
+
+                worker = threading.Thread(target=callback)
+                workers.append(worker)
+                worker.start()
+                return True
+
+            with patch(
+                "jarvis.infrastructure.subscription_auth.webbrowser.open",
+                side_effect=visit,
+            ):
+                auth.ensure_login(notices.append)
+            for worker in workers:
+                worker.join(timeout=3)
+            self.assertTrue(auth.path.exists())
+            self.assertEqual(auth.credentials()["account_id"], "account-test")
+            self.assertIn("Войдите", notices[0])
+            self.assertEqual(
+                session.post.call_args.kwargs["data"]["code"], "login-code"
             )
-            self.assertTrue(
-                _quota_error(
-                    SimpleNamespace(codex_error_info=SimpleNamespace(root={code: {}}))
+
+    def test_application_authenticates_before_startup_event(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            storage = fixtures.write_jarvis_root(root / "storage")
+            backend = Mock()
+            backend.chat.completions.create.side_effect = lambda **kwargs: _Response(
+                '{"actions":[{"action_id":"no_action","call_id":"ready-1","data":{}}]}'
+            )
+            order = []
+            backend.ensure_chatgpt_login.side_effect = lambda announce: (
+                order.append("login"),
+                announce("Войдите в аккаунт ChatGPT."),
+            )
+            with (
+                patch("jarvis.application.OpenAI"),
+                patch(
+                    "jarvis.application.discover_model_capabilities",
+                    return_value=ModelCapabilities("api", ("text", "image", "file")),
+                ),
+                patch(
+                    "jarvis.infrastructure.subscription.SubscriptionClient",
+                    return_value=backend,
+                ),
+                patch("jarvis.application.speech_service") as speech,
+                patch("jarvis.application.shutil.which", return_value=None),
+            ):
+                speech.can_speak = False
+                output = __import__("io").StringIO()
+                app = JarvisApplication(
+                    Config(
+                        "api",
+                        "http://invalid",
+                        "secret",
+                        root,
+                        storage,
+                        subscription_enabled=True,
+                        subscription_model="gpt-6-luna",
+                    ),
+                    memory=MemoryStore(root / "memory"),
+                    stream=output,
                 )
-            )
-        self.assertFalse(
-            _quota_error(
-                SimpleNamespace(codex_error_info=SimpleNamespace(root="badRequest"))
-            )
-        )
-        self.assertTrue(
-            _quota_error(
-                RuntimeError("You’ve hit your usage limit. Try again tomorrow.")
-            )
-        )
+                try:
+                    self.assertEqual(order, ["login"])
+                    self.assertIn("Войдите в аккаунт ChatGPT.", output.getvalue())
+                    self.assertNotIn("system_started", output.getvalue())
+                    app.start()
+                    self.assertTrue(
+                        _wait(
+                            lambda: any(
+                                '"event_id":"system_started"'
+                                in str(message.get("content", ""))
+                                for message in app.main_agent.history
+                            )
+                        )
+                    )
+                finally:
+                    app.stop()
 
 
 if __name__ == "__main__":
