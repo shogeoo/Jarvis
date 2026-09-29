@@ -35,6 +35,7 @@ STT и TTS настроены на CUDA без CPU fallback; VAD работае�
 
 `MEMORY` содержит подтверждённые устойчивые факты и сохраняется в
 `.jarvis/memory/main/semantic.json` как `{"entries":[{"id":"mem_000001","content":"..."}]}`.
+Отдельный `semantic_index.json` не допускает повторного использования ID после удаления записи.
 Системные действия `memory_write(content)`, `memory_edit(id, content)` и
 `memory_delete(id)` доступны только Jarvis. Следующий inference получает
 актуальный снимок памяти после изменений.
