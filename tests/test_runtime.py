@@ -639,7 +639,7 @@ class RuntimeTests(unittest.TestCase):
             record = memory.load("main", "main")
             self.assertEqual(
                 [message["role"] for message in record["messages"]],
-                ["user", "assistant"],
+                ["system", "user", "assistant"],
             )
 
             second = self.manager(_Client([_no_action("done-2")]), memory=memory)
@@ -818,12 +818,12 @@ class RuntimeTests(unittest.TestCase):
                 "parent_id": None, "modules": [], "actions": ["missing_action"],
                 "handlers": [], "messages": [{"role": "user", "content": "saved"}],
             })
-            before = (Path(temporary) / "main" / "current" / "agent.json").read_bytes()
+            before = (Path(temporary) / "main" / "instance.json").read_bytes()
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
             self.assertIsNone(manager.restore(name="main", preset="main"))
             self.assertEqual(manager.agents, {})
             self.assertEqual(memory.load("main", "main")["actions"], ["missing_action"])
-            self.assertEqual((Path(temporary) / "main" / "current" / "agent.json").read_bytes(), before)
+            self.assertEqual((Path(temporary) / "main" / "instance.json").read_bytes(), before)
 
     def test_disable_running_action_kills_execution_and_returns_one_disabled_result(self):
         marker = self.root / "running.pid"

@@ -208,7 +208,7 @@ class PresetStore:
                 shutil.copytree(path, replacement)
                 (replacement / "personprompt.txt").write_text(person_prompt.strip() + "\n", encoding="utf-8")
                 self._write_capabilities(replacement, normalized)
-                (replacement / "disabled_capabilities.json").write_text(json.dumps({key: [] for key in normalized}) + "\n", encoding="utf-8")
+                (replacement / "disabled_capabilities.json").write_text(json.dumps({key: [] for key in normalized}, indent=2) + "\n", encoding="utf-8")
                 # Linux atomically exchanges the two complete directories:
                 # a crash never leaves the preset absent or half-written.
                 libc = ctypes.CDLL(None, use_errno=True)

@@ -1,4 +1,4 @@
-"""Build one dynamic system message from four distinct blocks."""
+"""Build one dynamic system message from explicitly labeled blocks."""
 
 from importlib.resources import files
 from pathlib import Path
@@ -42,6 +42,7 @@ def agent_system_prompt(
     *,
     model_capabilities: ModelCapabilities | None = None,
     catalog_order: dict[str, list[str]] | None = None,
+    semantic_memory: dict[str, Any] | None = None,
 ) -> str:
     order = catalog_order if catalog_order is not None else {}
     modules = capability_catalog.get("modules", [])
@@ -91,11 +92,24 @@ def agent_system_prompt(
         if model_capabilities
         else "Текущая модель поддерживает следующие модальности: text, image, audio, video, file."
     )
-    return "\n\n".join(
-        (
-            person_prompt.strip(),
-            master_prompt.strip(),
-            modalities,
-            json_text(catalog, indent=2),
+    blocks = [
+        "ENVIRONMENT:\n" + master_prompt.strip(),
+        "PERSON:\n" + person_prompt.strip(),
+    ]
+    if semantic_memory is not None:
+        blocks.append(
+            "MEMORY:\n"
+            "Сохраняй в семантической памяти только подтверждённые и достаточно устойчивые факты о людях, отношениях, окружении, устройствах, предпочтениях, привычках и биографии. "
+            "Не сохраняй текущие задачи, временные проекты, планы, обсуждаемые возможности и сведения, в достоверности которых не уверен. "
+            "Изменившийся факт обновляй, устаревший удаляй; записи делай короткими, самостоятельными и понятными. "
+            "Ниже — записи, которые ты, JARVIS, сохранил для себя в прошлом: знания от тебя прошлого для тебя нынешнего.\n"
+            + json_text(semantic_memory, indent=2)
         )
+    model_id = model_capabilities.model if model_capabilities else "unknown"
+    blocks.extend(
+        [
+            "MODEL INFO:\nModel ID: " + model_id + "\n" + modalities,
+            "CAPABILITIES:\n" + json_text(catalog, indent=2),
+        ]
     )
+    return "\n\n".join(blocks)

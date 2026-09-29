@@ -28,7 +28,7 @@ from jarvis.infrastructure.context import MemoryStore
 
 def catalog(agent):
     agent._contract()
-    return json.loads(agent.history[0]["content"].rsplit("\n\n", 1)[1])
+    return json.loads(agent.history[0]["content"].split("CAPABILITIES:\n", 1)[1])
 
 
 class CatalogRuntimeTests(unittest.TestCase):
@@ -260,13 +260,11 @@ class CatalogRuntimeTests(unittest.TestCase):
 
 
 class DeclarationTests(unittest.TestCase):
-    def test_system_prompt_has_four_blocks_without_section_headers(self):
+    def test_system_prompt_has_labeled_blocks_in_required_order(self):
         prompt = agent_system_prompt("  Personality.\n", "Environment.\n", {}, {}, {"modules": []})
-        expected = "Personality.\n\nEnvironment.\n\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\n"
+        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nModel ID: unknown\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\nCAPABILITIES:\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
         self.assertEqual(prompt, expected)
-        for header in ("personprompt:", "masterprompt:", "CAPABILITY:"):
-            self.assertNotIn(header, prompt)
 
     def description(self):
         return {

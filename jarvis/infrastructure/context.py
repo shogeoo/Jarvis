@@ -1,43 +1,28 @@
-"""Долговременная память экземпляров агентов в ``.jarvis/memory``.
+"""Agent instances and model-shaped contexts in .jarvis/memory.
 
-Раскладка::
-
-    memory/<preset_id>/current/agent.json
-    memory/<preset_id>/current/context.json
-    memory/<preset_id>/current/parts/
-    memory/<preset_id>/last/agent.json
-    memory/<preset_id>/last/context.json
-    memory/<preset_id>/last/parts/
-
-Корневой агент preset (``main``) хранится без подпапки ``agent_id``.
-``agent.json`` описывает экземпляр, ``context.json`` содержит историю
-сообщений без system message: он пересобирается при запуске.
-
-Все пять модальностей переживают перезапуск: бинарные части (image, audio,
-video, file) пишутся в ``parts/`` под тем же именем, которое им дал автор
-части, а в context.json остаётся ссылка ``jarvis_part``. При загрузке ссылка
-разворачивается обратно в исходную OpenAI-часть.
+Binary parts are stored in files/; persisted context parts refer to file_id.
 """
 
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import shutil
 import threading
-import uuid
+import traceback
 from pathlib import Path
 from typing import Any
 
-_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-# Точка в ID корневой единицы запрещена: она означает единицу модуля.
-_CAPABILITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+from .console import logger
 
-_PART_REF = "jarvis_part"
-_PART_EXTENSIONS = {
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_CAPABILITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_EXT = {
     "image/png": "png",
     "image/jpeg": "jpg",
     "image/webp": "webp",
@@ -52,6 +37,8 @@ _PART_EXTENSIONS = {
     "application/pdf": "pdf",
     "text/plain": "txt",
 }
+_MIME = {value: key for key, value in _EXT.items()}
+_MIME.update({"wav": "audio/wav", "webm": "audio/webm"})
 
 
 def valid_name(value: Any) -> bool:
@@ -62,198 +49,84 @@ def valid_capability(value: Any) -> bool:
     return isinstance(value, str) and bool(_CAPABILITY.fullmatch(value))
 
 
-def _valid_message(message: Any) -> bool:
-    if not isinstance(message, dict) or message.get("role") not in {
+def _valid_message(value: Any) -> bool:
+    if not isinstance(value, dict) or value.get("role") not in {
+        "system",
         "user",
         "assistant",
     }:
         return False
-    content = message.get("content")
-    if isinstance(content, str):
-        return True
-    if isinstance(content, list):
-        return all(isinstance(part, dict) for part in content)
-    return False
+    content = value.get("content")
+    return isinstance(content, str) or (
+        isinstance(content, list) and all(isinstance(part, dict) for part in content)
+    )
 
 
-def _parse_data_url(url: Any) -> tuple[str, str] | None:
-    """Достать mime и base64 из data-URL. Без префикса — вернуть как есть."""
-
-    if not isinstance(url, str) or not url:
+def _binary_part(part: dict[str, Any]) -> tuple[str, str, bytes] | None:
+    kind = part.get("type")
+    field = {
+        "image_url": "url",
+        "video_url": "url",
+        "file": "file_data",
+        "input_audio": "data",
+    }.get(kind)
+    if field is None:
         return None
-    if url.startswith("data:"):
-        head, separator, payload = url.partition(",")
-        if not separator:
-            return None
-        mime = head[5:].split(";", 1)[0].strip() or "application/octet-stream"
-        return mime, payload
-    return None
-
-
-def _safe_part_name(name: Any, mime: str, payload: str) -> str:
-    """Имя файла в parts/: ровно то, что дал автор части, без переименования.
-
-    Отсекаются только компоненты пути (безопасность), само имя не меняется.
-    Безымянным частям имя даётся из содержимого и mime.
-    """
-
-    raw = str(name or "").strip().replace("\\", "/").split("/")[-1].strip()
-    raw = raw.lstrip(".")
-    if raw:
-        return raw
-    digest = hashlib.sha256(payload.encode("ascii")).hexdigest()[:12]
-    extension = _PART_EXTENSIONS.get(mime) or mime.split("/", 1)[-1] or "bin"
-    return f"{digest}.{extension}"
-
-
-def _extract_part(part: dict[str, Any]) -> tuple[str, str, str, str] | None:
-    """(kind, mime, name, base64) из OpenAI-части; текст — None."""
-
-    ptype = part.get("type")
-    if ptype == "image_url":
-        inner = part.get("image_url") or {}
-        parsed = _parse_data_url(inner.get("url"))
-        if parsed is None:
-            return None
-        mime, payload = parsed
-        return "image", mime, str(inner.get("name") or ""), payload
-    if ptype == "input_audio":
-        inner = part.get("input_audio") or {}
-        payload = inner.get("data")
-        if not isinstance(payload, str) or not payload:
-            return None
-        fmt = str(inner.get("format") or "wav").strip() or "wav"
-        return "audio", f"audio/{fmt}", str(inner.get("name") or ""), payload
-    if ptype == "file":
-        inner = part.get("file") or {}
-        parsed = _parse_data_url(inner.get("file_data"))
-        if parsed is None:
-            return None
-        mime, payload = parsed
-        return "file", mime, str(inner.get("filename") or ""), payload
-    if ptype == "video_url":
-        inner = part.get("video_url") or {}
-        parsed = _parse_data_url(inner.get("url"))
-        if parsed is None:
-            return None
-        mime, payload = parsed
-        return "video", mime, str(inner.get("name") or ""), payload
-    return None
-
-
-def _externalize_modalities(messages: list[Any], parts_dir: Path) -> list[Any]:
-    """Бинарные части — в parts/ под исходным именем; в JSON — ссылка."""
-
-    stored: list[Any] = []
-    for message in messages:
-        if not _valid_message(message):
-            continue
-        content = message.get("content")
-        if not isinstance(content, list):
-            stored.append(message)
-            continue
-        new_content: list[dict[str, Any]] = []
-        for part in content:
-            extracted = _extract_part(part)
-            if extracted is None:
-                new_content.append(part)
-                continue
-            kind, mime, name, payload = extracted
-            try:
-                raw = base64.b64decode(payload)
-            except (ValueError, TypeError):
-                continue
-            filename = _safe_part_name(name, mime, payload)
-            parts_dir.mkdir(parents=True, exist_ok=True)
-            path = parts_dir / filename
-            if path.exists() and path.read_bytes() != raw:
-                stem, suffix = Path(filename).stem, Path(filename).suffix
-                index = 1
-                while True:
-                    candidate = parts_dir / f"{stem}({index}){suffix}"
-                    if not candidate.exists() or candidate.read_bytes() == raw:
-                        path = candidate
-                        filename = candidate.name
-                        break
-                    index += 1
-            if not path.exists():
-                path.write_bytes(raw)
-            new_content.append(
-                {
-                    _PART_REF: {
-                        "type": kind,
-                        "mime_type": mime,
-                        "name": name,
-                        "file": f"parts/{filename}",
-                    }
-                }
-            )
-        if new_content:
-            stored.append({**message, "content": new_content})
-    return stored
-
-
-def _hydrate_part(ref: dict[str, Any], parts_dir: Path) -> dict[str, Any] | None:
-    info = ref.get(_PART_REF)
-    if not isinstance(info, dict):
+    inner = part.get(kind) or {}
+    value = inner.get(field)
+    if not isinstance(value, str) or not value:
         return None
-    filename = str(info.get("file") or "").replace("\\", "/").split("/")[-1]
-    path = parts_dir / filename
-    raw = path.read_bytes()
-    payload = base64.b64encode(raw).decode("ascii")
-    kind = info.get("type")
-    mime = str(info.get("mime_type") or "application/octet-stream")
-    name = str(info.get("name") or "")
+    if kind == "input_audio":
+        mime, payload = "audio/" + str(inner.get("format") or "wav"), value
+    elif value.startswith("data:") and "," in value:
+        header, payload = value.split(",", 1)
+        mime = header[5:].split(";", 1)[0] or "application/octet-stream"
+    else:
+        return None
+    return kind, mime, base64.b64decode(payload, validate=True)
+
+
+def _extension(mime: str) -> str:
+    if mime in _EXT:
+        return _EXT[mime]
+    guessed = mimetypes.guess_extension(mime)
+    return (
+        guessed[1:] if guessed and re.fullmatch(r"\.[A-Za-z0-9]+", guessed) else "bin"
+    )
+
+
+def _hydrate_part(part: dict[str, Any], files_dir: Path) -> dict[str, Any]:
+    kind = part.get("type")
+    inner = part.get(kind)
+    if (
+        kind not in {"image_url", "video_url", "file", "input_audio"}
+        or not isinstance(inner, dict)
+        or "file_id" not in inner
+    ):
+        return part
+    file_id = inner["file_id"]
+    if not isinstance(file_id, str) or not re.fullmatch(r"file_[0-9]{6,}", file_id):
+        raise ValueError(f"Invalid file_id: {file_id!r}")
+    matches = list(files_dir.glob(file_id + ".*"))
+    if len(matches) != 1:
+        raise FileNotFoundError(f"Expected one file for {file_id}: {files_dir}")
+    path = matches[0]
+    mime = (
+        _MIME.get(path.suffix[1:])
+        or mimetypes.guess_type(path.name)[0]
+        or "application/octet-stream"
+    )
+    if kind == "video_url" and path.suffix == ".webm":
+        mime = "video/webm"
+    elif kind == "input_audio" and path.suffix == ".webm":
+        mime = "audio/webm"
+    payload = base64.b64encode(path.read_bytes()).decode("ascii")
     url = f"data:{mime};base64,{payload}"
-    if kind == "image":
-        inner: dict[str, Any] = {"url": url}
-        if name:
-            inner["name"] = name
-        return {"type": "image_url", "image_url": inner}
-    if kind == "audio":
-        fmt = mime.split("/", 1)[-1] or "wav"
-        inner = {"data": payload, "format": fmt}
-        if name:
-            inner["name"] = name
-        return {"type": "input_audio", "input_audio": inner}
+    if kind == "input_audio":
+        return {"type": kind, kind: {"data": payload, "format": mime.split("/", 1)[-1]}}
     if kind == "file":
-        return {
-            "type": "file",
-            "file": {"filename": name or "document", "file_data": url},
-        }
-    if kind == "video":
-        inner = {"url": url}
-        if name:
-            inner["name"] = name
-        return {"type": "video_url", "video_url": inner}
-    return None
-
-
-def _hydrate_modalities(messages: list[Any], parts_dir: Path) -> list[Any]:
-    """Развернуть ссылки jarvis_part обратно в OpenAI-части."""
-
-    restored: list[Any] = []
-    for message in messages:
-        if not _valid_message(message):
-            continue
-        content = message.get("content")
-        if not isinstance(content, list):
-            restored.append(message)
-            continue
-        new_content: list[dict[str, Any]] = []
-        for part in content:
-            if isinstance(part, dict) and _PART_REF in part:
-                try:
-                    rebuilt = _hydrate_part(part, parts_dir)
-                except OSError:
-                    continue
-                if rebuilt is not None:
-                    new_content.append(rebuilt)
-            else:
-                new_content.append(part)
-        if new_content:
-            restored.append({**message, "content": new_content})
-    return restored
+        return {"type": kind, kind: {"filename": path.name, "file_data": url}}
+    return {"type": kind, kind: {"url": url}}
 
 
 def _clean_capabilities(values: Any, pattern) -> list[str]:
@@ -265,41 +138,46 @@ def _clean_capabilities(values: Any, pattern) -> list[str]:
 
 
 class MemoryStore:
-    """Читает и атомарно пишет память экземпляров по пресетам."""
+    """Persist a single current state per agent, without snapshot directories."""
 
     def __init__(self, root: Path):
         self.root = Path(root)
         self._save_lock = threading.RLock()
 
     def has_existing_state(self) -> bool:
-        return self.root.exists() and any(self.root.iterdir())
+        return self.root.exists() and any(
+            (preset / "instance.json").is_file()
+            or (preset / ".save-journal.json").is_file()
+            or any(
+                (child / "instance.json").is_file()
+                or (child / ".save-journal.json").is_file()
+                for child in preset.iterdir()
+                if child.is_dir()
+            )
+            for preset in self.root.iterdir()
+            if preset.is_dir() and valid_name(preset.name)
+        )
 
     def agent_dir(self, preset: str, agent_id: str) -> Path:
-        if not valid_name(preset):
-            raise ValueError(f"Некорректный preset для памяти: {preset!r}")
-        if not valid_name(agent_id):
-            raise ValueError(f"Некорректный agent_id для памяти: {agent_id!r}")
-        if agent_id == "main":
-            return self.root / preset
-        return self.root / preset / agent_id
+        if not valid_name(preset) or not valid_name(agent_id):
+            raise ValueError(f"Invalid preset/agent_id: {preset!r}/{agent_id!r}")
+        return (
+            self.root / preset if agent_id == "main" else self.root / preset / agent_id
+        )
 
     @staticmethod
     def _write_json(path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp")
+        temporary = path.with_name("." + path.name + ".tmp")
         try:
-            temporary.write_text(
-                json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(value, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, path)
         finally:
-            try:
-                temporary.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _read_json(path: Path) -> Any | None:
@@ -307,8 +185,85 @@ class MemoryStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        except (OSError, json.JSONDecodeError, ValueError):
-            return None
+
+    def _allocate_file_id(self) -> str:
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / ".file_index.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            index = self.root / "file_index.json"
+            state = self._read_json(index)
+            if state is None:
+                highest = max(
+                    (
+                        int(path.stem[5:])
+                        for path in self.root.rglob("file_*.*")
+                        if path.is_file() and re.fullmatch(r"file_[0-9]{6,}", path.stem)
+                    ),
+                    default=0,
+                )
+                state = {"next_file_id": highest + 1}
+            number = state["next_file_id"]
+            if not isinstance(number, int) or number < 1:
+                raise ValueError("Invalid file ID index")
+            self._write_json(index, {"next_file_id": number + 1})
+            return f"file_{number:06d}"
+
+    def _store_parts(
+        self, messages: list[dict[str, Any]], files_dir: Path
+    ) -> list[dict[str, Any]]:
+        by_digest: dict[tuple[str, str], str] = {}
+        if files_dir.exists():
+            for path in files_dir.iterdir():
+                if path.is_file() and re.fullmatch(
+                    r"file_[0-9]{6,}\.[A-Za-z0-9]+", path.name
+                ):
+                    by_digest[
+                        (hashlib.sha256(path.read_bytes()).hexdigest(), path.suffix)
+                    ] = path.stem
+        result = []
+        for message in messages:
+            if not _valid_message(message):
+                raise ValueError("Invalid model context message")
+            content = message["content"]
+            if not isinstance(content, list):
+                result.append(dict(message))
+                continue
+            parts = []
+            for part in content:
+                binary = _binary_part(part)
+                if binary is None:
+                    parts.append(part)
+                    continue
+                kind, mime, raw = binary
+                suffix = "." + _extension(mime)
+                key = (hashlib.sha256(raw).hexdigest(), suffix)
+                file_id = by_digest.get(key)
+                if file_id is None:
+                    file_id = self._allocate_file_id()
+                    files_dir.mkdir(parents=True, exist_ok=True)
+                    with (files_dir / (file_id + suffix)).open("xb") as stream:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    by_digest[key] = file_id
+                parts.append({"type": kind, kind: {"file_id": file_id}})
+            result.append({**message, "content": parts})
+        return result
+
+    def _rollback_if_needed(self, directory: Path) -> None:
+        journal = directory / ".save-journal.json"
+        saved = self._read_json(journal)
+        if saved is None:
+            return
+        if not isinstance(saved, dict) or set(saved) != {"instance", "context"}:
+            raise ValueError(f"Invalid save journal: {journal}")
+        for name, key in (("instance.json", "instance"), ("context.json", "context")):
+            path = directory / name
+            if saved[key] is None:
+                path.unlink(missing_ok=True)
+            else:
+                self._write_json(path, saved[key])
+        journal.unlink()
 
     def save(self, record: dict[str, Any]) -> None:
         with self._save_lock:
@@ -318,115 +273,127 @@ class MemoryStore:
         agent_id = record.get("agent_id")
         preset = record.get("preset") or "main"
         directory = self.agent_dir(preset, agent_id)
-        generation = uuid.uuid4().hex
-        staged = directory / f".staging-{generation}"
-        self._write_json(
-            staged / "agent.json",
-            {
-                "agent_id": agent_id,
-                "name": record.get("name"),
-                "preset": preset,
-                "person_prompt": record.get("person_prompt"),
-                "protected": record.get("protected"),
-                "automated_call_ids": record.get("automated_call_ids", []),
-                "catalog_order": record.get("catalog_order", {}),
-                "parent_id": record.get("parent_id"),
-                "modules": record.get("modules", []),
-                "actions": record.get("actions", []),
-                "handlers": record.get("handlers", []),
-                "disabled_modules": record.get("disabled_modules", []),
-                "disabled_actions": record.get("disabled_actions", []),
-                "disabled_handlers": record.get("disabled_handlers", []),
-            },
-        )
+        (directory / "files").mkdir(parents=True, exist_ok=True)
+        self._rollback_if_needed(directory)
+        modules = _clean_capabilities(record.get("modules", []), _NAME)
+        actions = [
+            name
+            for name in _clean_capabilities(record.get("actions", []), _CAPABILITY)
+            if not any(name.startswith(module + ".") for module in modules)
+        ]
+        handlers = [
+            name
+            for name in _clean_capabilities(record.get("handlers", []), _CAPABILITY)
+            if not any(name.startswith(module + ".") for module in modules)
+        ]
+        disabled = [
+            f"{kind}:{name}"
+            for kind, field in (
+                ("module", "disabled_modules"),
+                ("action", "disabled_actions"),
+                ("handler", "disabled_handlers"),
+            )
+            for name in _clean_capabilities(record.get(field, []), _CAPABILITY)
+            if not any(name.startswith(module + ".") for module in modules)
+        ]
+        instance = {
+            "agent_id": agent_id,
+            "name": record.get("name"),
+            "preset": preset,
+            "person_prompt": record.get("person_prompt"),
+            "protected": record.get("protected"),
+            "parent_id": record.get("parent_id"),
+            "modules": modules,
+            "actions": actions,
+            "handlers": handlers,
+            "disabled_capabilities": disabled,
+            "catalog_order": record.get("catalog_order", {}),
+            "automated_call_ids": record.get("automated_call_ids", []),
+        }
         messages = record.get("messages", [])
         if not isinstance(messages, list):
-            messages = []
+            raise ValueError("Agent context must be a list")
+        stored = self._store_parts(messages, directory / "files")
+        journal = directory / ".save-journal.json"
         self._write_json(
-            staged / "context.json",
-            _externalize_modalities(messages, staged / "parts"),
+            journal,
+            {
+                "instance": self._read_json(directory / "instance.json"),
+                "context": self._read_json(directory / "context.json"),
+            },
         )
-        current = directory / "current"
-        last = directory / "last"
-        if last.exists():
-            shutil.rmtree(last)
-        if current.exists():
-            os.replace(current, last)
-        os.replace(staged, current)
+        try:
+            self._write_json(directory / "context.json", stored)
+            self._write_json(directory / "instance.json", instance)
+        except Exception:
+            try:
+                self._rollback_if_needed(directory)
+            except Exception:
+                logger.error(
+                    "Jarvis save rollback failed for %s; journal preserved:\n%s",
+                    directory,
+                    traceback.format_exc(),
+                )
+            raise
+        journal.unlink()
 
     def load(self, preset: str, agent_id: str) -> dict[str, Any] | None:
         directory = self.agent_dir(preset, agent_id)
-        current = self._current_dir(directory)
-        metadata = self._read_json(current / "agent.json")
-        messages = self._read_json(current / "context.json")
-        if not isinstance(metadata, dict) or not isinstance(messages, list):
+        with self._save_lock:
+            self._rollback_if_needed(directory)
+        instance = self._read_json(directory / "instance.json")
+        context = self._read_json(directory / "context.json")
+        if instance is None and context is None:
             return None
-        return self._clean(preset, agent_id, current, metadata, messages)
-
-    def _current_dir(self, directory: Path) -> Path:
-        current = directory / "current"
-        if (current / "agent.json").is_file() and (current / "context.json").is_file():
-            return current
-        last = directory / "last"
-        if (last / "agent.json").is_file() and (last / "context.json").is_file():
-            return last
-        return directory / "invalid-state"
+        return self._clean(preset, agent_id, directory, instance, context)
 
     def load_all(self) -> list[dict[str, Any]]:
         if not self.root.exists():
             return []
         records = []
-        for preset_dir in sorted(self.root.iterdir()):
-            if not preset_dir.is_dir() or preset_dir.name.startswith("."):
+        for preset in sorted(self.root.iterdir()):
+            if not preset.is_dir() or not valid_name(preset.name):
                 continue
-            preset = preset_dir.name
-            if not valid_name(preset):
-                continue
-            main = self._load_agent_dir(preset_dir, preset, "main")
-            if main is not None:
-                records.append(main)
-            for child in sorted(preset_dir.iterdir()):
-                if not child.is_dir() or child.name.startswith("."):
-                    continue
-                if not valid_name(child.name) or child.name == "main":
-                    continue
-                record = self._load_agent_dir(child, preset, child.name)
-                if record is not None:
-                    records.append(record)
-        return records
-
-    def _load_agent_dir(
-        self, directory: Path, preset: str, agent_id: str
-    ) -> dict[str, Any] | None:
-        current = self._current_dir(directory)
-        metadata = self._read_json(current / "agent.json")
-        messages = self._read_json(current / "context.json")
-        if not isinstance(metadata, dict) or not isinstance(messages, list):
-            return None
-        return self._clean(preset, agent_id, current, metadata, messages)
+            if (preset / "instance.json").exists() or (
+                preset / ".save-journal.json"
+            ).exists():
+                try:
+                    records.append(self.load(preset.name, "main"))
+                except Exception:
+                    logger.error(
+                        "Jarvis restore failed for %s/main; saved data preserved:\n%s",
+                        preset.name,
+                        traceback.format_exc(),
+                    )
+            for child in sorted(preset.iterdir()):
+                if (
+                    child.is_dir()
+                    and valid_name(child.name)
+                    and (
+                        (child / "instance.json").exists()
+                        or (child / ".save-journal.json").exists()
+                    )
+                ):
+                    try:
+                        records.append(self.load(preset.name, child.name))
+                    except Exception:
+                        logger.error(
+                            "Jarvis restore failed for %s/%s; saved data preserved:\n%s",
+                            preset.name,
+                            child.name,
+                            traceback.format_exc(),
+                        )
+        return [record for record in records if record is not None]
 
     def delete(self, preset: str, agent_id: str) -> None:
         with self._save_lock:
-            self._delete_locked(preset, agent_id)
-
-    def _delete_locked(self, preset: str, agent_id: str) -> None:
-        try:
             directory = self.agent_dir(preset, agent_id)
-        except ValueError:
-            return
-        try:
             if agent_id == "main":
-                if (directory / "current").exists():
-                    shutil.rmtree(directory / "current")
-                if (directory / "last").exists():
-                    shutil.rmtree(directory / "last")
-                for staging in directory.glob(".staging-*"):
-                    shutil.rmtree(staging)
-            else:
-                if directory.exists():
-                    shutil.rmtree(directory)
-        except OSError:
-            raise
+                for name in ("instance.json", "context.json"):
+                    (directory / name).unlink(missing_ok=True)
+                shutil.rmtree(directory / "files", ignore_errors=True)
+            elif directory.exists():
+                shutil.rmtree(directory)
 
     def delete_preset(self, preset: str) -> None:
         with self._save_lock:
@@ -436,32 +403,53 @@ class MemoryStore:
 
     @staticmethod
     def _clean(
-        preset: str,
-        agent_id: str,
-        directory: Path,
-        metadata: Any,
-        messages: Any,
-    ) -> dict[str, Any] | None:
-        if not isinstance(metadata, dict) or not isinstance(messages, list):
-            return None
-        parent_id = metadata.get("parent_id")
+        preset: str, agent_id: str, directory: Path, instance: Any, context: Any
+    ) -> dict[str, Any]:
+        if not isinstance(instance, dict) or not isinstance(context, list):
+            raise ValueError(f"Invalid persisted instance/context: {directory}")
+        disabled = instance.get("disabled_capabilities", [])
+        if not isinstance(disabled, list) or not all(
+            isinstance(item, str) for item in disabled
+        ):
+            raise ValueError(f"Invalid disabled capabilities: {directory}")
+        messages = []
+        for message in context:
+            if not _valid_message(message):
+                raise ValueError(f"Invalid context message: {directory}")
+            content = message["content"]
+            messages.append(
+                {
+                    **message,
+                    "content": [
+                        _hydrate_part(part, directory / "files") for part in content
+                    ],
+                }
+                if isinstance(content, list)
+                else dict(message)
+            )
+        parent_id = instance.get("parent_id")
         if parent_id is not None and not valid_name(parent_id):
-            return None
-        name = metadata.get("name")
+            raise ValueError(f"Invalid parent ID: {directory}")
         return {
             "agent_id": agent_id,
-            "name": name if isinstance(name, str) and name.strip() else agent_id,
+            "name": instance.get("name") or agent_id,
             "preset": preset,
-            "person_prompt": metadata.get("person_prompt"),
-            "protected": metadata.get("protected"),
-            "automated_call_ids": metadata.get("automated_call_ids"),
-            "catalog_order": metadata.get("catalog_order", {}),
+            "person_prompt": instance.get("person_prompt"),
+            "protected": instance.get("protected"),
             "parent_id": parent_id,
-            "modules": _clean_capabilities(metadata.get("modules", []), _NAME),
-            "actions": _clean_capabilities(metadata.get("actions", []), _CAPABILITY),
-            "handlers": _clean_capabilities(metadata.get("handlers", []), _CAPABILITY),
-            "disabled_modules": _clean_capabilities(metadata.get("disabled_modules", []), _NAME),
-            "disabled_actions": _clean_capabilities(metadata.get("disabled_actions", []), _CAPABILITY),
-            "disabled_handlers": _clean_capabilities(metadata.get("disabled_handlers", []), _CAPABILITY),
-            "messages": _hydrate_modalities(messages, directory / "parts"),
+            "modules": _clean_capabilities(instance.get("modules", []), _NAME),
+            "actions": _clean_capabilities(instance.get("actions", []), _CAPABILITY),
+            "handlers": _clean_capabilities(instance.get("handlers", []), _CAPABILITY),
+            "disabled_modules": [
+                item[7:] for item in disabled if item.startswith("module:")
+            ],
+            "disabled_actions": [
+                item[7:] for item in disabled if item.startswith("action:")
+            ],
+            "disabled_handlers": [
+                item[8:] for item in disabled if item.startswith("handler:")
+            ],
+            "catalog_order": instance.get("catalog_order", {}),
+            "automated_call_ids": instance.get("automated_call_ids", []),
+            "messages": messages,
         }

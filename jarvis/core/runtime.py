@@ -19,6 +19,7 @@ from ..infrastructure.context import MemoryStore
 from ..infrastructure.automations import AutomationStore
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
+from ..infrastructure.semantic_memory import SemanticMemory
 from ..capabilities.api import ActionDefinition, EventDefinition
 from ..presets import PresetStore
 
@@ -390,7 +391,7 @@ class Agent:
         self._capabilities_lock = threading.RLock()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": ""},
-            *[dict(message) for message in (restored_messages or ())],
+            *[dict(message) for message in (restored_messages or ()) if message.get("role") != "system"],
         ]
         for message in self.history[1:]:
             if message.get("role") != "user":
@@ -589,7 +590,7 @@ class Agent:
             "disabled_modules": sorted(disabled["modules"]),
             "disabled_actions": sorted(disabled["actions"]),
             "disabled_handlers": sorted(disabled["handlers"]),
-            "messages": list(self.history[1:]),
+            "messages": list(self.history),
             "automated_call_ids": sorted(self._automated_call_ids),
         }
 
@@ -646,8 +647,11 @@ class Agent:
                     {key: [name for name in self._assignment_order[key] if name in snapshot[key] and not (key == "actions" and self.manager.actions.get(name) and self.manager.actions.get(name).owner.startswith("core"))] for key in snapshot},
                     describe_unloaded=True,
                 ),
-                model_capabilities=self.manager.model_capabilities,
+                model_capabilities=self.manager.model_capabilities or ModelCapabilities(
+                    self.manager.model, ("text", "image", "audio", "video", "file")
+                ),
                 catalog_order=self._catalog_order,
+                semantic_memory=self.manager.semantic_memory.snapshot() if self.primary else None,
             ),
         }
         return actions, events
@@ -1034,6 +1038,9 @@ class AgentManager:
         self.model_capabilities = model_capabilities
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
+        self.semantic_memory = SemanticMemory(
+            (Path(config.jarvis_dir) if config is not None else presets.root.parent) / "memory" / "main" / "semantic.json"
+        )
         self.results = CallResultTracker(debug=self.debug)
         automation_path = (
             Path(config.jarvis_dir) / "automations.json"

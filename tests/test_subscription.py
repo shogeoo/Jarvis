@@ -293,6 +293,29 @@ class SubscriptionTests(unittest.TestCase):
         self.assertEqual(content[1]["file"]["filename"], "report.pdf")
         self.assertEqual(len(messages[1]["content"]), 3)
 
+    def test_api_fallback_updates_model_info_id(self):
+        router, api = _client()
+        api.chat.completions.create.return_value = iter([])
+        router._api_request(
+            {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "MODEL INFO:\nModel ID: gpt-6-luna\n"
+                        + ModelCapabilities(
+                            "gpt-6-luna", ("text", "image")
+                        ).prompt_block(),
+                    },
+                    {"role": "user", "content": "hello"},
+                ],
+                "stream": True,
+            }
+        )
+        system = api.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("Model ID: api-model", system)
+        self.assertNotIn("Model ID: gpt-6-luna", system)
+        self.assertIn("text, image, file", system)
+
     def test_close_cancels_direct_http_stream(self):
         stream = SubscriptionStream.__new__(SubscriptionStream)
         stream._closed = threading.Event()
@@ -434,6 +457,10 @@ class SubscriptionTests(unittest.TestCase):
                     self.assertIn("Войдите в аккаунт ChatGPT.", output.getvalue())
                     self.assertNotIn("system_started", output.getvalue())
                     app.start()
+                    self.assertIn(
+                        "MODEL INFO:\nModel ID: gpt-6-luna",
+                        app.main_agent.history[0]["content"],
+                    )
                     self.assertTrue(
                         _wait(
                             lambda: any(

@@ -48,7 +48,7 @@ def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
     else:
         _write_if_missing(prompt_path, prompt)
     _write_if_missing(preset / "capabilities.json", json.dumps(_EMPTY, indent=2) + "\n")
-    _write_if_missing(preset / "preset.json", json.dumps({"protected": protected}) + "\n")
+    _write_if_missing(preset / "preset.json", json.dumps({"protected": protected}, indent=2) + "\n")
     _state_if_missing(preset / "disabled_capabilities.json", _EMPTY)
 
 
@@ -57,9 +57,12 @@ def ensure_runtime_layout(root: Path) -> None:
     for relative in (
         "actions", "handlers", "modules", "presets", "runtime", "runtime/logs",
         "runtime/models", "runtime/segments", "runtime/voices", "memory",
+        "memory/main", "memory/main/files", "memory/main/long_term/sessions",
+        "memory/main/long_term/files",
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
     _write_if_missing(root / "automations.json", "[]\n")
+    _write_if_missing(root / "memory" / "main" / "semantic.json", json.dumps({"entries": []}, indent=2) + "\n")
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
     _ensure_preset(root, "main", protected=True)
     _ensure_preset(root, "module_manager")

@@ -337,8 +337,13 @@ class SubscriptionClient:
     def _api_request(self, options: dict[str, Any]):
         messages = deepcopy(options["messages"])
         messages[0]["content"] = messages[0]["content"].replace(
-            SUBSCRIPTION_MODALITIES.prompt_block(),
+            ModelCapabilities(self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities).prompt_block(),
             self.api_capabilities.prompt_block(),
+            1,
+        )
+        messages[0]["content"] = messages[0]["content"].replace(
+            "Model ID: " + self.subscription_model,
+            "Model ID: " + self.api_model,
             1,
         )
         for message in messages[1:]:

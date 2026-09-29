@@ -80,9 +80,7 @@ class JarvisApplication:
                     subscription_model=config.subscription_model,
                     api_capabilities=api_capabilities,
                     auth=SubscriptionAuth(config.jarvis_dir),
-                    on_fallback=lambda value: setattr(
-                        self.agents, "model_capabilities", value
-                    ),
+                    on_fallback=lambda value: setattr(self.agents, "model_capabilities", value),
                 )
                 self.client.ensure_chatgpt_login(self.debug.initialization_notice)
             except Exception:
@@ -91,7 +89,9 @@ class JarvisApplication:
                 else:
                     api_client.close()
                 raise
-            capabilities = SUBSCRIPTION_MODALITIES
+            capabilities = type(SUBSCRIPTION_MODALITIES)(
+                config.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
+            )
         else:
             self.client = api_client
             capabilities = discover_model_capabilities(
