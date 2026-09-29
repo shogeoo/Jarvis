@@ -11,6 +11,7 @@ from pathlib import Path
 class SemanticMemory:
     def __init__(self, path: Path):
         self.path = Path(path)
+        self.index_path = self.path.with_name("semantic_index.json")
         self._lock = threading.RLock()
         self._entries: list[dict[str, str]] | None = None
 
@@ -66,18 +67,33 @@ class SemanticMemory:
         with self._lock:
             entries = self._read()
             used = {item["id"] for item in entries}
-            number = (
-                max(
-                    (
-                        int(identifier[4:])
-                        for identifier in used
-                        if identifier.startswith("mem_") and identifier[4:].isdigit()
-                    ),
-                    default=0,
-                )
-                + 1
+            largest = max(
+                (
+                    int(identifier[4:])
+                    for identifier in used
+                    if identifier.startswith("mem_") and identifier[4:].isdigit()
+                ),
+                default=0,
             )
+            try:
+                state = json.loads(self.index_path.read_text(encoding="utf-8"))
+                number = state["next_id"]
+            except FileNotFoundError:
+                number = largest + 1
+            if not isinstance(number, int) or number <= largest:
+                raise ValueError(f"Invalid semantic memory ID index: {self.index_path}")
             identifier = f"mem_{number:06d}"
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.index_path.with_name(".semantic_index.json.tmp")
+            try:
+                with temporary.open("w", encoding="utf-8") as stream:
+                    json.dump({"next_id": number + 1}, stream, indent=2)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.index_path)
+            finally:
+                temporary.unlink(missing_ok=True)
             self._save([*entries, {"id": identifier, "content": content}])
             return identifier
 

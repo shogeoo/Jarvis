@@ -40,7 +40,11 @@ class SemanticMemoryTests(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                SemanticMemory(path).write("Another confirmed fact."), "mem_000002"
+                SemanticMemory(path).write("Another confirmed fact."), "mem_000003"
+            )
+            self.assertEqual(
+                json.loads(path.with_name("semantic_index.json").read_text()),
+                {"next_id": 4},
             )
 
     def test_unknown_id_or_empty_content_preserves_existing_file(self):
