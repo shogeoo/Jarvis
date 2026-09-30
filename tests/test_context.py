@@ -35,8 +35,8 @@ class MemoryStoreTests(unittest.TestCase):
         self.store.save(self.record())
         loaded = self.store.load("main", "main")
         self.assertEqual(loaded["modules"], ["alpha", "beta"])
-        self.assertEqual(loaded["actions"], ["echo", "say"])
-        self.assertEqual(loaded["handlers"], ["monitor", "tick"])
+        self.assertEqual(loaded["actions"], ["say", "echo"])
+        self.assertEqual(loaded["handlers"], ["tick", "monitor"])
         self.assertEqual(loaded["messages"], self.record()["messages"])
         directory = self.root / "main"
         self.assertTrue((directory / "instance.json").is_file())
@@ -57,7 +57,7 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertFalse((self.root / "main" / "instance.json").exists())
         self.assertTrue((self.root / "main" / "agent-001" / "instance.json").exists())
 
-    def test_system_message_is_persisted_as_model_context(self):
+    def test_system_message_is_not_persisted(self):
         self.store.save(
             self.record(
                 messages=[
@@ -67,13 +67,25 @@ class MemoryStoreTests(unittest.TestCase):
             )
         )
         loaded = self.store.load("main", "main")
+        self.assertEqual(loaded["messages"], [{"role": "user", "content": "kept"}])
         self.assertEqual(
-            loaded["messages"],
-            [
-                {"role": "system", "content": "ignored"},
-                {"role": "user", "content": "kept"},
-            ],
+            self.store._read_json(self.root / "main/context.json"), loaded["messages"]
         )
+
+    def test_instance_stores_whole_capabilities_without_catalog_order(self):
+        self.store.save(
+            self.record(
+                modules=["telegram"],
+                actions=["say", "telegram.send_message"],
+                handlers=["tick", "telegram.new_message"],
+            )
+        )
+        instance = self.store._read_json(self.root / "main/instance.json")
+        self.assertEqual(
+            instance["capabilities"], ["module:telegram", "action:say", "handler:tick"]
+        )
+        self.assertNotIn("catalog_order", instance)
+        self.assertFalse(any("telegram." in item for item in instance["capabilities"]))
 
     def test_modalities_use_file_id_references_without_names_or_base64(self):
         record = self.record(
@@ -146,6 +158,14 @@ class MemoryStoreTests(unittest.TestCase):
     def test_missing_files_are_ignored(self):
         self.assertEqual(self.store.load_all(), [])
         self.assertIsNone(self.store.load("main", "main"))
+
+    def test_partial_saved_context_is_not_treated_as_fresh_start(self):
+        directory = self.root / "main"
+        directory.mkdir()
+        (directory / "context.json").write_text('[{"role":"user","content":"saved"}]')
+        self.assertTrue(self.store.has_existing_state())
+        self.assertEqual(self.store.load_all(), [])
+        self.assertTrue((directory / "context.json").exists())
 
     def test_broken_files_are_ignored(self):
         broken = self.root / "main"

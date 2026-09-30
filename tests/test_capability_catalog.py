@@ -104,7 +104,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.manager.enable_handler("main", "zzz")
         self.assertEqual(self.ids("events"), before + ["aaa", "zzz"])
 
-    def test_modules_and_new_members_append_without_reordering_old_members(self):
+    def test_module_members_follow_current_module_definition(self):
         fixtures.write_echo_module(self.root)
         self.manager.enable_module("main", "echo")
         before = catalog(self.agent)["modules"][0]["actions"]
@@ -124,21 +124,21 @@ class CatalogRuntimeTests(unittest.TestCase):
         path.write_text(source)
         self.manager.toggle_capability("module", "echo")
         actual = catalog(self.agent)["modules"][0]["actions"]
-        self.assertEqual(actual[:-1], before)
-        self.assertEqual(actual[-1]["action_id"], "echo.aaa")
+        self.assertEqual(
+            [item["action_id"] for item in actual], ["echo.aaa", "echo.repeat"]
+        )
+        self.assertEqual(actual[1], before[0])
 
-    def test_global_pause_and_resume_append_to_catalog_end(self):
+    def test_global_pause_and_resume_preserve_assignment_order(self):
         for name in ("aaa", "zzz"):
             fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
             self.manager.enable_action("main", name)
         before = self.ids("actions")
         self.manager.toggle_capability("action", "aaa")
         self.manager.toggle_capability("action", "aaa")
-        self.assertEqual(
-            self.ids("actions"), [name for name in before if name != "aaa"] + ["aaa"]
-        )
+        self.assertEqual(self.ids("actions"), before)
 
-    def test_catalog_order_survives_restore(self):
+    def test_assigned_capability_order_survives_restore_without_catalog_order(self):
         memory = MemoryStore(self.root / "memory")
         self.manager.memory = memory
         for name in ("zzz", "aaa"):
@@ -147,11 +147,49 @@ class CatalogRuntimeTests(unittest.TestCase):
         before = catalog(self.agent)
         self.manager.persist_agent(self.agent)
         self.manager.shutdown()
+        instance = json.loads((self.root / "memory/main/instance.json").read_text())
+        self.assertNotIn("catalog_order", instance)
+        self.assertEqual(
+            [
+                item
+                for item in instance["capabilities"]
+                if item in {"action:zzz", "action:aaa"}
+            ],
+            ["action:zzz", "action:aaa"],
+        )
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
         )
         restored = restored_manager.restore(name="main", preset="main")
         self.assertEqual(catalog(restored), before)
+
+    def test_restore_uses_current_capability_description(self):
+        memory = MemoryStore(self.root / "memory")
+        self.manager.memory = memory
+        fixtures.write_action(self.root / "actions", "dynamic", fixtures.SAY_ACTION)
+        self.manager.enable_action("main", "dynamic")
+        before = next(
+            item
+            for item in catalog(self.agent)["actions"]
+            if item["action_id"] == "dynamic"
+        )
+        self.manager.persist_agent(self.agent)
+        self.manager.shutdown()
+        path = self.root / "actions/dynamic/action.py"
+        source = path.read_text()
+        path.write_text(
+            source.replace(before["description"], "Current dynamic description.")
+        )
+        restored_manager = self.fixture.manager(
+            runtime_tests._Client([]), memory=memory
+        )
+        restored = restored_manager.restore(name="main", preset="main")
+        after = next(
+            item
+            for item in catalog(restored)["actions"]
+            if item["action_id"] == "dynamic"
+        )
+        self.assertEqual(after["description"], "Current dynamic description.")
 
     def test_only_assigned_system_development_tool_is_visible_to_main(self):
         self.assertNotIn("execute_command", self.ids("actions"))
@@ -261,7 +299,9 @@ class CatalogRuntimeTests(unittest.TestCase):
 
 class DeclarationTests(unittest.TestCase):
     def test_system_prompt_has_labeled_blocks_in_required_order(self):
-        prompt = agent_system_prompt("  Personality.\n", "Environment.\n", {}, {}, {"modules": []})
+        prompt = agent_system_prompt(
+            "  Personality.\n", "Environment.\n", {}, {}, {"modules": []}
+        )
         expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nModel ID: unknown\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\nCAPABILITIES:\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
         self.assertEqual(prompt, expected)

@@ -363,7 +363,6 @@ class Agent:
         automated_call_ids: list[str] | None = None,
         person_prompt: str | None = None,
         protected: bool | None = None,
-        catalog_order: dict[str, list[str]] | None = None,
     ):
         self.agent_id = agent_id
         self.name = name
@@ -374,9 +373,6 @@ class Agent:
         selected = manager.presets.load(preset)
         self.person_prompt = selected.person_prompt if person_prompt is None or preset == "module_manager" else person_prompt
         self.protected = selected.protected if protected is None else protected
-        if not isinstance(catalog_order or {}, dict) or not all(isinstance(key, str) and isinstance(value, list) and all(isinstance(name, str) for name in value) for key, value in (catalog_order or {}).items()):
-            raise ValueError("Invalid persisted catalog order")
-        self._catalog_order = {key: list(value) for key, value in (catalog_order or {}).items()}
         self._assignment_order = {
             "modules": list(enabled_modules or ()),
             "actions": list(enabled_actions or ()),
@@ -491,12 +487,6 @@ class Agent:
         with self._capabilities_lock:
             return {"modules": set(self._disabled_modules), "actions": set(self._disabled_actions), "handlers": set(self._disabled_handlers)}
 
-    def forget_catalog_entry(self, kind: str, capability_id: str) -> None:
-        key = {"action": "actions", "handler": "events", "module": "modules"}[kind]
-        identifier = self.manager.capabilities.event_id_for_handler(capability_id) if kind == "handler" else capability_id
-        with self._capabilities_lock:
-            self._catalog_order[key] = [name for name in self._catalog_order.get(key, []) if name != identifier]
-
     def is_enabled_action(self, action_id: str) -> bool:
         if action_id in {"no_action", "speech"}:
             return True
@@ -516,7 +506,6 @@ class Agent:
 
     def disable_module(self, module_id: str) -> None:
         with self._capabilities_lock:
-            self._catalog_order["modules"] = [name for name in self._catalog_order.get("modules", []) if name != module_id]
             self._enabled_modules.discard(module_id)
             self._disabled_modules.add(module_id)
         self._persist_context()
@@ -531,7 +520,6 @@ class Agent:
 
     def disable_action(self, action_id: str) -> None:
         with self._capabilities_lock:
-            self._catalog_order["actions"] = [name for name in self._catalog_order.get("actions", []) if name != action_id]
             self._enabled_actions.discard(action_id)
             self._disabled_actions.add(action_id)
         self._persist_context()
@@ -545,9 +533,7 @@ class Agent:
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
-        event_id = self.manager.capabilities.event_id_for_handler(handler_id)
         with self._capabilities_lock:
-            self._catalog_order["events"] = [name for name in self._catalog_order.get("events", []) if name != event_id]
             self._enabled_handlers.discard(handler_id)
             self._disabled_handlers.add(handler_id)
         self._persist_context()
@@ -577,7 +563,6 @@ class Agent:
             snapshot = self.capabilities_snapshot()
             disabled = self.disabled_snapshot()
             assignments = {key: [name for name in self._assignment_order[key] if name in snapshot[key]] for key in ("modules", "actions", "handlers")}
-            catalog_order = {key: list(value) for key, value in self._catalog_order.copy().items()}
         return {
             "agent_id": self.agent_id,
             "name": self.name,
@@ -586,11 +571,10 @@ class Agent:
             "protected": self.protected,
             "parent_id": self.parent_id,
             **assignments,
-            "catalog_order": catalog_order,
             "disabled_modules": sorted(disabled["modules"]),
             "disabled_actions": sorted(disabled["actions"]),
             "disabled_handlers": sorted(disabled["handlers"]),
-            "messages": list(self.history),
+            "messages": list(self.history[1:]),
             "automated_call_ids": sorted(self._automated_call_ids),
         }
 
@@ -650,7 +634,6 @@ class Agent:
                 model_capabilities=self.manager.model_capabilities or ModelCapabilities(
                     self.manager.model, ("text", "image", "audio", "video", "file")
                 ),
-                catalog_order=self._catalog_order,
                 semantic_memory=self.manager.semantic_memory.snapshot() if self.primary else None,
             ),
         }
@@ -1264,7 +1247,6 @@ class AgentManager:
             automated_call_ids=record.get("automated_call_ids"),
             person_prompt=record.get("person_prompt"),
             protected=record.get("protected"),
-            catalog_order=record.get("catalog_order"),
             persist_initial=False,
         )
 
@@ -1287,14 +1269,13 @@ class AgentManager:
         parent_id: str | None,
         primary: bool = False,
         agent_id: str | None = None,
-        capabilities_override: dict[str, set[str]] | None = None,
+        capabilities_override: dict[str, list[str] | set[str]] | None = None,
         disabled_override: dict[str, set[str]] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
         automated_call_ids: list[str] | None = None,
         persist_initial: bool = True,
         person_prompt: str | None = None,
         protected: bool | None = None,
-        catalog_order: dict[str, list[str]] | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
@@ -1354,7 +1335,6 @@ class AgentManager:
                 automated_call_ids=automated_call_ids,
                 person_prompt=person_prompt,
                 protected=protected,
-                catalog_order=catalog_order,
             )
             self.agents[resolved_id] = agent
             self.bus.bind(agent)

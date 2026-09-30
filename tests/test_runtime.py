@@ -639,7 +639,7 @@ class RuntimeTests(unittest.TestCase):
             record = memory.load("main", "main")
             self.assertEqual(
                 [message["role"] for message in record["messages"]],
-                ["system", "user", "assistant"],
+                ["user", "assistant"],
             )
 
             second = self.manager(_Client([_no_action("done-2")]), memory=memory)

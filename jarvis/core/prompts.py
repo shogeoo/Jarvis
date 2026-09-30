@@ -21,18 +21,6 @@ def read_master_prompt(path: Path | None = None) -> str:
     return text
 
 
-def _ordered(
-    items: list[dict[str, Any]], field: str, key: str, order: dict[str, list[str]]
-) -> list[dict[str, Any]]:
-    """Retain the current prefix and append newly enabled definitions."""
-    by_id = {item[field]: item for item in items}
-    previous = [name for name in order.get(key, []) if name in by_id]
-    seen = set(previous)
-    previous.extend(name for name in by_id if name not in seen)
-    order[key] = previous
-    return [by_id[name] for name in previous]
-
-
 def agent_system_prompt(
     person_prompt: str,
     master_prompt: str,
@@ -41,10 +29,8 @@ def agent_system_prompt(
     capability_catalog: dict[str, Any],
     *,
     model_capabilities: ModelCapabilities | None = None,
-    catalog_order: dict[str, list[str]] | None = None,
     semantic_memory: dict[str, Any] | None = None,
 ) -> str:
-    order = catalog_order if catalog_order is not None else {}
     modules = capability_catalog.get("modules", [])
     module_actions = {
         action["action_id"] for module in modules for action in module["actions"]
@@ -53,39 +39,24 @@ def agent_system_prompt(
         event["event_id"] for module in modules for event in module["events"]
     }
     catalog = {
-        "actions": _ordered(
-            ActionRegistry.catalog(
-                {
-                    name: spec
-                    for name, spec in action_specs.items()
-                    if name not in module_actions
-                }
-            ),
-            "action_id",
-            "actions",
-            order,
+        "actions": ActionRegistry.catalog(
+            {
+                name: spec
+                for name, spec in action_specs.items()
+                if name not in module_actions
+            }
         ),
-        "events": _ordered(
-            [
-                {
-                    "event_id": spec.event_id,
-                    "description": spec.description,
-                    "data_schema": spec.data_schema,
-                }
-                for name, spec in event_specs.items()
-                if name not in module_events
-            ],
-            "event_id",
-            "events",
-            order,
-        ),
-        "modules": _ordered(modules, "module_id", "modules", order),
+        "events": [
+            {
+                "event_id": spec.event_id,
+                "description": spec.description,
+                "data_schema": spec.data_schema,
+            }
+            for name, spec in event_specs.items()
+            if name not in module_events
+        ],
+        "modules": modules,
     }
-    for module in catalog["modules"]:
-        for kind, field in (("actions", "action_id"), ("events", "event_id")):
-            module[kind] = _ordered(
-                module[kind], field, module["module_id"] + "." + kind, order
-            )
     validate_catalog_text(catalog)
     modalities = (
         model_capabilities.prompt_block()

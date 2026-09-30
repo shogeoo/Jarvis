@@ -1250,8 +1250,6 @@ class CapabilityManager:
             with self._lock:
                 self._global_paused[key].add(capability_id)
                 self._save_global_state()
-            for agent in affected:
-                agent.forget_catalog_entry(kind, capability_id)
             if kind == "module":
                 action_ids = self.module_action_ids(capability_id)
             elif kind == "action":

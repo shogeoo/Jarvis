@@ -133,8 +133,8 @@ def _clean_capabilities(values: Any, pattern) -> list[str]:
     if not isinstance(values, list) or not all(
         isinstance(item, str) and pattern.fullmatch(item) for item in values
     ):
-        return []
-    return sorted(set(values))
+        raise ValueError("Invalid capability assignment list")
+    return list(dict.fromkeys(values))
 
 
 class MemoryStore:
@@ -147,9 +147,11 @@ class MemoryStore:
     def has_existing_state(self) -> bool:
         return self.root.exists() and any(
             (preset / "instance.json").is_file()
+            or (preset / "context.json").is_file()
             or (preset / ".save-journal.json").is_file()
             or any(
                 (child / "instance.json").is_file()
+                or (child / "context.json").is_file()
                 or (child / ".save-journal.json").is_file()
                 for child in preset.iterdir()
                 if child.is_dir()
@@ -224,6 +226,8 @@ class MemoryStore:
         for message in messages:
             if not _valid_message(message):
                 raise ValueError("Invalid model context message")
+            if message["role"] == "system":
+                continue
             content = message["content"]
             if not isinstance(content, list):
                 result.append(dict(message))
@@ -276,15 +280,21 @@ class MemoryStore:
         (directory / "files").mkdir(parents=True, exist_ok=True)
         self._rollback_if_needed(directory)
         modules = _clean_capabilities(record.get("modules", []), _NAME)
-        actions = [
+        standalone_actions = [
             name
-            for name in _clean_capabilities(record.get("actions", []), _CAPABILITY)
+            for name in record.get("actions", [])
             if not any(name.startswith(module + ".") for module in modules)
         ]
-        handlers = [
+        standalone_handlers = [
             name
-            for name in _clean_capabilities(record.get("handlers", []), _CAPABILITY)
+            for name in record.get("handlers", [])
             if not any(name.startswith(module + ".") for module in modules)
+        ]
+        actions = [
+            name for name in _clean_capabilities(standalone_actions, _CAPABILITY)
+        ]
+        handlers = [
+            name for name in _clean_capabilities(standalone_handlers, _CAPABILITY)
         ]
         disabled = [
             f"{kind}:{name}"
@@ -303,11 +313,12 @@ class MemoryStore:
             "person_prompt": record.get("person_prompt"),
             "protected": record.get("protected"),
             "parent_id": record.get("parent_id"),
-            "modules": modules,
-            "actions": actions,
-            "handlers": handlers,
+            "capabilities": [
+                *["module:" + name for name in modules],
+                *["action:" + name for name in actions],
+                *["handler:" + name for name in handlers],
+            ],
             "disabled_capabilities": disabled,
-            "catalog_order": record.get("catalog_order", {}),
             "automated_call_ids": record.get("automated_call_ids", []),
         }
         messages = record.get("messages", [])
@@ -354,7 +365,7 @@ class MemoryStore:
         for preset in sorted(self.root.iterdir()):
             if not preset.is_dir() or not valid_name(preset.name):
                 continue
-            if (preset / "instance.json").exists() or (
+            if (preset / "instance.json").exists() or (preset / "context.json").exists() or (
                 preset / ".save-journal.json"
             ).exists():
                 try:
@@ -371,6 +382,7 @@ class MemoryStore:
                     and valid_name(child.name)
                     and (
                         (child / "instance.json").exists()
+                        or (child / "context.json").exists()
                         or (child / ".save-journal.json").exists()
                     )
                 ):
@@ -408,14 +420,27 @@ class MemoryStore:
         if not isinstance(instance, dict) or not isinstance(context, list):
             raise ValueError(f"Invalid persisted instance/context: {directory}")
         disabled = instance.get("disabled_capabilities", [])
-        if not isinstance(disabled, list) or not all(
-            isinstance(item, str) for item in disabled
-        ):
+        assigned = instance.get("capabilities", [])
+        patterns = {"module": _NAME, "action": _CAPABILITY, "handler": _CAPABILITY}
+
+        def valid_entry(item):
+            if not isinstance(item, str) or ":" not in item:
+                return False
+            kind, identifier = item.split(":", 1)
+            return kind in patterns and bool(patterns[kind].fullmatch(identifier))
+
+        if (not isinstance(assigned, list) or not all(valid_entry(item) for item in assigned)
+                or len(assigned) != len(set(assigned))):
+            raise ValueError(f"Invalid assigned capabilities: {directory}")
+        if (not isinstance(disabled, list) or not all(valid_entry(item) for item in disabled)
+                or len(disabled) != len(set(disabled))):
             raise ValueError(f"Invalid disabled capabilities: {directory}")
         messages = []
         for message in context:
             if not _valid_message(message):
                 raise ValueError(f"Invalid context message: {directory}")
+            if message["role"] == "system":
+                continue
             content = message["content"]
             messages.append(
                 {
@@ -437,9 +462,9 @@ class MemoryStore:
             "person_prompt": instance.get("person_prompt"),
             "protected": instance.get("protected"),
             "parent_id": parent_id,
-            "modules": _clean_capabilities(instance.get("modules", []), _NAME),
-            "actions": _clean_capabilities(instance.get("actions", []), _CAPABILITY),
-            "handlers": _clean_capabilities(instance.get("handlers", []), _CAPABILITY),
+            "modules": [item[7:] for item in assigned if item.startswith("module:")],
+            "actions": [item[7:] for item in assigned if item.startswith("action:")],
+            "handlers": [item[8:] for item in assigned if item.startswith("handler:")],
             "disabled_modules": [
                 item[7:] for item in disabled if item.startswith("module:")
             ],
@@ -449,7 +474,6 @@ class MemoryStore:
             "disabled_handlers": [
                 item[8:] for item in disabled if item.startswith("handler:")
             ],
-            "catalog_order": instance.get("catalog_order", {}),
             "automated_call_ids": instance.get("automated_call_ids", []),
             "messages": messages,
         }
