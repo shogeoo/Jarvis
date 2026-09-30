@@ -11,7 +11,7 @@ import fixtures
 import test_runtime as runtime_tests
 from jarvis.capabilities import action_definition, handler_definition, HandlerContext
 from jarvis.capabilities.worker import _load_leaf, _load_module
-from jarvis.core.prompts import read_master_prompt, agent_system_prompt
+from jarvis.core.prompts import read_environment, agent_system_prompt
 from jarvis.core.protocol import (
     ActionRequest,
     CallResult,
@@ -150,12 +150,8 @@ class CatalogRuntimeTests(unittest.TestCase):
         instance = json.loads((self.root / "memory/main/instance.json").read_text())
         self.assertNotIn("catalog_order", instance)
         self.assertEqual(
-            [
-                item
-                for item in instance["capabilities"]
-                if item in {"action:zzz", "action:aaa"}
-            ],
-            ["action:zzz", "action:aaa"],
+            [item for item in instance["actions"] if item in {"zzz", "aaa"}],
+            ["zzz", "aaa"],
         )
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
@@ -466,8 +462,8 @@ class DeclarationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Declared ID"):
                 _load_leaf(root, Path("actions/echo"), "action", "different")
 
-    def test_masterprompt_is_common_and_contains_no_development_sdk(self):
-        prompt = read_master_prompt()
+    def test_environment_is_common_and_contains_no_development_sdk(self):
+        prompt = read_environment()
         self.assertNotIn("action_definition", prompt)
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)

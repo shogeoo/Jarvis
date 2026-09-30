@@ -169,7 +169,7 @@ class CreateActionsTests(unittest.TestCase):
         self.assertEqual(result["status"], "not_created")
         self.assertIn("существует", result["error"])
         self.assertEqual(
-            (self.root / "presets" / "listener" / "personprompt.txt").read_text(
+            (self.root / "presets" / "listener" / "person.txt").read_text(
                 encoding="utf-8"
             ),
             "Original prompt.\n",

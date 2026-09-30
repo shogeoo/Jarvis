@@ -9,21 +9,21 @@ from .protocol import json_text, validate_catalog_text
 from .registry import ActionRegistry
 
 
-def read_master_prompt(path: Path | None = None) -> str:
+def read_environment(path: Path | None = None) -> str:
     resource = (
         path
         if path is not None
-        else files("jarvis").joinpath("assets", "master_prompt.txt")
+        else files("jarvis").joinpath("assets", "environment.txt")
     )
     text = resource.read_text(encoding="utf-8").strip()
     if not text:
-        raise RuntimeError(f"Empty masterprompt: {resource}")
+        raise RuntimeError(f"Empty environment: {resource}")
     return text
 
 
 def agent_system_prompt(
     person_prompt: str,
-    master_prompt: str,
+    environment: str,
     action_specs: dict[str, Any],
     event_specs: dict[str, Any],
     capability_catalog: dict[str, Any],
@@ -64,7 +64,7 @@ def agent_system_prompt(
         else "Текущая модель поддерживает следующие модальности: text, image, audio, video, file."
     )
     blocks = [
-        "ENVIRONMENT:\n" + master_prompt.strip(),
+        "ENVIRONMENT:\n" + environment.strip(),
         "PERSON:\n" + person_prompt.strip(),
     ]
     if semantic_memory is not None:

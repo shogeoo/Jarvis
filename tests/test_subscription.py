@@ -55,7 +55,7 @@ class _ResponseStream:
         self.closed = True
 
 
-def _client(auth=None, session=None, *, api_capabilities=None, fallback=None):
+def _client(auth=None, session=None, *, api_capabilities=None, fallback=None, loader=None):
     api = Mock()
     router = SubscriptionClient(
         api_client=api,
@@ -65,6 +65,7 @@ def _client(auth=None, session=None, *, api_capabilities=None, fallback=None):
         or ModelCapabilities("api", ("text", "image", "file")),
         auth=auth or Mock(),
         on_fallback=fallback,
+        api_capabilities_loader=loader,
         session=session or Mock(),
     )
     return router, api
@@ -264,6 +265,14 @@ class SubscriptionTests(unittest.TestCase):
         )
         stream.close()
 
+    def test_api_model_discovery_is_deferred_until_subscription_fallback(self):
+        loader = Mock(return_value=ModelCapabilities("api-model", ("text", "image")))
+        router, _ = _client(loader=loader)
+        loader.assert_not_called()
+        router._switch_to_api(SubscriptionQuotaExceeded("limit"))
+        loader.assert_called_once()
+        self.assertEqual(router.api_capabilities.input_modalities, ("text", "image"))
+
     def test_api_fallback_preserves_original_file(self):
         router, api = _client()
         api.chat.completions.create.return_value = iter([])
@@ -429,7 +438,7 @@ class SubscriptionTests(unittest.TestCase):
                 patch(
                     "jarvis.application.discover_model_capabilities",
                     return_value=ModelCapabilities("api", ("text", "image", "file")),
-                ),
+                ) as discover,
                 patch(
                     "jarvis.infrastructure.subscription.SubscriptionClient",
                     return_value=backend,
@@ -454,9 +463,12 @@ class SubscriptionTests(unittest.TestCase):
                 )
                 try:
                     self.assertEqual(order, ["login"])
+                    discover.assert_not_called()
                     self.assertIn("Войдите в аккаунт ChatGPT.", output.getvalue())
                     self.assertNotIn("system_started", output.getvalue())
                     app.start()
+                    discover.assert_not_called()
+                    speech.begin_background.assert_called_once()
                     self.assertIn(
                         "MODEL INFO:\nModel ID: gpt-6-luna",
                         app.main_agent.history[0]["content"],

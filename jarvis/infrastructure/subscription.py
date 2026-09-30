@@ -303,6 +303,7 @@ class SubscriptionClient:
         api_capabilities: ModelCapabilities,
         auth: SubscriptionAuth,
         on_fallback=None,
+        api_capabilities_loader=None,
         session=None,
     ):
         self.api_client = api_client
@@ -311,6 +312,7 @@ class SubscriptionClient:
         self.api_capabilities = api_capabilities
         self.auth = auth
         self.on_fallback = on_fallback
+        self.api_capabilities_loader = api_capabilities_loader
         self.session = session or requests.Session()
         self.chat = SimpleNamespace(completions=self)
         self._lock = threading.RLock()
@@ -329,6 +331,8 @@ class SubscriptionClient:
         with self._lock:
             if self._api_only:
                 return
+            if self.api_capabilities_loader is not None:
+                self.api_capabilities = self.api_capabilities_loader()
             self._api_only = True
         logger.warning("ChatGPT subscription limit reached; using API: %s", error)
         if self.on_fallback is not None:

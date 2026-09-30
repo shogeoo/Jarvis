@@ -405,7 +405,8 @@ def define_toggle_capability():
 
 
 SYSTEM_MAIN = frozenset(["spawn_agent","interrupt_agent","delete_agent","list_agents","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities"] + ["create_preset", "edit_preset", "remove_preset", "create_automation", "edit_automation", "remove_automation", "list_automations"])
-SYSTEM_DEVELOPER = frozenset(["list_capabilities", "capability_info", "toggle_capability", "read_file", "write_file", "edit_file", "execute_command"])
+SYSTEM_DEVELOPER = frozenset(["read_file", "write_file", "edit_file", "execute_command"])
+SYSTEM_DEVELOPER_OPTIONAL = frozenset(["list_capabilities", "capability_info", "toggle_capability"])
 SYSTEM_ALL = frozenset(["send_message_to_agent"])
 SYSTEM_MAIN = SYSTEM_MAIN | frozenset({"reply", "memory_write", "memory_edit", "memory_delete"})
 
@@ -519,5 +520,5 @@ def register_system_actions(registry):
     register_state_actions(registry)
     for action_id in ["spawn_agent","interrupt_agent","delete_agent","list_agents","send_message_to_agent","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities","list_capabilities","capability_info","toggle_capability"]:
         definition = globals()["define_" + action_id]()
-        owner = "core" if action_id in SYSTEM_ALL else "core:developer" if action_id in SYSTEM_DEVELOPER else "core:primary"
+        owner = "core" if action_id in SYSTEM_ALL else "core:developer" if action_id in SYSTEM_DEVELOPER else "core:optional" if action_id in SYSTEM_DEVELOPER_OPTIONAL else "core:primary"
         registry.register(replace(definition, id=action_id, owner=owner))

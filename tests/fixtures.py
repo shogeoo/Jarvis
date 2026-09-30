@@ -146,7 +146,7 @@ def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     write_handler(handlers, "tick", TICK_HANDLER, python)
     main = root / "presets" / "main"
     main.mkdir(parents=True, exist_ok=True)
-    (main / "personprompt.txt").write_text("main\n", encoding="utf-8")
+    (main / "person.txt").write_text("main\n", encoding="utf-8")
     (main / "preset.json").write_text('{"protected": true}\n', encoding="utf-8")
     (main / "capabilities.json").write_text(
         json.dumps({"modules": [], "actions": ["say"], "handlers": ["tick"]}, indent=2) + "\n",
@@ -154,7 +154,7 @@ def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     )
     worker = root / "presets" / "worker"
     worker.mkdir(parents=True, exist_ok=True)
-    (worker / "personprompt.txt").write_text("worker\n", encoding="utf-8")
+    (worker / "person.txt").write_text("worker\n", encoding="utf-8")
     (worker / "capabilities.json").write_text(
         json.dumps({"modules": [], "actions": ["say"], "handlers": ["tick"]}, indent=2) + "\n",
         encoding="utf-8",

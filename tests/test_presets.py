@@ -12,7 +12,7 @@ class PresetStoreTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         main = self.root / "main"
         main.mkdir()
-        (main / "personprompt.txt").write_text("Jarvis\n", encoding="utf-8")
+        (main / "person.txt").write_text("Jarvis\n", encoding="utf-8")
         (main / "capabilities.json").write_text(
             json.dumps(
                 {"modules": ["agents"], "actions": [], "handlers": []}, indent=2

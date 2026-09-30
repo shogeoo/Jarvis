@@ -37,12 +37,12 @@ def _state_if_missing(path: Path, default: dict) -> None:
 def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
     preset = root / "presets" / name
     preset.mkdir(parents=True, exist_ok=True)
-    prompt = (files("jarvis").joinpath("assets", name + ".txt").read_text(encoding="utf-8")
+    prompt = (files("jarvis").joinpath("assets", name + "_person.txt").read_text(encoding="utf-8")
               if name in {"main", "module_manager"} else f"Ты — агент preset {name}.\n")
-    prompt_path = preset / "personprompt.txt"
+    prompt_path = preset / "person.txt"
     if name in {"main", "module_manager"}:
         if not prompt_path.exists() or prompt_path.read_text(encoding="utf-8") != prompt:
-            temporary = preset / "personprompt.txt.tmp"
+            temporary = preset / "person.txt.tmp"
             temporary.write_text(prompt, encoding="utf-8")
             temporary.replace(prompt_path)
     else:

@@ -2,6 +2,7 @@ import json
 import io
 import os
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -38,7 +39,23 @@ class ApplicationTests(unittest.TestCase):
             return _Response(content)
 
         client.chat.completions.create.side_effect = model_response
-        discover.return_value = ModelCapabilities("test", ("text",))
+        startup_order = []
+        discovery_started = threading.Event()
+        release_discovery = threading.Event()
+
+        def model_discovery(*args, **kwargs):
+            startup_order.append("discover")
+            discovery_started.set()
+            self.assertTrue(release_discovery.wait(2))
+            return ModelCapabilities("test", ("text",))
+
+        def load_speech(*args, **kwargs):
+            self.assertTrue(discovery_started.wait(2))
+            startup_order.append("speech")
+            release_discovery.set()
+
+        speech.start.side_effect = load_speech
+        discover.side_effect = model_discovery
         with tempfile.TemporaryDirectory() as project_dir:
             project = Path(project_dir)
             root = fixtures.write_jarvis_root(project / ".jarvis")
@@ -52,7 +69,10 @@ class ApplicationTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 memory = MemoryStore(Path(temporary))
                 output = io.StringIO()
-                app = JarvisApplication(config, memory=memory, stream=output).start()
+                app = JarvisApplication(config, memory=memory, stream=output)
+                self.assertEqual(startup_order, [])
+                app.start()
+                self.assertEqual(startup_order, ["discover", "speech"])
                 try:
                     self.assertEqual(
                         json.loads((root / "automations.json").read_text(encoding="utf-8")),

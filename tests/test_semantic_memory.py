@@ -40,11 +40,11 @@ class SemanticMemoryTests(unittest.TestCase):
                 },
             )
             self.assertEqual(
-                SemanticMemory(path).write("Another confirmed fact."), "mem_000003"
+                SemanticMemory(path).write("Another confirmed fact."), "mem_000002"
             )
             self.assertEqual(
-                json.loads(path.with_name("semantic_index.json").read_text()),
-                {"next_id": 4},
+                path.with_name("semantic_index.json").exists(),
+                False,
             )
 
     def test_unknown_id_or_empty_content_preserves_existing_file(self):
@@ -61,6 +61,17 @@ class SemanticMemoryTests(unittest.TestCase):
                     operation()
                 self.assertEqual(memory.path.read_bytes(), original)
 
+    def test_snapshot_reads_current_semantic_file_each_time(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "memory/main/semantic.json"
+            memory = SemanticMemory(path)
+            self.assertEqual(memory.snapshot(), {"entries": []})
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"entries": [{"id": "mem_000001", "content": "Updated externally."}]}))
+            self.assertEqual(memory.snapshot()["entries"][0]["content"], "Updated externally.")
+            path.unlink()
+            self.assertEqual(memory.snapshot(), {"entries": []})
+
     def test_runtime_layout_creates_missing_semantic_file_without_overwrite(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / ".jarvis"
@@ -73,6 +84,9 @@ class SemanticMemoryTests(unittest.TestCase):
                 json.loads(path.read_text())["entries"][0]["content"], "Existing"
             )
             self.assertFalse(MemoryStore(root / "memory").has_existing_state())
+            path.unlink()
+            ensure_runtime_layout(root)
+            self.assertEqual(json.loads(path.read_text()), {"entries": []})
 
     def test_memory_actions_are_core_primary_only_and_prompt_rebuilds(self):
         with tempfile.TemporaryDirectory() as temporary:

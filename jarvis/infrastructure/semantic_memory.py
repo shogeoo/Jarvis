@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -11,13 +12,9 @@ from pathlib import Path
 class SemanticMemory:
     def __init__(self, path: Path):
         self.path = Path(path)
-        self.index_path = self.path.with_name("semantic_index.json")
         self._lock = threading.RLock()
-        self._entries: list[dict[str, str]] | None = None
 
     def _read(self) -> list[dict[str, str]]:
-        if self._entries is not None:
-            return self._entries
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
         except FileNotFoundError:
@@ -38,9 +35,13 @@ class SemanticMemory:
             for item in entries
         ):
             raise ValueError(f"Invalid semantic memory entries: {self.path}")
-        if len({item["id"] for item in entries}) != len(entries):
-            raise ValueError(f"Duplicate semantic memory IDs: {self.path}")
-        self._entries = entries
+        numbers = []
+        for item in entries:
+            if not re.fullmatch(r"mem_[0-9]{6,}", item["id"]):
+                raise ValueError(f"Invalid semantic memory ID: {item['id']}")
+            numbers.append(int(item["id"][4:]))
+        if numbers != sorted(set(numbers)):
+            raise ValueError(f"Semantic memory IDs must be unique and increasing: {self.path}")
         return entries
 
     def snapshot(self) -> dict[str, list[dict[str, str]]]:
@@ -57,7 +58,6 @@ class SemanticMemory:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, self.path)
-            self._entries = entries
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -66,34 +66,11 @@ class SemanticMemory:
             raise ValueError("Memory content must not be empty")
         with self._lock:
             entries = self._read()
-            used = {item["id"] for item in entries}
-            largest = max(
-                (
-                    int(identifier[4:])
-                    for identifier in used
-                    if identifier.startswith("mem_") and identifier[4:].isdigit()
-                ),
-                default=0,
-            )
-            try:
-                state = json.loads(self.index_path.read_text(encoding="utf-8"))
-                number = state["next_id"]
-            except FileNotFoundError:
-                number = largest + 1
-            if not isinstance(number, int) or number <= largest:
-                raise ValueError(f"Invalid semantic memory ID index: {self.index_path}")
+            last = entries[-1]["id"] if entries else "mem_000000"
+            if not last.startswith("mem_") or not last[4:].isdigit():
+                raise ValueError(f"Invalid last semantic memory ID: {last}")
+            number = int(last[4:]) + 1
             identifier = f"mem_{number:06d}"
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.index_path.with_name(".semantic_index.json.tmp")
-            try:
-                with temporary.open("w", encoding="utf-8") as stream:
-                    json.dump({"next_id": number + 1}, stream, indent=2)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, self.index_path)
-            finally:
-                temporary.unlink(missing_ok=True)
             self._save([*entries, {"id": identifier, "content": content}])
             return identifier
 

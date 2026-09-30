@@ -313,13 +313,14 @@ class MemoryStore:
             "person_prompt": record.get("person_prompt"),
             "protected": record.get("protected"),
             "parent_id": record.get("parent_id"),
-            "capabilities": [
-                *["module:" + name for name in modules],
-                *["action:" + name for name in actions],
-                *["handler:" + name for name in handlers],
-            ],
-            "disabled_capabilities": disabled,
-            "automated_call_ids": record.get("automated_call_ids", []),
+            "modules": modules,
+            "actions": actions,
+            "handlers": handlers,
+            "disabled_capabilities": {
+                "modules": [item[7:] for item in disabled if item.startswith("module:")],
+                "actions": [item[7:] for item in disabled if item.startswith("action:")],
+                "handlers": [item[8:] for item in disabled if item.startswith("handler:")],
+            },
         }
         messages = record.get("messages", [])
         if not isinstance(messages, list):
@@ -356,7 +357,22 @@ class MemoryStore:
         context = self._read_json(directory / "context.json")
         if instance is None and context is None:
             return None
-        return self._clean(preset, agent_id, directory, instance, context)
+        missing_instance = instance is None
+        missing_context = context is None
+        if instance is None:
+            instance = {
+                "name": agent_id, "parent_id": None if agent_id == "main" else "main",
+                "modules": [], "actions": [], "handlers": [],
+                "disabled_capabilities": {},
+            }
+        if context is None:
+            context = []
+        record = self._clean(preset, agent_id, directory, instance, context)
+        if missing_instance:
+            record["restore_from_preset"] = True
+        if missing_context:
+            record["restore_missing_context"] = True
+        return record
 
     def load_all(self) -> list[dict[str, Any]]:
         if not self.root.exists():
@@ -419,22 +435,19 @@ class MemoryStore:
     ) -> dict[str, Any]:
         if not isinstance(instance, dict) or not isinstance(context, list):
             raise ValueError(f"Invalid persisted instance/context: {directory}")
-        disabled = instance.get("disabled_capabilities", [])
-        assigned = instance.get("capabilities", [])
-        patterns = {"module": _NAME, "action": _CAPABILITY, "handler": _CAPABILITY}
-
-        def valid_entry(item):
-            if not isinstance(item, str) or ":" not in item:
-                return False
-            kind, identifier = item.split(":", 1)
-            return kind in patterns and bool(patterns[kind].fullmatch(identifier))
-
-        if (not isinstance(assigned, list) or not all(valid_entry(item) for item in assigned)
-                or len(assigned) != len(set(assigned))):
-            raise ValueError(f"Invalid assigned capabilities: {directory}")
-        if (not isinstance(disabled, list) or not all(valid_entry(item) for item in disabled)
-                or len(disabled) != len(set(disabled))):
+        disabled = instance.get("disabled_capabilities", {})
+        if not isinstance(disabled, dict):
             raise ValueError(f"Invalid disabled capabilities: {directory}")
+        assigned = {
+            "modules": _clean_capabilities(instance.get("modules", []), _NAME),
+            "actions": _clean_capabilities(instance.get("actions", []), _CAPABILITY),
+            "handlers": _clean_capabilities(instance.get("handlers", []), _CAPABILITY),
+        }
+        disabled = {
+            "modules": _clean_capabilities(disabled.get("modules", []), _NAME),
+            "actions": _clean_capabilities(disabled.get("actions", []), _CAPABILITY),
+            "handlers": _clean_capabilities(disabled.get("handlers", []), _CAPABILITY),
+        }
         messages = []
         for message in context:
             if not _valid_message(message):
@@ -462,18 +475,9 @@ class MemoryStore:
             "person_prompt": instance.get("person_prompt"),
             "protected": instance.get("protected"),
             "parent_id": parent_id,
-            "modules": [item[7:] for item in assigned if item.startswith("module:")],
-            "actions": [item[7:] for item in assigned if item.startswith("action:")],
-            "handlers": [item[8:] for item in assigned if item.startswith("handler:")],
-            "disabled_modules": [
-                item[7:] for item in disabled if item.startswith("module:")
-            ],
-            "disabled_actions": [
-                item[7:] for item in disabled if item.startswith("action:")
-            ],
-            "disabled_handlers": [
-                item[8:] for item in disabled if item.startswith("handler:")
-            ],
-            "automated_call_ids": instance.get("automated_call_ids", []),
+            **assigned,
+            "disabled_modules": disabled["modules"],
+            "disabled_actions": disabled["actions"],
+            "disabled_handlers": disabled["handlers"],
             "messages": messages,
         }

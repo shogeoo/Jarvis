@@ -81,11 +81,11 @@ class MemoryStoreTests(unittest.TestCase):
             )
         )
         instance = self.store._read_json(self.root / "main/instance.json")
-        self.assertEqual(
-            instance["capabilities"], ["module:telegram", "action:say", "handler:tick"]
-        )
+        self.assertEqual(instance["modules"], ["telegram"])
+        self.assertEqual(instance["actions"], ["say"])
+        self.assertEqual(instance["handlers"], ["tick"])
         self.assertNotIn("catalog_order", instance)
-        self.assertFalse(any("telegram." in item for item in instance["capabilities"]))
+        self.assertFalse(any("telegram." in str(instance[key]) for key in ("actions", "handlers")))
 
     def test_modalities_use_file_id_references_without_names_or_base64(self):
         record = self.record(
@@ -164,7 +164,7 @@ class MemoryStoreTests(unittest.TestCase):
         directory.mkdir()
         (directory / "context.json").write_text('[{"role":"user","content":"saved"}]')
         self.assertTrue(self.store.has_existing_state())
-        self.assertEqual(self.store.load_all(), [])
+        self.assertEqual(self.store.load_all()[0]["messages"], [{"role": "user", "content": "saved"}])
         self.assertTrue((directory / "context.json").exists())
 
     def test_broken_files_are_ignored(self):
@@ -394,10 +394,8 @@ class MemoryStoreTests(unittest.TestCase):
             )
         )
         instance = self.store._read_json(self.root / "main/instance.json")
-        self.assertEqual(
-            instance["disabled_capabilities"],
-            ["module:telegram", "action:say", "handler:tick"],
-        )
+        self.assertEqual(instance["disabled_capabilities"],
+                         {"modules": ["telegram"], "actions": ["say"], "handlers": ["tick"]})
         self.assertFalse(
             any(
                 key.startswith("disabled_") and key != "disabled_capabilities"

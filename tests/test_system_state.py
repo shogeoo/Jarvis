@@ -29,7 +29,7 @@ class SystemStateTests(unittest.TestCase):
         self.bus = EventBus(self.events, debug=Debugger(enabled=False))
         self.capabilities = CapabilityManager(self.bus, self.actions, self.events, root=self.root)
         self.memory = MemoryStore(self.root / "memory")
-        self.manager = AgentManager(model="test", client=_Client([]), actions=self.actions, events=self.events, bus=self.bus, capabilities=self.capabilities, presets=PresetStore(self.root / "presets"), master_prompt="environment", memory=self.memory)
+        self.manager = AgentManager(model="test", client=_Client([]), actions=self.actions, events=self.events, bus=self.bus, capabilities=self.capabilities, presets=PresetStore(self.root / "presets"), environment="environment", memory=self.memory)
         self.addCleanup(self.manager.shutdown)
         self.main = self.manager.spawn_root(name="main", preset="main")
 
@@ -78,9 +78,11 @@ class SystemStateTests(unittest.TestCase):
         self.manager.presets.create("module_manager", "Module manager", {"actions": [], "handlers": [], "modules": []})
         agent_id = self.manager.spawn(parent_id="main", name="modules", preset="module_manager")["agent_id"]
         specs = self.manager.require_agent(agent_id)._contract()[0]
-        for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
+        for action_id in ("read_file", "write_file", "edit_file", "execute_command"):
             self.assertIn(action_id, specs)
             self.assertNotIn(action_id, self.main._contract()[0])
+        for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
+            self.assertNotIn(action_id, specs)
 
     def test_concurrent_automation_creations_and_edit_preserve_other_rules(self):
         store = self.manager.automations

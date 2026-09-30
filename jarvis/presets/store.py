@@ -34,7 +34,7 @@ class AgentPreset:
 class PresetStore:
     """Читает пресеты с диска при каждом обращении.
 
-    Каждый пресет: personprompt.txt плюс capabilities.json с перечнями
+    Каждый пресет: person.txt плюс capabilities.json с перечнями
     modules, actions и handlers.
     """
 
@@ -69,7 +69,7 @@ class PresetStore:
     def _load_locked(self, name: str) -> AgentPreset:
         path = self.path(name)
         try:
-            person_prompt = (path / "personprompt.txt").read_text(
+            person_prompt = (path / "person.txt").read_text(
                 encoding="utf-8"
             ).strip()
             capabilities = self._read_capabilities(path, name)
@@ -155,7 +155,7 @@ class PresetStore:
         self.validate_name(name)
         path = self.path(name)
         if not person_prompt.strip():
-            raise ValueError("personprompt не должен быть пустым")
+            raise ValueError("person.txt не должен быть пустым")
         normalized = self._normalize(capabilities or {})
         with self._lock:
             if path.exists():
@@ -163,7 +163,7 @@ class PresetStore:
             self.root.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=self.root))
             try:
-                (staging / "personprompt.txt").write_text(
+                (staging / "person.txt").write_text(
                     person_prompt.strip() + "\n", encoding="utf-8"
                 )
                 self._write_capabilities(staging, normalized)
@@ -206,7 +206,7 @@ class PresetStore:
             replacement = staging / "replacement"
             try:
                 shutil.copytree(path, replacement)
-                (replacement / "personprompt.txt").write_text(person_prompt.strip() + "\n", encoding="utf-8")
+                (replacement / "person.txt").write_text(person_prompt.strip() + "\n", encoding="utf-8")
                 self._write_capabilities(replacement, normalized)
                 (replacement / "disabled_capabilities.json").write_text(json.dumps({key: [] for key in normalized}, indent=2) + "\n", encoding="utf-8")
                 # Linux atomically exchanges the two complete directories:
