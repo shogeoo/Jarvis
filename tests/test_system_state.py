@@ -37,6 +37,14 @@ class SystemStateTests(unittest.TestCase):
         context = SimpleNamespace(agent_id="main", action_id=name, agent_manager=self.capabilities._agent_api, capabilities=self.capabilities, metadata={"preset": "main"})
         return self.actions.require(name).run(data, context)
 
+    def test_instantiated_main_is_not_an_available_preset(self):
+        listed = self.invoke("list_agent_presets", {})["presets"]
+        names = {item["name"] for item in listed}
+        self.assertNotIn("main", names)
+        self.assertIn("worker", names)
+        self.assertTrue(self.manager.require_agent("main").protected)
+        self.assertIn("enable_capability", self.main._contract()[0])
+
     def test_preset_edit_preserves_existing_instance_and_restore_personality(self):
         child_id = self.manager.spawn(parent_id="main", name="old", preset="worker")["agent_id"]
         child = self.manager.require_agent(child_id)

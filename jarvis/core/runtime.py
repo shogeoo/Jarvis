@@ -597,6 +597,7 @@ class Agent:
             modules=snapshot["modules"], actions=snapshot["actions"],
             primary=self.primary,
             developer=self.preset == "module_manager",
+            protected=self.protected,
         )
         actions = {name: spec for name, spec in actions.items() if name not in self._disabled_actions and name not in paused["actions"]}
         assigned_actions = [name for name in self._assignment_order["actions"] if name in actions]
@@ -1297,8 +1298,10 @@ class AgentManager:
                 "handlers": set(selected.disabled_handlers),
             }
         disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
-        from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL
+        from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL, SYSTEM_PROTECTED
         system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "module_manager" else set())
+        if selected.protected:
+            system_ids |= SYSTEM_PROTECTED
         initial["actions"].difference_update(system_ids)
         self.capabilities.load_snapshot(
             self.capabilities.runnable_snapshot(initial), start_handlers=False

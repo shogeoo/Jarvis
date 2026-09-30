@@ -8,6 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest, CallResult, Event
@@ -869,11 +870,42 @@ class RuntimeTests(unittest.TestCase):
         (special / "preset.json").write_text('{"protected": true}', encoding="utf-8")
         manager = self.manager(_Client([_no_action("done")]))
         manager.spawn_root(name="main", preset="main")
+        self.assertIn("special", {item["name"] for item in manager.capabilities._agent_api.presets_list()})
         special_id = manager.spawn(parent_id="main", name="special", preset="special")["agent_id"]
+        special_agent = manager.require_agent(special_id)
+        specs, _ = special_agent._contract()
+        self.assertIn("enable_capability", specs)
+        self.assertIn("disable_capability", specs)
+        self.assertNotIn("spawn_agent", specs)
+        available = {item["name"] for item in manager.capabilities._agent_api.presets_list()}
+        self.assertNotIn("main", available)
+        self.assertNotIn("special", available)
+        own_context = SimpleNamespace(
+            agent_id=special_id, action_id="enable_capability", module_id=None,
+            agent_manager=manager.capabilities._agent_api,
+        )
+        self.assertTrue(specs["enable_capability"].run({"kind": "action", "id": "say"}, own_context)["persistent"])
+        self.assertIn("say", self.presets.load("special").actions)
+        own_context.action_id = "disable_capability"
+        specs["disable_capability"].run({"kind": "action", "id": "say"}, own_context)
+        self.assertIn("say", self.presets.load("special").disabled_actions)
         with self.assertRaisesRegex(ValueError, "защищён"):
             manager.spawn(parent_id="main", name="duplicate", preset="special")
         with self.assertRaisesRegex(ValueError, "Защищённый"):
             manager.delete(agent_id=special_id)
+
+    def test_external_rpc_cannot_change_protected_agent_capabilities(self):
+        manager = self.manager(_Client([]))
+        manager.spawn_root(name="main", preset="main")
+        before = self.presets.load("main").actions
+        with patch.object(manager.capabilities, "_send_host") as send:
+            manager.capabilities._handle_rpc(SimpleNamespace(), {
+                "rpc_id": "rpc-1", "target": "agent_manager", "method": "enable",
+                "kwargs": {"agent_id": "main", "kind": "action", "capability_id": "read_file"},
+                "caller_agent_id": "agent-outsider",
+            })
+        self.assertFalse(send.call_args.args[1]["ok"])
+        self.assertEqual(self.presets.load("main").actions, before)
 
     def test_restore_failure_preserves_memory_and_does_not_replace_snapshot(self):
         with tempfile.TemporaryDirectory() as temporary:
