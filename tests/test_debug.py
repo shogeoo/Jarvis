@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import unittest
 from unittest.mock import patch
 
@@ -103,7 +104,7 @@ class DebugTests(unittest.TestCase):
         self.assertIn("\033[31m", output.getvalue())
         self.assertNotIn("\033[32m", output.getvalue())
 
-    def test_subagent_output_is_yellow_and_separated(self):
+    def test_subagent_output_has_one_random_color_and_is_separated(self):
         output = _Tty()
         debug = Debugger(stream=output)
         event = Event(event_id="tick.event", data={"text": "ok"})
@@ -113,10 +114,22 @@ class DebugTests(unittest.TestCase):
         debug.result(call_result, agent_id="agent-001")
 
         text = output.getvalue()
-        self.assertIn("\033[33m", text)
+        colors = re.findall(r"\033\[38;2;\d+;\d+;\d+m", text)
+        self.assertEqual(len(colors), 2)
+        self.assertEqual(colors[0], colors[1])
         self.assertNotIn("\033[32m", text)
         self.assertFalse(text.startswith("\n"))
-        self.assertIn("\033[0m\n\n\033[33m", text)
+        self.assertIn("\033[0m\n\n" + colors[0], text)
+
+    def test_different_subagents_get_distinct_persistent_colors(self):
+        output = _Tty()
+        debug = Debugger(stream=output)
+        for identifier in ("agent-001", "agent-002", "agent-001", "agent-002"):
+            debug.result(CallResult(call_id="call", data={}), agent_id=identifier)
+        colors = re.findall(r"\033\[38;2;\d+;\d+;\d+m", output.getvalue())
+        self.assertEqual(len(colors), 4)
+        self.assertNotEqual(colors[0], colors[1])
+        self.assertEqual(colors[:2], colors[2:])
 
     def test_main_output_is_green_on_terminal(self):
         output = _Tty()
