@@ -466,7 +466,9 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("action_definition", prompt)
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
-        self.assertIn('"event_id":"call_result"', prompt)
+        self.assertIn("event_id имеет значение call_result", prompt)
+        for concrete in ("main", "module_manager", "system_started", "telegram", "speech", "spawn_agent"):
+            self.assertNotIn(concrete, prompt)
 
     def test_legacy_automation_is_read_without_rewriting_saved_file(self):
         with tempfile.TemporaryDirectory() as temporary:
