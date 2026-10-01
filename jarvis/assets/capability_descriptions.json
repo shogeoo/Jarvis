@@ -769,18 +769,6 @@
   ],
   "handlers": [
     {
-      "user_message": {
-        "description": "A human interlocutor's direct written message. The text carries their utterance or request; interpret it in the ongoing context.",
-        "data_schema": {
-          "properties": {
-            "text": {
-              "description": "Exact text the user sent in this message."
-            }
-          }
-        }
-      }
-    },
-    {
       "structure_error": {
         "description": "The previous response was rejected because its JSON or action arguments violated the protocol. Read the validation details and return a corrected response using fresh call_id values for every invocation. A rejected call_id remains occupied in the context.",
         "data_schema": {

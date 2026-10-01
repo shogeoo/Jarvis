@@ -48,7 +48,6 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     """Зарегистрировать зарезервированные элементы протокола."""
     from .system_actions import register_system_actions
     register_system_actions(actions)
-    events.register(EventDefinition("user_message", "A direct text request from the user.", object_schema({"text": {"type": "string"}})), owner="core")
 
     actions.register(
         ActionDefinition(

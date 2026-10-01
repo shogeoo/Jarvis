@@ -16,6 +16,12 @@ from jarvis.core.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_empty_subagent_knows_only_existing_system_events(self):
+        actions, events = ActionRegistry(), EventRegistry()
+        register_core_protocol(actions, events)
+        plain = events.for_capabilities(modules=set(), handlers=set())
+        self.assertEqual(set(plain), {"structure_error", "message_from_agent", "capability_error"})
+
     def test_core_actions_register_without_jsonschema_dependency(self):
         with patch("jarvis.core.protocol.Draft202012Validator", None):
             actions = ActionRegistry()
