@@ -67,9 +67,9 @@ def agent_system_prompt(
         blocks.append(("MEMORY", render_template("memory_instruction.txt") + "\n" + json_text(semantic_memory, indent=2)))
     blocks.extend(
         [
-            ("MODEL INFO", render_template("model_info.txt", model_id=model.model, modalities=model.prompt_block())),
+            ("MODEL INFO", model.prompt_block()),
             ("AGENT_INFO", render_template("agent_info.txt", name=agent_name, agent_id=agent_id)),
             ("CAPABILITIES", json_text(catalog, indent=2)),
         ]
     )
-    return "\n\n".join(render_template("system_section.txt", title=title, content=content) for title, content in blocks)
+    return "\n\n".join(f"{title}:\n{content}" for title, content in blocks)

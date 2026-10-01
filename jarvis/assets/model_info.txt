@@ -1,2 +1,2 @@
-Model ID: {model_id}
-{modalities}
+Текущая модель: {model_id}
+Модель поддерживает эти модальности: {modalites}

@@ -134,7 +134,7 @@ class SemanticMemoryTests(unittest.TestCase):
             self.assertNotIn("Georgiy uses dual boot.", before)
             self.assertIn('"content": "Georgiy uses dual boot."', after)
             self.assertIn('"id": "mem_000001"', after)
-            self.assertIn("MODEL INFO:\nModel ID: gpt-6-luna", after)
+            self.assertIn("MODEL INFO:\nТекущая модель: gpt-6-luna", after)
             self.assertEqual(
                 primary["memory_edit"].run(
                     {"id": identifier, "content": "Georgiy prefers Russian."}, context

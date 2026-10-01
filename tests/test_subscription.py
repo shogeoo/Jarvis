@@ -310,7 +310,7 @@ class SubscriptionTests(unittest.TestCase):
                 "messages": [
                     {
                         "role": "system",
-                        "content": "MODEL INFO:\nModel ID: gpt-6-luna\n"
+                        "content": "MODEL INFO:\n"
                         + ModelCapabilities(
                             "gpt-6-luna", ("text", "image")
                         ).prompt_block(),
@@ -321,8 +321,8 @@ class SubscriptionTests(unittest.TestCase):
             }
         )
         system = api.chat.completions.create.call_args.kwargs["messages"][0]["content"]
-        self.assertIn("Model ID: api-model", system)
-        self.assertNotIn("Model ID: gpt-6-luna", system)
+        self.assertIn("Текущая модель: api-model", system)
+        self.assertNotIn("Текущая модель: gpt-6-luna", system)
         self.assertIn("text, image, file", system)
 
     def test_close_cancels_direct_http_stream(self):
@@ -470,7 +470,7 @@ class SubscriptionTests(unittest.TestCase):
                     discover.assert_not_called()
                     speech.begin_background.assert_called_once()
                     self.assertIn(
-                        "MODEL INFO:\nModel ID: gpt-6-luna",
+                        "MODEL INFO:\nТекущая модель: gpt-6-luna",
                         app.main_agent.history[0]["content"],
                     )
                     self.assertTrue(

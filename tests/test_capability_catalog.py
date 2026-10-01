@@ -298,7 +298,7 @@ class DeclarationTests(unittest.TestCase):
             "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
             agent_id="agent-001", agent_name="Example",
         )
-        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nModel ID: unknown\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\nAGENT_INFO:\nТебя зовут Example. Твой идентификатор agent-001.\n\nCAPABILITIES:\n"
+        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n\nAGENT_INFO:\nТебя зовут Example. Твой идентификатор agent-001.\n\nCAPABILITIES:\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
         self.assertEqual(prompt, expected)
 

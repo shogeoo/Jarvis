@@ -23,7 +23,7 @@ class ModelCapabilities:
 
     def prompt_block(self) -> str:
         supported = ", ".join(self.input_modalities) or "нет"
-        return render_template("modalities.txt", modalities=supported)
+        return render_template("model_info.txt", model_id=self.model, modalites=supported)
 
 
 def discover_model_capabilities(

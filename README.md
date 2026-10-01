@@ -83,9 +83,9 @@ required и исполняющий код остаются в Python. В `handle
 
 Текстовые шаблоны секций находятся в `jarvis/assets/`: `memory_instruction.txt`
 задаёт инструкцию перед JSON памяти, `agent_info.txt` использует `{name}` и
-`{agent_id}`, `model_info.txt` — `{model_id}` и `{modalities}`, `modalities.txt`
-— `{modalities}`, `capability_storage.txt` — `{storage_root}`. Общий формат
-заголовка задаёт `system_section.txt` с полями `{title}` и `{content}`.
+`{agent_id}`, а `model_info.txt` — `{model_id}` и `{modalites}`. Заголовки
+секций задаются в коде. `{storage_root}` подставляется прямо в PERSON
+module_manager; для него отдельного шаблона нет.
 Подстановки заполняются при сборке system; буквальные фигурные скобки в
 шаблоне пишутся как `{{` и `}}`. Выражения Python в шаблонах не исполняются.
 

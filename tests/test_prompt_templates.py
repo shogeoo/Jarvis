@@ -17,10 +17,8 @@ class PromptTemplateTests(unittest.TestCase):
             assets = root / "assets"
             assets.mkdir()
             templates = {
-                "system_section.txt": "{title}:\n{content}",
                 "memory_instruction.txt": "Custom memory instruction.",
-                "modalities.txt": "Inputs: {modalities}.",
-                "model_info.txt": "Selected model: {model_id}\n{modalities}",
+                "model_info.txt": "Selected model: {model_id}\nInputs: {modalites}.",
                 "agent_info.txt": "Identity: {name} / {agent_id}.",
             }
             for filename, content in templates.items():

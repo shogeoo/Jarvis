@@ -15,7 +15,6 @@ from ..core.protocol import validate_json
 from .console import logger
 from .model_capabilities import ModelCapabilities
 from .subscription_auth import SubscriptionAuth
-from .prompt_templates import render_template
 
 
 SUBSCRIPTION_MODALITIES = ModelCapabilities("ChatGPT subscription", ("text", "image"))
@@ -341,15 +340,10 @@ class SubscriptionClient:
 
     def _api_request(self, options: dict[str, Any]):
         messages = deepcopy(options["messages"])
-        subscription_modalities = ModelCapabilities(self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities).prompt_block()
+        subscription_model_info = ModelCapabilities(self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities).prompt_block()
         messages[0]["content"] = messages[0]["content"].replace(
-            render_template("model_info.txt", model_id=self.subscription_model, modalities=subscription_modalities),
-            render_template("model_info.txt", model_id=self.api_model, modalities=self.api_capabilities.prompt_block()),
-            1,
-        )
-        messages[0]["content"] = messages[0]["content"].replace(
-            subscription_modalities,
-            self.api_capabilities.prompt_block(),
+            subscription_model_info,
+            ModelCapabilities(self.api_model, self.api_capabilities.input_modalities).prompt_block(),
             1,
         )
         for message in messages[1:]:
