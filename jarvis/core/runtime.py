@@ -27,6 +27,7 @@ from ..presets import PresetStore
 PRIMARY_AGENT_NAME = "Jarvis"
 from .lifecycle import ProcessManager
 from .prompts import agent_system_prompt
+from .descriptions import apply_descriptions
 from .protocol import (
     ActionRequest,
     CallResult,
@@ -617,6 +618,7 @@ class Agent:
                     if name == "edit_automation":
                         schema = object_schema({"automation_id": {"type": "string"}, "automation": schema})
                     actions[name] = replace(actions[name], data_schema=schema)
+        actions, events = apply_descriptions(actions, events)
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(

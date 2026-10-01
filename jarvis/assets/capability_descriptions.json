@@ -1,0 +1,866 @@
+{
+  "actions": [
+    {
+      "read_file": {
+        "description": "Read a UTF-8 file with 1-based line numbers. Null start_line/end_line means the full file boundary.",
+        "data_schema": {
+          "properties": {
+            "path": {
+              "description": "Path to the file."
+            },
+            "start_line": {
+              "description": "First included line, numbered from 1; null selects the file beginning."
+            },
+            "end_line": {
+              "description": "Last included line, numbered from 1; null selects the file end."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "content": {
+              "description": "Text content of the file or replacement range."
+            }
+          }
+        }
+      }
+    },
+    {
+      "write_file": {
+        "description": "Create or fully replace a UTF-8 file, creating parent directories. No append.",
+        "data_schema": {
+          "properties": {
+            "path": {
+              "description": "Path to the file."
+            },
+            "content": {
+              "description": "Text content of the file or replacement range."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "written": {
+              "description": "Whether the file was written successfully."
+            }
+          }
+        }
+      }
+    },
+    {
+      "edit_file": {
+        "description": "Replace the inclusive 1-based line range with content. Invalid ranges fail without changing the file.",
+        "data_schema": {
+          "properties": {
+            "path": {
+              "description": "Path to the file."
+            },
+            "start_line": {
+              "description": "First included line, numbered from 1; null selects the file beginning."
+            },
+            "end_line": {
+              "description": "Last included line, numbered from 1; null selects the file end."
+            },
+            "content": {
+              "description": "Text content of the file or replacement range."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "edited": {
+              "description": "Whether the requested range or object was edited successfully."
+            }
+          }
+        }
+      }
+    },
+    {
+      "execute_command": {
+        "description": "Run a non-interactive bash command. Optional cwd is null or a directory. No execution timeout; returns exit_code/stdout/stderr on completion. Agent deletion cancels the command and its child processes.",
+        "data_schema": {
+          "properties": {
+            "command": {
+              "description": "One non-interactive bash command to execute."
+            },
+            "cwd": {
+              "description": "Working directory; omitted or null uses the project root."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "exit_code": {
+              "description": "Exit code of the completed command."
+            },
+            "stdout": {
+              "description": "Captured standard output of the command."
+            },
+            "stderr": {
+              "description": "Captured standard error of the command."
+            }
+          }
+        }
+      }
+    },
+    {
+      "memory_write": {
+        "description": "Save a confirmed, stable fact in Jarvis semantic memory. Returns its generated ID.",
+        "data_schema": {
+          "properties": {
+            "content": {
+              "description": "One concise, confirmed semantic fact to remember."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "id": {
+              "description": "Generated semantic memory entry ID."
+            }
+          }
+        }
+      }
+    },
+    {
+      "memory_edit": {
+        "description": "Replace one semantic memory entry by its ID.",
+        "data_schema": {
+          "properties": {
+            "id": {
+              "description": "ID of the semantic memory entry to replace."
+            },
+            "content": {
+              "description": "Complete replacement fact."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: updated."
+            }
+          }
+        }
+      }
+    },
+    {
+      "memory_delete": {
+        "description": "Delete one semantic memory entry by its ID.",
+        "data_schema": {
+          "properties": {
+            "id": {
+              "description": "ID of the semantic memory entry to delete."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: deleted."
+            }
+          }
+        }
+      }
+    },
+    {
+      "reply": {
+        "description": "Reply to the user with text in the JSON console trace. No separate plain-text console output. Available only when the configured s2 binary is absent.",
+        "data_schema": {
+          "properties": {
+            "text": {
+              "description": "Text content to process; see the action or event description."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: successful."
+            }
+          }
+        }
+      }
+    },
+    {
+      "create_preset": {
+        "description": "create_preset: update Jarvis state. Editing a preset affects only future instances. Removing a preset recursively deletes its instances and descendants.",
+        "data_schema": {
+          "properties": {
+            "preset_id": {
+              "description": "Identifier of the preset."
+            },
+            "person_prompt": {
+              "description": "Personality, role and task instructions for future preset instances."
+            },
+            "actions": {
+              "description": "Standalone action identifiers assigned to the agent."
+            },
+            "handlers": {
+              "description": "Standalone observer identifiers assigned to the agent."
+            },
+            "modules": {
+              "description": "Module identifiers assigned to the agent."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: created, not_created."
+            },
+            "preset_id": {
+              "description": "Identifier of the preset."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            }
+          }
+        }
+      }
+    },
+    {
+      "edit_preset": {
+        "description": "edit_preset: update Jarvis state. Editing a preset affects only future instances. Removing a preset recursively deletes its instances and descendants.",
+        "data_schema": {
+          "properties": {
+            "preset_id": {
+              "description": "Identifier of the preset."
+            },
+            "person_prompt": {
+              "description": "Personality, role and task instructions for future preset instances."
+            },
+            "actions": {
+              "description": "Standalone action identifiers assigned to the agent."
+            },
+            "handlers": {
+              "description": "Standalone observer identifiers assigned to the agent."
+            },
+            "modules": {
+              "description": "Module identifiers assigned to the agent."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: edited, not_edited."
+            },
+            "preset_id": {
+              "description": "Identifier of the preset."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            }
+          }
+        }
+      }
+    },
+    {
+      "remove_preset": {
+        "description": "remove_preset: update Jarvis state. Editing a preset affects only future instances. Removing a preset recursively deletes its instances and descendants.",
+        "data_schema": {
+          "properties": {
+            "preset_id": {
+              "description": "Identifier of the preset."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: removed, not_removed."
+            },
+            "preset_id": {
+              "description": "Identifier of the preset."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            }
+          }
+        }
+      }
+    },
+    {
+      "create_automation": {
+        "description": "create_automation: manage an exact-match automation. For create/edit provide exactly one non-null event or call_result trigger and a non-empty actions array without call_id. Omit the other trigger or set it to null. Match the entire event/data structure; only a call_result trigger's call_id value is ignored.",
+        "data_schema": {
+          "properties": {
+            "event": {
+              "properties": {
+                "event_id": {
+                  "description": "The exact event identifier."
+                },
+                "data": {
+                  "description": "The complete event data to match exactly."
+                }
+              },
+              "description": "Complete event trigger, or null when using a call_result trigger."
+            },
+            "call_result": {
+              "properties": {
+                "event_id": {
+                  "description": "Identifier of the event."
+                },
+                "call_id": {
+                  "description": "Example invocation identifier; its value is ignored when matching."
+                },
+                "data": {
+                  "description": "The complete result data to match exactly."
+                }
+              },
+              "description": "Complete result trigger, or null when using an event trigger."
+            },
+            "actions": {
+              "items": {
+                "properties": {
+                  "action_id": {
+                    "description": "An available action identifier."
+                  },
+                  "data": {
+                    "description": "Arguments matching that action's data_schema."
+                  }
+                }
+              },
+              "description": "Actions to execute when the trigger matches, without call identifiers."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: created, not_created."
+            },
+            "automation_id": {
+              "description": "Persistent identifier of the automation rule."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            }
+          }
+        }
+      }
+    },
+    {
+      "edit_automation": {
+        "description": "edit_automation: manage an exact-match automation. For create/edit provide exactly one non-null event or call_result trigger and a non-empty actions array without call_id. Omit the other trigger or set it to null. Match the entire event/data structure; only a call_result trigger's call_id value is ignored.",
+        "data_schema": {
+          "properties": {
+            "automation_id": {
+              "description": "Persistent identifier of the automation rule."
+            },
+            "automation": {
+              "properties": {
+                "event": {
+                  "properties": {
+                    "event_id": {
+                      "description": "The exact event identifier."
+                    },
+                    "data": {
+                      "description": "The complete event data to match exactly."
+                    }
+                  },
+                  "description": "Complete event trigger, or null when using a call_result trigger."
+                },
+                "call_result": {
+                  "properties": {
+                    "event_id": {
+                      "description": "Identifier of the event."
+                    },
+                    "call_id": {
+                      "description": "Example invocation identifier; its value is ignored when matching."
+                    },
+                    "data": {
+                      "description": "The complete result data to match exactly."
+                    }
+                  },
+                  "description": "Complete result trigger, or null when using an event trigger."
+                },
+                "actions": {
+                  "items": {
+                    "properties": {
+                      "action_id": {
+                        "description": "An available action identifier."
+                      },
+                      "data": {
+                        "description": "Arguments matching that action's data_schema."
+                      }
+                    }
+                  },
+                  "description": "Actions to execute when the trigger matches, without call identifiers."
+                }
+              },
+              "description": "Automation."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: edited, not_edited."
+            },
+            "automation_id": {
+              "description": "Persistent identifier of the automation rule."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            }
+          }
+        }
+      }
+    },
+    {
+      "remove_automation": {
+        "description": "remove_automation: manage an exact-match automation. For create/edit provide exactly one non-null event or call_result trigger and a non-empty actions array without call_id. Omit the other trigger or set it to null. Match the entire event/data structure; only a call_result trigger's call_id value is ignored.",
+        "data_schema": {
+          "properties": {
+            "automation_id": {
+              "description": "Persistent identifier of the automation rule."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: removed, not_removed."
+            },
+            "automation_id": {
+              "description": "Persistent identifier of the automation rule."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            }
+          }
+        }
+      }
+    },
+    {
+      "list_automations": {
+        "description": "List saved automations and their automation_id values.",
+        "result_schema": {
+          "properties": {
+            "automations": {
+              "description": "Saved automation rules with their persistent identifiers."
+            }
+          }
+        }
+      }
+    },
+    {
+      "spawn_agent": {
+        "description": "Create a live independent agent from a preset with the given name. Send its task separately using send_message_to_agent after the creation result.",
+        "data_schema": {
+          "properties": {
+            "name": {
+              "description": "Human-readable name of the agent."
+            },
+            "preset": {
+              "description": "Name of the agent preset."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "spawned": {
+              "description": "Whether the new agent instance was created."
+            },
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            },
+            "name": {
+              "description": "Human-readable name of the agent."
+            },
+            "preset": {
+              "description": "Name of the agent preset."
+            }
+          }
+        }
+      }
+    },
+    {
+      "interrupt_agent": {
+        "description": "Interrupt the current model generation only. Preserve history, queued events and running actions. A protected agent can only interrupt itself. Returns waiting state.",
+        "data_schema": {
+          "properties": {
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            },
+            "state": {
+              "description": "Current runtime state."
+            }
+          }
+        }
+      }
+    },
+    {
+      "delete_agent": {
+        "description": "Delete an agent and all descendants, cancel their executions and erase their instance memory. Keep presets. Protected agents cannot be deleted.",
+        "data_schema": {
+          "properties": {
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            },
+            "deleted": {
+              "description": "Whether the agent and its descendants were deleted."
+            }
+          }
+        }
+      }
+    },
+    {
+      "list_agents": {
+        "description": "List live agents, their names, presets, parents, states and enabled capabilities.",
+        "result_schema": {
+          "properties": {
+            "agents": {
+              "description": "Current live agent instances."
+            }
+          }
+        }
+      }
+    },
+    {
+      "send_message_to_agent": {
+        "description": "Send a direct task or message to a live agent. The recipient receives a message_from_agent event.",
+        "data_schema": {
+          "properties": {
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            },
+            "text": {
+              "description": "Text content to process; see the action or event description."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "delivered": {
+              "description": "Whether the recipient accepted the message into its queue."
+            },
+            "agent_id": {
+              "description": "Identifier of the agent instance."
+            }
+          }
+        }
+      }
+    },
+    {
+      "list_agent_presets": {
+        "description": "List presets available for creating agents. An instantiated protected singleton, including main, is omitted.",
+        "result_schema": {
+          "properties": {
+            "presets": {
+              "description": "Saved presets and their initial assignments."
+            }
+          }
+        }
+      }
+    },
+    {
+      "enable_capability": {
+        "description": "Assign and enable a capability for this protected agent itself, loading runtime if needed. Enable a whole module, not its individual members. Changes to a protected agent also update its preset.",
+        "data_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "enabled": {
+              "description": "Whether the capability is locally enabled for the agent."
+            },
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            },
+            "persistent": {
+              "description": "Persistent."
+            }
+          }
+        }
+      }
+    },
+    {
+      "disable_capability": {
+        "description": "Disable a capability for this protected agent itself, stop its running calls and unload unused runtime. Remove its descriptions from the current catalog. Changes to a protected agent also update its preset.",
+        "data_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "enabled": {
+              "description": "Whether the capability is locally enabled for the agent."
+            },
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            }
+          }
+        }
+      }
+    },
+    {
+      "list_active_capabilities": {
+        "description": "List capabilities currently enabled for this agent instance.",
+        "result_schema": {
+          "properties": {
+            "modules": {
+              "description": "Module identifiers assigned to the agent."
+            },
+            "actions": {
+              "description": "Standalone action identifiers assigned to the agent."
+            },
+            "handlers": {
+              "description": "Standalone observer identifiers assigned to the agent."
+            }
+          }
+        }
+      }
+    },
+    {
+      "list_available_capabilities": {
+        "description": "List available capabilities not yet assigned to this agent. Assigned but disabled capabilities are excluded.",
+        "result_schema": {
+          "properties": {
+            "modules": {
+              "description": "Module identifiers assigned to the agent."
+            },
+            "actions": {
+              "description": "Standalone action identifiers assigned to the agent."
+            },
+            "handlers": {
+              "description": "Standalone observer identifiers assigned to the agent."
+            }
+          }
+        }
+      }
+    },
+    {
+      "list_capabilities": {
+        "description": "List every capability physically present in .jarvis and report its runtime and global state: loaded is true when the runtime is currently loaded, globally_running and globally_paused reflect the global pause state that overrides every agent assignment.",
+        "result_schema": {
+          "properties": {
+            "modules": {
+              "description": "Module identifiers assigned to the agent."
+            },
+            "actions": {
+              "description": "Standalone action identifiers assigned to the agent."
+            },
+            "handlers": {
+              "description": "Standalone observer identifiers assigned to the agent."
+            }
+          }
+        }
+      }
+    },
+    {
+      "capability_info": {
+        "description": "Return the complete description of a capability without starting runtime. Request module members through their whole module.",
+        "data_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            },
+            "info": {
+              "description": "Details of the operation or requested capability."
+            }
+          }
+        }
+      }
+    },
+    {
+      "toggle_capability": {
+        "description": "Toggle a capability between globally running and paused. Pause unloads the runtime and stops active calls without changing local assignments or disabled settings. Resume reloads current source for agents where this capability is assigned and locally enabled.",
+        "data_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            },
+            "state": {
+              "description": "Current runtime state. Possible values: paused, running."
+            },
+            "affected_agent_ids": {
+              "description": "Agent instances affected by the global state change."
+            }
+          }
+        }
+      }
+    },
+    {
+      "no_action": {
+        "description": "Finish the current cycle and wait for new events. Must be the only action in the response."
+      }
+    },
+    {
+      "speech": {
+        "description": "Speak text aloud. Returns successful after playback or interrupted if new user speech interrupted it.",
+        "data_schema": {
+          "properties": {
+            "text": {
+              "description": "Text content to process; see the action or event description."
+            }
+          }
+        },
+        "result_schema": {
+          "properties": {
+            "status": {
+              "description": "Outcome of the operation. Possible values: successful, interrupted."
+            }
+          }
+        }
+      }
+    }
+  ],
+  "handlers": [
+    {
+      "user_message": {
+        "description": "A direct text request from the user.",
+        "data_schema": {
+          "properties": {
+            "text": {
+              "description": "Text content to process; see the action or event description."
+            }
+          }
+        }
+      }
+    },
+    {
+      "structure_error": {
+        "description": "The previous response violated the JSON protocol or available input schema. Return a corrected response with fresh call identifiers.",
+        "data_schema": {
+          "properties": {
+            "code": {
+              "description": "Machine-readable error code."
+            },
+            "message": {
+              "description": "Explanation of the reported error."
+            },
+            "response": {
+              "description": "The original model response that failed validation."
+            }
+          }
+        }
+      }
+    },
+    {
+      "message_from_agent": {
+        "description": "A direct message from another agent. from_agent_id and from_name identify the sender; text contains their message or task.",
+        "data_schema": {
+          "properties": {
+            "from_agent_id": {
+              "description": "Identifier of the sending agent."
+            },
+            "from_name": {
+              "description": "Human-readable name of the sending agent."
+            },
+            "text": {
+              "description": "Text content to process; see the action or event description."
+            }
+          }
+        }
+      }
+    },
+    {
+      "system_started": {
+        "description": "Jarvis core is ready. Speech models may still be initializing. datetime is the local ISO 8601 time with timezone. The agent may take initiative but is not required to.",
+        "data_schema": {
+          "properties": {
+            "datetime": {
+              "description": "Local startup time in ISO 8601 with timezone offset."
+            }
+          }
+        }
+      }
+    },
+    {
+      "capability_error": {
+        "description": "An unhandled capability failure. kind and id identify its source; error contains details and call_id identifies an affected invocation if any.",
+        "data_schema": {
+          "properties": {
+            "kind": {
+              "description": "Capability category: module, action or handler."
+            },
+            "id": {
+              "description": "Identifier of the capability."
+            },
+            "error": {
+              "description": "Failure details if the operation did not succeed."
+            },
+            "call_id": {
+              "description": "Identifier of one invocation, unique across the agent context."
+            }
+          }
+        }
+      }
+    },
+    {
+      "speech_detected": {
+        "description": "User speech recognized from the microphone. text contains the recognized utterance.",
+        "data_schema": {
+          "properties": {
+            "text": {
+              "description": "Text content to process; see the action or event description."
+            }
+          }
+        }
+      }
+    }
+  ],
+  "modules": []
+}
