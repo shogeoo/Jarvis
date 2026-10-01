@@ -20,6 +20,7 @@ from ..infrastructure.automations import AutomationStore
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
 from ..infrastructure.semantic_memory import SemanticMemory
+from ..infrastructure.prompt_templates import render_template
 from ..capabilities.api import ActionDefinition, EventDefinition
 from ..presets import PresetStore
 
@@ -622,7 +623,7 @@ class Agent:
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt + ("\n\nCapability storage root: " + str(self.manager.capabilities.root.resolve()) if self.preset == "module_manager" else ""),
+                self.person_prompt + ("\n\n" + render_template("capability_storage.txt", storage_root=str(self.manager.capabilities.root.resolve())) if self.preset == "module_manager" else ""),
                 self.manager.environment,
                 actions,
                 events,

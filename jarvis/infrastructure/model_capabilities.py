@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+from .prompt_templates import render_template
 
 
 SUPPORTED_INPUT_MODALITIES = ("text", "image", "audio", "video", "file")
@@ -22,7 +23,7 @@ class ModelCapabilities:
 
     def prompt_block(self) -> str:
         supported = ", ".join(self.input_modalities) or "нет"
-        return f"Текущая модель поддерживает следующие модальности: {supported}."
+        return render_template("modalities.txt", modalities=supported)
 
 
 def discover_model_capabilities(

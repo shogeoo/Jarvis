@@ -1,0 +1,1 @@
+Capability storage root: {storage_root}

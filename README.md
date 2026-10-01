@@ -28,7 +28,7 @@ STT и TTS настроены на CUDA без CPU fallback; VAD работае�
 Одно сообщение `system` собирается из разделов `ENVIRONMENT:` (общий
 неизменяемый текст `environment.txt`), `PERSON:` (личность из `person.txt` preset), `MEMORY:`
 (семантическая память только для Jarvis), `MODEL INFO:` (точный ID текущей
-модели и модальности), `AGENT_INFO:` (JSON с `name` и `id` текущего экземпляра)
+модели и модальности), `AGENT_INFO:` (текст с именем и ID текущего экземпляра)
 и `CAPABILITIES:` (динамический каталог). Заголовок
 стоит непосредственно над содержимым; между разделами одна пустая строка.
 Документация разработки находится только в личности module_manager,
@@ -80,6 +80,14 @@ Descriptions встроенных возможностей настраиваю�
 required и исполняющий код остаются в Python. В `handlers` перечислены
 описания встроенных событий по event_id. Встроенных модулей сейчас нет.
 Изменения descriptions подхватываются при следующей сборке каталога агента.
+
+Текстовые шаблоны секций находятся в `jarvis/assets/`: `memory_instruction.txt`
+задаёт инструкцию перед JSON памяти, `agent_info.txt` использует `{name}` и
+`{agent_id}`, `model_info.txt` — `{model_id}` и `{modalities}`, `modalities.txt`
+— `{modalities}`, `capability_storage.txt` — `{storage_root}`. Общий формат
+заголовка задаёт `system_section.txt` с полями `{title}` и `{content}`.
+Подстановки заполняются при сборке system; буквальные фигурные скобки в
+шаблоне пишутся как `{{` и `}}`. Выражения Python в шаблонах не исполняются.
 
 При `CHATGPT_SUBSCRIPTION_ENABLED=true` Jarvis сразу выполняет вход в подписку,
 отправляет `system_started`, а речевые модели загружает в фоне; вызов `speech`

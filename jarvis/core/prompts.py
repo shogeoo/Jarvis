@@ -4,7 +4,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from ..infrastructure.model_capabilities import ModelCapabilities
+from ..infrastructure.model_capabilities import ModelCapabilities, SUPPORTED_INPUT_MODALITIES
+from ..infrastructure.prompt_templates import render_template
 from .protocol import json_text, validate_catalog_text
 from .registry import ActionRegistry
 
@@ -60,30 +61,15 @@ def agent_system_prompt(
         "modules": modules,
     }
     validate_catalog_text(catalog)
-    modalities = (
-        model_capabilities.prompt_block()
-        if model_capabilities
-        else "Текущая модель поддерживает следующие модальности: text, image, audio, video, file."
-    )
-    blocks = [
-        "ENVIRONMENT:\n" + environment.strip(),
-        "PERSON:\n" + person_prompt.strip(),
-    ]
+    model = model_capabilities or ModelCapabilities("unknown", SUPPORTED_INPUT_MODALITIES)
+    blocks = [("ENVIRONMENT", environment.strip()), ("PERSON", person_prompt.strip())]
     if semantic_memory is not None:
-        blocks.append(
-            "MEMORY:\n"
-            "Сохраняй в семантической памяти только подтверждённые и достаточно устойчивые факты о людях, отношениях, окружении, устройствах, предпочтениях, привычках и биографии. "
-            "Не сохраняй текущие задачи, временные проекты, планы, обсуждаемые возможности и сведения, в достоверности которых не уверен. "
-            "Изменившийся факт обновляй, устаревший удаляй; записи делай короткими, самостоятельными и понятными. "
-            "Ниже — записи, которые ты, JARVIS, сохранил для себя в прошлом: знания от тебя прошлого для тебя нынешнего.\n"
-            + json_text(semantic_memory, indent=2)
-        )
-    model_id = model_capabilities.model if model_capabilities else "unknown"
+        blocks.append(("MEMORY", render_template("memory_instruction.txt") + "\n" + json_text(semantic_memory, indent=2)))
     blocks.extend(
         [
-            "MODEL INFO:\nModel ID: " + model_id + "\n" + modalities,
-            "AGENT_INFO:\n" + json_text({"name": agent_name, "id": agent_id}, indent=2),
-            "CAPABILITIES:\n" + json_text(catalog, indent=2),
+            ("MODEL INFO", render_template("model_info.txt", model_id=model.model, modalities=model.prompt_block())),
+            ("AGENT_INFO", render_template("agent_info.txt", name=agent_name, agent_id=agent_id)),
+            ("CAPABILITIES", json_text(catalog, indent=2)),
         ]
     )
-    return "\n\n".join(blocks)
+    return "\n\n".join(render_template("system_section.txt", title=title, content=content) for title, content in blocks)
