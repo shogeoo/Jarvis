@@ -81,8 +81,8 @@ def agent_system_prompt(
     model_id = model_capabilities.model if model_capabilities else "unknown"
     blocks.extend(
         [
-            "AGENT_INFO:\n" + json_text({"name": agent_name, "id": agent_id}, indent=2),
             "MODEL INFO:\nModel ID: " + model_id + "\n" + modalities,
+            "AGENT_INFO:\n" + json_text({"name": agent_name, "id": agent_id}, indent=2),
             "CAPABILITIES:\n" + json_text(catalog, indent=2),
         ]
     )
