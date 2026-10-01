@@ -98,7 +98,7 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         EventDefinition(
             event_id="system_started",
             description=(
-                'Jarvis core is ready. Speech models may still be initializing. datetime is the local ISO 8601 time with timezone. The agent may take initiative but is not required to.'
+                'The system has started. This event gives you an opportunity to take initiative: consider your personality, available capabilities and current context, then independently choose a useful action or begin an interaction. Initiative is welcome but no specific action is mandatory. datetime is the local startup time with timezone.'
             ),
             data_schema=object_schema({
                 "datetime": {

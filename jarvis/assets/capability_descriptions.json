@@ -818,7 +818,7 @@
     },
     {
       "system_started": {
-        "description": "The core has finished startup and can process events. datetime is the local startup time with timezone; speech models may still be initializing. This event does not require a greeting or any particular action.",
+        "description": "The system has started. This event gives you an opportunity to take initiative: consider your personality, available capabilities and current context, then independently choose a useful action or begin an interaction. Initiative is welcome but no specific action is mandatory. datetime is the local startup time with timezone.",
         "data_schema": {
           "properties": {
             "datetime": {
