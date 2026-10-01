@@ -45,6 +45,18 @@ class SystemStateTests(unittest.TestCase):
         self.assertTrue(self.manager.require_agent("main").protected)
         self.assertIn("enable_capability", self.main._contract()[0])
 
+    def test_restored_main_uses_current_builtin_personality_without_losing_context(self):
+        record = self.main.memory_record()
+        record["person_prompt"] = "Stale saved personality."
+        record["messages"] = [{"role": "user", "content": "Keep this history."}]
+        self.main.stop()
+        self.manager.bus.unbind("main")
+        self.manager.agents.pop("main")
+        restored = self.manager._spawn_record(record, primary=True)
+        self.assertEqual(restored.person_prompt, self.manager.presets.load("main").person_prompt)
+        self.assertNotIn("Stale saved personality.", restored.history[0]["content"])
+        self.assertEqual(restored.history[1], record["messages"][0])
+
     def test_preset_edit_preserves_existing_instance_and_restore_personality(self):
         child_id = self.manager.spawn(parent_id="main", name="old", preset="worker")["agent_id"]
         child = self.manager.require_agent(child_id)

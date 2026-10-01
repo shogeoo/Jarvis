@@ -371,7 +371,7 @@ class Agent:
         self.manager = manager
         self.primary = primary
         selected = manager.presets.load(preset)
-        self.person_prompt = selected.person_prompt if person_prompt is None or preset == "module_manager" else person_prompt
+        self.person_prompt = selected.person_prompt if person_prompt is None or preset in {"main", "module_manager"} else person_prompt
         self.protected = selected.protected if protected is None else protected
         self._assignment_order = {
             "modules": list(enabled_modules or ()),
