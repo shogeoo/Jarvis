@@ -749,11 +749,11 @@
     },
     {
       "speech": {
-        "description": "Speak the supplied text directly to the human interlocutor. Provide the exact utterance ready for pronunciation: direct speech, numbers written as spoken words, natural punctuation and correct ё in Russian. Expand notation and abbreviations when necessary for natural speech. Do not include labels, stage directions, Markdown or commentary about the utterance. The result reports completed or interrupted playback.",
+        "description": "Speak the supplied text directly to the human interlocutor using Fish Audio S2 Pro. Provide the exact utterance ready for pronunciation: direct speech, numbers written as spoken words, natural punctuation and correct ё in Russian. Expand notation and abbreviations when necessary for natural speech. S2 Pro supports inline delivery instructions in square brackets, placed where the vocal change should occur: [whisper], [short pause], [emphasis], [chuckle] and [sigh]. Tags can also contain natural-language instructions, such as [professional broadcast tone]. Use them when they suit the intended delivery. Apart from these supported vocal tags, omit labels, stage directions, Markdown and commentary about the utterance. The result reports completed or interrupted playback.",
         "data_schema": {
           "properties": {
             "text": {
-              "description": "Exact direct speech for TTS. Write it as natural spoken language, including spoken-form numbers and correct ё where applicable."
+              "description": "Exact direct speech for Fish Audio S2 Pro, ready to pronounce, with numbers written as spoken words and correct ё in Russian. Inline square-bracket tags may guide delivery, for example: [short pause] Сейчас проверю, сэр."
             }
           }
         },
