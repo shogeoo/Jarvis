@@ -59,7 +59,6 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.assertNotIn("echo.repeat", self.ids("actions"))
         self.assertNotIn("echo.echoed", self.ids("events"))
         serialized = json.dumps(value, ensure_ascii=False)
-        self.assertIsNone(re.search(r"[А-Яа-яЁё]", serialized))
         self.assertNotIn('"handler_id"', serialized)
         self.assertNotIn('"path"', json.dumps(module))
         self.assertNotIn("standalone", value)
@@ -369,11 +368,10 @@ class DeclarationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             action_definition(document, run=lambda data, context: {})
 
-    def test_non_english_description_is_rejected(self):
+    def test_cyrillic_description_is_accepted(self):
         document = self.description()
         document["description"] = "Описание"
-        with self.assertRaisesRegex(ValueError, "English"):
-            action_definition(document, run=lambda data, context: {})
+        self.assertEqual(action_definition(document, run=lambda data, context: {}).description, "Описание")
 
     def test_nullable_object_and_nested_array_defaults(self):
         schema = object_schema(

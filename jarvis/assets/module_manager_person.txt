@@ -50,7 +50,7 @@ event_id внутри модуля тоже начинается с <module_id>.
 
 ДЕКЛАРАЦИИ
 
-Все description и весь model-facing каталог CAPABILITY — ТОЛЬКО АНГЛИЙСКИЙ.
+Descriptions могут быть на любом языке; пиши их понятно для агента.
 Фабрики должны предоставить JSON-совместимые dict с полными описаниями.
 Описание action: action_id, description, data_schema, result_schema.
 data_schema: type="object", properties и required. properties содержит ВСЕ

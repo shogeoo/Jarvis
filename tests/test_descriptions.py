@@ -24,21 +24,33 @@ class DescriptionTests(unittest.TestCase):
         }))
         return specs, events.all()
 
-    def test_all_builtin_text_is_exported_without_changing_current_definitions(self):
+    def test_all_builtin_descriptions_preserve_schema_and_execution(self):
         actions, events = self.definitions()
         catalog = read_descriptions()
         self.assertEqual(set(catalog["actions"]), set(actions))
         self.assertEqual(set(catalog["handlers"]), set(events))
         self.assertEqual(catalog["modules"], {})
         actual_actions, actual_events = apply_descriptions(actions, events)
-        self.assertEqual(actions, actual_actions)
-        self.assertEqual(events, actual_events)
+        def without_descriptions(value):
+            if isinstance(value, dict):
+                return {key: without_descriptions(child) for key, child in value.items() if key != "description"}
+            if isinstance(value, list):
+                return [without_descriptions(child) for child in value]
+            return value
+        for identifier, spec in actual_actions.items():
+            self.assertEqual(spec.description, catalog["actions"][identifier]["description"])
+            self.assertIs(spec.run, actions[identifier].run)
+            self.assertEqual(without_descriptions(spec.data_schema), without_descriptions(actions[identifier].data_schema))
+            self.assertEqual(without_descriptions(spec.result_schema), without_descriptions(actions[identifier].result_schema))
+        for identifier, spec in actual_events.items():
+            self.assertEqual(spec.description, catalog["handlers"][identifier]["description"])
+            self.assertEqual(without_descriptions(spec.data_schema), without_descriptions(events[identifier].data_schema))
 
     def test_edits_change_descriptions_only(self):
         source = files("jarvis").joinpath("assets", "capability_descriptions.json")
         value = json.loads(source.read_text())
         speech = next(entry["speech"] for entry in value["actions"] if "speech" in entry)
-        speech["description"] = "Edited speech instructions."
+        speech["description"] = "Произнеси текст с правильной буквой ё."
         speech["data_schema"]["properties"]["text"]["description"] = "Edited text description."
         speech["result_schema"]["properties"]["status"]["description"] = "Edited status description."
         actions, events = self.definitions()
@@ -46,7 +58,7 @@ class DescriptionTests(unittest.TestCase):
             path = Path(temporary) / "descriptions.json"
             path.write_text(json.dumps(value))
             updated, _ = apply_descriptions(actions, events, path=path)
-        self.assertEqual(updated["speech"].description, "Edited speech instructions.")
+        self.assertEqual(updated["speech"].description, "Произнеси текст с правильной буквой ё.")
         self.assertEqual(updated["speech"].data_schema["properties"]["text"]["description"], "Edited text description.")
         self.assertEqual(updated["speech"].result_schema["properties"]["status"]["description"], "Edited status description.")
         self.assertIs(updated["speech"].run, actions["speech"].run)
