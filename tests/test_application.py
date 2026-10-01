@@ -81,9 +81,11 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
-                    ordered_blocks = ["ENVIRONMENT:\n", "PERSON:\n", "MEMORY:\n", "MODEL INFO:\n", "CAPABILITIES:\n"]
+                    ordered_blocks = ["ENVIRONMENT:\n", "PERSON:\n", "MEMORY:\n", "AGENT_INFO:\n", "MODEL INFO:\n", "CAPABILITIES:\n"]
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
+                    info = json.loads(system_prompt.split("AGENT_INFO:\n", 1)[1].split("\n\nMODEL INFO:", 1)[0])
+                    self.assertEqual(info, {"name": "Jarvis", "id": "main"})
                     self.assertIn("Model ID: test", system_prompt)
                     self.assertIn('"entries": []', system_prompt)
                     self.assertIn("среде Jarvis", system_prompt)
@@ -109,6 +111,8 @@ class ApplicationTests(unittest.TestCase):
                         preset="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
+                    info = json.loads(other_agent.history[0]["content"].split("AGENT_INFO:\n", 1)[1].split("\n\nMODEL INFO:", 1)[0])
+                    self.assertEqual(info, {"name": "other", "id": other_agent.agent_id})
                     paused = app.capabilities.toggle_global_state("action", "say")
                     self.assertEqual(paused["state"], "paused")
                     self.assertEqual(

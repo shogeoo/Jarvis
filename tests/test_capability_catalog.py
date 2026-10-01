@@ -296,9 +296,10 @@ class CatalogRuntimeTests(unittest.TestCase):
 class DeclarationTests(unittest.TestCase):
     def test_system_prompt_has_labeled_blocks_in_required_order(self):
         prompt = agent_system_prompt(
-            "  Personality.\n", "Environment.\n", {}, {}, {"modules": []}
+            "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
+            agent_id="agent-001", agent_name="Example",
         )
-        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nModel ID: unknown\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\nCAPABILITIES:\n"
+        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nAGENT_INFO:\n" + json.dumps({"name": "Example", "id": "agent-001"}, indent=2) + "\n\nMODEL INFO:\nModel ID: unknown\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\nCAPABILITIES:\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
         self.assertEqual(prompt, expected)
 

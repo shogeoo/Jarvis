@@ -28,6 +28,8 @@ def agent_system_prompt(
     event_specs: dict[str, Any],
     capability_catalog: dict[str, Any],
     *,
+    agent_id: str,
+    agent_name: str,
     model_capabilities: ModelCapabilities | None = None,
     semantic_memory: dict[str, Any] | None = None,
 ) -> str:
@@ -79,6 +81,7 @@ def agent_system_prompt(
     model_id = model_capabilities.model if model_capabilities else "unknown"
     blocks.extend(
         [
+            "AGENT_INFO:\n" + json_text({"name": agent_name, "id": agent_id}, indent=2),
             "MODEL INFO:\nModel ID: " + model_id + "\n" + modalities,
             "CAPABILITIES:\n" + json_text(catalog, indent=2),
         ]

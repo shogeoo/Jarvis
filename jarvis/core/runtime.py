@@ -630,6 +630,8 @@ class Agent:
                     {key: [name for name in self._assignment_order[key] if name in snapshot[key] and not (key == "actions" and self.manager.actions.get(name) and self.manager.actions.get(name).owner.startswith("core"))] for key in snapshot},
                     describe_unloaded=True,
                 ),
+                agent_id=self.agent_id,
+                agent_name=self.name,
                 model_capabilities=self.manager.model_capabilities or ModelCapabilities(
                     self.manager.model, ("text", "image", "audio", "video", "file")
                 ),

@@ -272,6 +272,7 @@ class RuntimeTests(unittest.TestCase):
             restored = second.restore(name="main", preset="main")
             self.publish(restored, "go")
             self.assertTrue(_wait(lambda: any(item["call_id"] == "auto-00002" for item in self.call_results(restored))))
+            second.shutdown()
 
     def test_automatic_result_and_normal_event_batch_requests_model_once(self):
         client = _Client([_no_action("batch-done")])
@@ -768,12 +769,15 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 3))
             self.assertEqual(len(self.call_results(agent)), 1)
             self.assertIn("call_id уже использован", agent.history[-2]["content"])
+            manager.shutdown()
 
             restarted = self.manager(_Client([outputs[1], _no_action("fresh-2")]), memory=memory)
             restored = restarted.restore(name="main", preset="main")
             self.publish(restored, "again")
             self.assertTrue(_wait(lambda: len(restarted.client.chat.completions.calls) >= 2))
             self.assertEqual(len(self.call_results(restored)), 1)
+
+            restarted.shutdown()
 
     def test_model_cannot_use_reserved_automation_call_id(self):
         client = _Client([
