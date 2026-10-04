@@ -681,14 +681,15 @@ class RuntimeTests(unittest.TestCase):
             agent = first.spawn_root(name="main", preset="main")
             first.semantic_memory.write("Georgiy uses Arch Linux.")
             instance = (memory.root / "main/instance.json").read_bytes()
-            (memory.root / "main/context.json").unlink()
             first.shutdown()
+            (memory.root / "main/context.json").unlink()
             second = self.manager(_Client([]), memory=memory)
             restored = second.restore(name="main", preset="main")
             self.assertIsNotNone(restored)
             self.assertEqual((memory.root / "main/instance.json").read_bytes(), instance)
             self.assertTrue((memory.root / "main/context.json").is_file())
             self.assertIn("Georgiy uses Arch Linux.", restored.history[0]["content"])
+            second.shutdown()
 
     def test_restore_missing_instance_uses_preset_without_losing_context(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -696,16 +697,17 @@ class RuntimeTests(unittest.TestCase):
             first = self.manager(_Client([_no_action("saved-1")]), memory=memory)
             agent = first.spawn_root(name="main", preset="main")
             self.publish(agent, "keep this")
-            self.assertTrue(_wait(lambda: len(agent.history) >= 3))
+            self.assertTrue(_wait(lambda: len(agent.history) >= 3 and agent.state == "waiting"))
+            first.shutdown()
             saved = (memory.root / "main/context.json").read_bytes()
             (memory.root / "main/instance.json").unlink()
-            first.shutdown()
             second = self.manager(_Client([]), memory=memory)
             restored = second.restore(name="main", preset="main")
             self.assertIsNotNone(restored)
             self.assertTrue((memory.root / "main/instance.json").is_file())
             self.assertEqual((memory.root / "main/context.json").read_bytes(), saved)
             self.assertIn("keep this", str(restored.history))
+            second.shutdown()
 
     def test_subagent_instances_are_recreated_from_memory(self):
         with tempfile.TemporaryDirectory() as temporary:
