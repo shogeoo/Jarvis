@@ -53,10 +53,10 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             store = PresetStore(root / "presets")
             self.assertTrue(store.load("main").protected)
-            self.assertIn("Module Manager", store.load("module_manager").person_prompt)
+            self.assertIn("Capabilities Manager", store.load("capabilities_manager").person_prompt)
             self.assertEqual(store.load("main").actions, ())
-            self.assertEqual(store.load("module_manager").actions, ())
-            self.assertEqual(json.loads((root / "presets/module_manager/capabilities.json").read_text()),
+            self.assertEqual(store.load("capabilities_manager").actions, ())
+            self.assertEqual(json.loads((root / "presets/capabilities_manager/capabilities.json").read_text()),
                              {"modules": [], "actions": [], "handlers": []})
             self.assertEqual(list((root / "actions").iterdir()), [])
             original = root / "presets" / "main" / "person.txt"
@@ -64,10 +64,10 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             from importlib.resources import files
             self.assertEqual(original.read_text(), files("jarvis").joinpath("assets", "main_person.txt").read_text())
-            manager = root / "presets" / "module_manager" / "person.txt"
+            manager = root / "presets" / "capabilities_manager" / "person.txt"
             manager.write_text("Changed", encoding="utf-8")
             ensure_runtime_layout(root)
-            self.assertEqual(manager.read_text(), files("jarvis").joinpath("assets", "module_manager_person.txt").read_text())
+            self.assertEqual(manager.read_text(), files("jarvis").joinpath("assets", "capabilities_manager_person.txt").read_text())
             custom = root / "presets" / "custom"
             custom.mkdir()
             (custom / "person.txt").write_text("Keep this personality")
@@ -112,7 +112,7 @@ class DistributionTests(unittest.TestCase):
         return_value=ModelCapabilities("test", ("text",)),
     )
     @patch("jarvis.application.OpenAI")
-    def test_fresh_start_without_s2_omits_speech_and_can_spawn_module_manager(
+    def test_fresh_start_without_s2_omits_speech_and_can_spawn_capabilities_manager(
         self, openai, discovery, which, speech
     ):
         client = _Client([])
@@ -132,16 +132,22 @@ class DistributionTests(unittest.TestCase):
                 self.assertIn("speech_detected", app.events.all())
                 self.assertFalse(app.capabilities._hosts)
                 result = app.agents.spawn(
-                    parent_id="main", name="builder", preset="module_manager"
+                    parent_id="main", name="builder", preset="capabilities_manager"
                 )
                 developer = app.agents.require_agent(result["agent_id"])
                 dev_specs, _ = developer._contract()
+                self.assertEqual(developer.capabilities_snapshot(), {"modules": set(), "actions": set(), "handlers": set()})
+                instance = developer.memory_record()
+                self.assertEqual(instance["actions"], [])
                 self.assertIn(str(app.config.jarvis_dir.resolve()), developer.history[0]["content"])
                 for name in (
                     "read_file",
                     "write_file",
                     "edit_file",
                     "execute_command",
+                    "list_capabilities",
+                    "capability_info",
+                    "toggle_capability",
                 ):
                     self.assertIn(name, dev_specs)
                 self.assertFalse(app.capabilities._hosts)

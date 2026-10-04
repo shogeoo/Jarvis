@@ -94,15 +94,16 @@ class SystemStateTests(unittest.TestCase):
         self.assertIn("send_message_to_agent", specs)
         self.assertNotIn("delete_agent", specs)
 
-    def test_capability_management_defaults_to_module_manager(self):
-        self.manager.presets.create("module_manager", "Module manager", {"actions": [], "handlers": [], "modules": []})
-        agent_id = self.manager.spawn(parent_id="main", name="modules", preset="module_manager")["agent_id"]
+    def test_capability_management_defaults_to_capabilities_manager(self):
+        self.manager.presets.create("capabilities_manager", "Capabilities manager", {"actions": [], "handlers": [], "modules": []})
+        agent_id = self.manager.spawn(parent_id="main", name="modules", preset="capabilities_manager")["agent_id"]
         specs = self.manager.require_agent(agent_id)._contract()[0]
         for action_id in ("read_file", "write_file", "edit_file", "execute_command"):
             self.assertIn(action_id, specs)
             self.assertNotIn(action_id, self.main._contract()[0])
         for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
-            self.assertNotIn(action_id, specs)
+            self.assertIn(action_id, specs)
+            self.assertNotIn(action_id, self.main._contract()[0])
 
     def test_concurrent_automation_creations_and_edit_preserve_other_rules(self):
         store = self.manager.automations

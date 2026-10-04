@@ -334,9 +334,9 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(
             json.loads((self.root / "file_index.json").read_text()), {"next_file_id": 3}
         )
-        other.save({**record("agent-002", "Q0ND"), "preset": "module_manager"})
+        other.save({**record("agent-002", "Q0ND"), "preset": "capabilities_manager"})
         third_ref = self.store._read_json(
-            self.root / "module_manager/agent-002/context.json"
+            self.root / "capabilities_manager/agent-002/context.json"
         )[0]["content"][0]
         self.assertEqual(
             third_ref, {"type": "image_url", "image_url": {"file_id": "file_000003"}}

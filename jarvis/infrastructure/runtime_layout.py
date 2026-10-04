@@ -38,9 +38,9 @@ def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
     preset = root / "presets" / name
     preset.mkdir(parents=True, exist_ok=True)
     prompt = (files("jarvis").joinpath("assets", name + "_person.txt").read_text(encoding="utf-8")
-              if name in {"main", "module_manager"} else f"Ты — агент preset {name}.\n")
+              if name in {"main", "capabilities_manager"} else f"Ты — агент preset {name}.\n")
     prompt_path = preset / "person.txt"
-    if name in {"main", "module_manager"}:
+    if name in {"main", "capabilities_manager"}:
         if not prompt_path.exists() or prompt_path.read_text(encoding="utf-8") != prompt:
             temporary = preset / "person.txt.tmp"
             temporary.write_text(prompt, encoding="utf-8")
@@ -65,7 +65,7 @@ def ensure_runtime_layout(root: Path) -> None:
     _write_if_missing(root / "memory" / "main" / "semantic.json", json.dumps({"entries": []}, indent=2) + "\n")
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
     _ensure_preset(root, "main", protected=True)
-    _ensure_preset(root, "module_manager")
+    _ensure_preset(root, "capabilities_manager")
     for preset in (root / "presets").iterdir():
         if preset.is_dir() and not preset.name.startswith("."):
             _ensure_preset(root, preset.name, protected=preset.name == "main")

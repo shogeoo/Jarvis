@@ -1,4 +1,4 @@
-"""Contracts of the shipped module_manager; no installed capabilities required."""
+"""Contracts of the shipped capabilities_manager; no installed capabilities required."""
 
 import tempfile
 import threading
@@ -14,7 +14,7 @@ from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
 from jarvis.presets import PresetStore
 
 
-class ModuleManagerContractTests(unittest.TestCase):
+class CapabilitiesManagerContractTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -38,8 +38,8 @@ class ModuleManagerContractTests(unittest.TestCase):
             call_id="test-command",
         )
 
-    def test_module_manager_has_complete_sdk_and_system_development_tools(self):
-        preset = self.presets.load("module_manager")
+    def test_capabilities_manager_has_complete_sdk_and_system_development_tools(self):
+        preset = self.presets.load("capabilities_manager")
         prompt = preset.person_prompt + read_environment()
         for marker in (
             "СТРОЖАЙШЕ ЗАПРЕЩЕНО читать исходный код Jarvis",
@@ -59,14 +59,16 @@ class ModuleManagerContractTests(unittest.TestCase):
             "write_file",
             "edit_file",
             "execute_command",
+            "list_capabilities",
+            "capability_info",
+            "toggle_capability",
             "send_message_to_agent",
         }
         self.assertTrue(expected.issubset(specs))
-        self.assertTrue({"list_capabilities", "capability_info", "toggle_capability"}.isdisjoint(specs))
-        self.assertEqual(self.presets.load("module_manager").actions, ())
+        self.assertEqual(self.presets.load("capabilities_manager").actions, ())
         main = self.actions.for_capabilities(modules=set(), actions=set(), primary=True)
         self.assertTrue(
-            {"read_file", "write_file", "edit_file", "execute_command"}.isdisjoint(main)
+            (expected - {"send_message_to_agent"}).isdisjoint(main)
         )
 
     def test_file_tools_accept_absolute_paths_and_validate_ranges(self):

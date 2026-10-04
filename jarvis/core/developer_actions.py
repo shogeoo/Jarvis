@@ -1,4 +1,4 @@
-"""Built-in development tools for the module_manager role."""
+"""Built-in development tools for the capabilities_manager role."""
 
 from dataclasses import replace
 from pathlib import Path

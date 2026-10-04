@@ -184,7 +184,7 @@
     },
     {
       "create_preset": {
-        "description": "Create a reusable agent specialization before creating its live instances. Provide a personality and purpose together with appropriate initial capability IDs; personality text contains identity, character and professional knowledge, not execution instructions or delegation rules. Prefer a matching existing preset over duplicating it. The built-in module_manager specialization is exclusively for creating capabilities: using it for any other task is forbidden. The new preset affects only future instances.",
+        "description": "Create a reusable agent specialization before creating its live instances. Provide a personality and purpose together with appropriate initial capability IDs; personality text contains identity, character and professional knowledge, not execution instructions or delegation rules. Prefer a matching existing preset over duplicating it. The built-in capabilities_manager specialization is exclusively for creating capabilities: using it for any other task is forbidden. The new preset affects only future instances.",
         "data_schema": {
           "properties": {
             "preset_id": {
@@ -448,7 +448,7 @@
     },
     {
       "spawn_agent": {
-        "description": "Create an independent agent and delegate most substantive tasks to subagents. Complex, multi-step or specialized work requires a subagent. Select an existing preset suited to the work; create a new reusable specialization only when no appropriate preset exists. The built-in module_manager is exclusively for creating capabilities: using it for any other task is forbidden. Creation alone does not assign a task; after receiving the new agent_id, send a complete task through send_message_to_agent.",
+        "description": "Create an independent agent and delegate most substantive tasks to subagents. Complex, multi-step or specialized work requires a subagent. Select an existing preset suited to the work; create a new reusable specialization only when no appropriate preset exists. The built-in capabilities_manager is exclusively for creating capabilities: using it for any other task is forbidden. Creation alone does not assign a task; after receiving the new agent_id, send a complete task through send_message_to_agent.",
         "data_schema": {
           "properties": {
             "name": {
@@ -560,7 +560,7 @@
     },
     {
       "list_agent_presets": {
-        "description": "Inspect available presets and their initial capability assignments to select an appropriate specialization before creating an instance or a new preset. Instantiated protected singletons are omitted. The built-in module_manager is exclusively for creating capabilities: using it for any other task is forbidden.",
+        "description": "Inspect available presets and their initial capability assignments to select an appropriate specialization before creating an instance or a new preset. Instantiated protected singletons are omitted. The built-in capabilities_manager is exclusively for creating capabilities: using it for any other task is forbidden.",
         "result_schema": {
           "properties": {
             "presets": {

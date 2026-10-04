@@ -370,7 +370,7 @@ class Agent:
         self.manager = manager
         self.primary = primary
         selected = manager.presets.load(preset)
-        self.person_prompt = selected.person_prompt if person_prompt is None or preset in {"main", "module_manager"} else person_prompt
+        self.person_prompt = selected.person_prompt if person_prompt is None or preset in {"main", "capabilities_manager"} else person_prompt
         self.protected = selected.protected if protected is None else protected
         self._assignment_order = {
             "modules": list(enabled_modules or ()),
@@ -596,7 +596,7 @@ class Agent:
         actions = self.manager.actions.for_capabilities(
             modules=snapshot["modules"], actions=snapshot["actions"],
             primary=self.primary,
-            developer=self.preset == "module_manager",
+            developer=self.preset == "capabilities_manager",
             protected=self.protected,
         )
         actions = {name: spec for name, spec in actions.items() if name not in self._disabled_actions and name not in paused["actions"]}
@@ -621,7 +621,7 @@ class Agent:
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt.replace("{storage_root}", str(self.manager.capabilities.root.resolve())) if self.preset == "module_manager" else self.person_prompt,
+                self.person_prompt.replace("{storage_root}", str(self.manager.capabilities.root.resolve())) if self.preset == "capabilities_manager" else self.person_prompt,
                 self.manager.environment,
                 actions,
                 events,
@@ -1302,7 +1302,7 @@ class AgentManager:
             }
         disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
         from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL, SYSTEM_PROTECTED
-        system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "module_manager" else set())
+        system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "capabilities_manager" else set())
         if selected.protected:
             system_ids |= SYSTEM_PROTECTED
         initial["actions"].difference_update(system_ids)
