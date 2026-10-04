@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from ..infrastructure.console import logger
+
 import ctypes
 import json
 import os
@@ -28,6 +30,7 @@ import requests
 from jarvis.core.lifecycle import terminate_process
 
 from .config import Config
+from .ducking import SystemAudioMute, SPEECH_APPLICATION_ID
 
 SERVER_START_TIMEOUT = 240.0
 VOICE_BOOTSTRAP_TEXT = "Инициализация завершена."
@@ -78,6 +81,7 @@ class Speaker:
         self._current: _SpeechRequest | None = None
         self._response: requests.Response | None = None
         self._player: subprocess.Popen | None = None
+        self._audio_mute: SystemAudioMute | None = None
         self._host, self._port = self._parse_url(config.tts_url)
 
     @staticmethod
@@ -86,14 +90,13 @@ class Speaker:
         return parsed.hostname or "127.0.0.1", parsed.port or 80
 
     def start(self) -> "Speaker":
-        print(
+        logger.info(
             f"TTS Fish Audio: подключение к {self.cfg.tts_url} "
             f"(голос: {self.cfg.tts_voice})...",
-            flush=True,
         )
         server_running = self._port_open()
         if server_running:
-            print("TTS Fish Audio: сервер уже запущен.", flush=True)
+            logger.info("TTS Fish Audio: сервер уже запущен.")
         self._ensure_voice()
         if not server_running:
             self._start_server()
@@ -106,7 +109,7 @@ class Speaker:
     def stop(self, timeout: float = 2.0) -> None:
         if self._stop.is_set():
             return
-        print("TTS Fish Audio: остановка.", flush=True)
+        logger.info("TTS Fish Audio: остановка.")
         self._stop.set()
         self._ready.set()
         self.interrupt()
@@ -162,11 +165,14 @@ class Speaker:
                 request.interrupted.set()
                 if not request.future.done():
                     request.future.set_exception(SpeechInterrupted("interrupted"))
+            audio_mute = getattr(self, "_audio_mute", None)
         if player is not None and player.poll() is None:
             try:
                 player.terminate()
             except ProcessLookupError:
                 pass
+        if audio_mute is not None:
+            audio_mute.close()
         if response is not None:
             # close() can wait for a concurrent socket read. Never block VAD
             # or the main shutdown path on that read.
@@ -234,9 +240,8 @@ class Speaker:
         cmd += self.cfg.tts_server_args
         self.cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
         self._log_path().parent.mkdir(parents=True, exist_ok=True)
-        print(
+        logger.info(
             f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
-            flush=True,
         )
         with open(self._log_path(), "ab") as log:
             self._server = subprocess.Popen(
@@ -260,14 +265,14 @@ class Speaker:
         self._server = None
         if proc.poll() is not None:
             return
-        print("TTS Fish Audio: остановка сервера...", flush=True)
+        logger.info("TTS Fish Audio: остановка сервера...")
         terminate_process(proc, group=True)
 
     def _wait_server(self) -> None:
         deadline = time.time() + SERVER_START_TIMEOUT
         while time.time() < deadline:
             if self._http_ready():
-                print("TTS Fish Audio: веб-сервер готов.", flush=True)
+                logger.info("TTS Fish Audio: веб-сервер готов.")
                 return
             if self._server is not None and self._server.poll() is not None:
                 raise RuntimeError(
@@ -308,7 +313,7 @@ class Speaker:
             "--text", VOICE_BOOTSTRAP_TEXT,
             "--output", str(output),
         ]
-        print(f"Создание профиля голоса «{self.cfg.tts_voice}»...", flush=True)
+        logger.info(f"Создание профиля голоса «{self.cfg.tts_voice}»...")
         self._bootstrap = subprocess.Popen(
             cmd, start_new_session=True, preexec_fn=_set_pdeathsig
         )
@@ -370,7 +375,7 @@ class Speaker:
                 raise SpeechInterrupted("interrupted") from None
             if isinstance(exc, SpeechInterrupted):
                 raise
-            print(f"Ошибка синтеза речи: {exc}", file=os.sys.stderr, flush=True)
+            logger.error(f"Ошибка синтеза речи: {exc}")
             raise
         finally:
             with self._lock:
@@ -393,21 +398,33 @@ class Speaker:
             return
         cmd = [
             "ffplay", "-autoexit", "-nodisp", "-loglevel", "error", "-infbuf",
+            "-volume", "100",
             "-f", "s16le", "-ar", str(rate), "-ch_layout", "mono", "-",
         ]
         try:
             with self._lock:
                 if self._stop.is_set() or request.interrupted.is_set():
                     raise SpeechInterrupted("interrupted")
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True)
+                environment = {
+                    **os.environ,
+                    "SDL_AUDIODRIVER": "pulseaudio",
+                    "PULSE_PROP": f"application.id={SPEECH_APPLICATION_ID} application.name=Jarvis media.role=assistant",
+                }
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, start_new_session=True, env=environment)
                 self._player = proc
         except FileNotFoundError:
-            print(
+            logger.info(
                 "ffplay не найден (пакет ffmpeg). Установи ffmpeg для озвучки.",
-                file=os.sys.stderr, flush=True,
             )
             raise RuntimeError("ffplay_not_found")
+        audio_mute = None
         try:
+            audio_mute = SystemAudioMute(proc.pid)
+            with self._lock:
+                self._audio_mute = audio_mute
+            audio_mute.start()
+            if request.interrupted.is_set():
+                raise SpeechInterrupted("interrupted")
             try:
                 proc.stdin.write(buffer)  # type: ignore[union-attr]
             except (BrokenPipeError, OSError):
@@ -420,15 +437,21 @@ class Speaker:
                 except (BrokenPipeError, OSError):
                     break
         finally:
-            if request.interrupted.is_set() and proc.poll() is None:
-                terminate_process(proc)
             try:
-                proc.stdin.close()  # type: ignore[union-attr]
-            except (BrokenPipeError, OSError):
-                pass
-            proc.wait()
-            with self._lock:
-                if self._player is proc:
-                    self._player = None
+                if request.interrupted.is_set() and proc.poll() is None:
+                    terminate_process(proc)
+                try:
+                    proc.stdin.close()  # type: ignore[union-attr]
+                except (BrokenPipeError, OSError, ValueError):
+                    pass
+                proc.wait()
+            finally:
+                if audio_mute is not None:
+                    audio_mute.close()
+                with self._lock:
+                    if self._player is proc:
+                        self._player = None
+                    if getattr(self, "_audio_mute", None) is audio_mute:
+                        self._audio_mute = None
         if request.interrupted.is_set():
             raise SpeechInterrupted("interrupted")

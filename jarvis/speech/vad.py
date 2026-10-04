@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from ..infrastructure.console import logger
+
 import os
 import time
 import urllib.request
@@ -30,7 +32,7 @@ def ensure_model(path: str) -> str:
     if os.path.exists(path) and os.path.getsize(path) > 100_000:
         return path
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    print(f"Скачивание {MODEL_URL}", flush=True)
+    logger.info(f"Скачивание {MODEL_URL}")
     urllib.request.urlretrieve(MODEL_URL, path)
     return path
 

@@ -4,7 +4,7 @@
 OpenAI одно событие всегда занимает одно сообщение с ролью ``user`` и
 содержит JSON следующего вида::
 
-    {"type": "example.notice", "data": {"text": "..."}}
+    {"event_id": "example.notice", "data": {"text": "..."}}
 
 Ответ агента имеет единственную форму::
 
@@ -12,12 +12,13 @@ OpenAI одно событие всегда занимает одно сообщ
 
 Технические идентификаторы, источник и адресат живут во внутреннем
 конверте ``Event``. Они не заставляют модель генерировать маршрутизацию и
-не меняют внешний контракт ``type`` + ``data``.
+не меняют внешний контракт ``event_id`` + ``data``.
 """
 
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -35,6 +36,55 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject
 JSON = Any
 JSONSchema = dict[str, Any]
 INPUT_MODALITIES = ("text", "image", "audio", "video", "file")
+
+_FIELD_DESCRIPTIONS = {
+    "action_id": "Identifier of the action to invoke.",
+    "call_id": "Identifier of one invocation, unique across the agent context.",
+    "event_id": "Identifier of the event.",
+    "agent_id": "Identifier of the agent instance.",
+    "from_agent_id": "Identifier of the sending agent.",
+    "from_name": "Human-readable name of the sending agent.",
+    "parent_id": "Identifier of the parent agent, or null for the root.",
+    "name": "Human-readable name of the agent.",
+    "preset": "Name of the agent preset.",
+    "preset_id": "Identifier of the preset.",
+    "automation_id": "Persistent identifier of the automation rule.",
+    "person_prompt": "Personality, role and task instructions for future preset instances.",
+    "kind": "Capability category: module, action or handler.",
+    "id": "Identifier of the capability.",
+    "text": "Text content to process; see the action or event description.",
+    "path": "Path to the file.",
+    "start_line": "First included line, numbered from 1; null selects the file beginning.",
+    "end_line": "Last included line, numbered from 1; null selects the file end.",
+    "content": "Text content of the file or replacement range.",
+    "command": "One non-interactive bash command to execute.",
+    "cwd": "Working directory; omitted or null uses the project root.",
+    "exit_code": "Exit code of the completed command.",
+    "stdout": "Captured standard output of the command.",
+    "stderr": "Captured standard error of the command.",
+    "status": "Outcome of the operation.",
+    "state": "Current runtime state.",
+    "error": "Failure details if the operation did not succeed.",
+    "info": "Details of the operation or requested capability.",
+    "code": "Machine-readable error code.",
+    "message": "Explanation of the reported error.",
+    "response": "The original model response that failed validation.",
+    "datetime": "Local timestamp in ISO 8601 with timezone offset.",
+    "actions": "Standalone action identifiers assigned to the agent.",
+    "handlers": "Standalone observer identifiers assigned to the agent.",
+    "modules": "Module identifiers assigned to the agent.",
+    "protected": "Whether the preset or agent has protected singleton semantics.",
+    "enabled": "Whether the capability is locally enabled for the agent.",
+    "delivered": "Whether the recipient accepted the message into its queue.",
+    "written": "Whether the file was written successfully.",
+    "edited": "Whether the requested range or object was edited successfully.",
+    "deleted": "Whether the agent and its descendants were deleted.",
+    "spawned": "Whether the new agent instance was created.",
+    "affected_agent_ids": "Agent instances affected by the global state change.",
+    "automations": "Saved automation rules with their persistent identifiers.",
+    "presets": "Saved presets and their initial assignments.",
+    "agents": "Current live agent instances.",
+}
 
 
 def make_id(prefix: str) -> str:
@@ -63,12 +113,108 @@ def object_schema(
     """Построить объектную схему в формате, удобном для strict outputs."""
 
     names = list(properties)
-    return {
+    schema = {
         "type": "object",
         "properties": dict(properties),
         "required": names if required is None else required,
-        "additionalProperties": additional_properties,
     }
+    if additional_properties:
+        schema["x-jarvis-open-object"] = True
+    return parameter_schema(schema)
+
+
+def parameter_schema(schema: JSONSchema) -> JSONSchema:
+    """Describe parameters without provider-specific strict-output constraints."""
+    result = deepcopy(schema)
+    result.pop("additionalProperties", None)
+    if result.get("type") == "object" or (isinstance(result.get("type"), list) and "object" in result["type"]):
+        required = result.setdefault("required", list(result.get("properties", {})))
+        for name, child in result.get("properties", {}).items():
+            child = parameter_schema(child)
+            child.setdefault("description", _FIELD_DESCRIPTIONS.get(name, name.replace("_", " ").capitalize() + "."))
+            child["default"] = None if name in required else child.get("default")
+            result["properties"][name] = child
+    if isinstance(result.get("items"), dict):
+        result["items"] = parameter_schema(result["items"])
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        if keyword in result:
+            result[keyword] = [parameter_schema(child) for child in result[keyword]]
+    return result
+
+
+def result_description(schema: JSONSchema) -> JSONSchema:
+    """A result documents possible fields, not types or mandatory values."""
+    return {"properties": {
+        name: {"description": child.get("description", _FIELD_DESCRIPTIONS.get(name, name.replace("_", " ").capitalize() + ".")) +
+               (" Possible values: " + ", ".join(map(str, child["enum"])) + "." if "enum" in child else "")}
+        for name, child in schema.get("properties", {}).items()
+    }}
+
+
+def validate_catalog_text(value: Any) -> None:
+    """Validate description values without restricting their language."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key == "description" and (not isinstance(child, str) or not child.strip()):
+                raise ValueError("CAPABILITY descriptions must be non-empty text")
+            validate_catalog_text(child)
+    elif isinstance(value, list):
+        for child in value:
+            validate_catalog_text(child)
+
+
+def canonical_event_value(value: dict[str, Any], resolve_handler=None) -> dict[str, Any]:
+    """Upgrade previously persisted event envelopes without deleting history."""
+    if "event_id" in value or "data" not in value:
+        return value
+    result = dict(value)
+    if "handler_id" in result:
+        handler_id = result.pop("handler_id")
+        result["event_id"] = resolve_handler(handler_id) if resolve_handler else handler_id
+    elif "type" in result:
+        result["event_id"] = result.pop("type")
+    return result
+
+
+def validate_result_schema(schema: JSONSchema) -> None:
+    if not isinstance(schema, dict) or set(schema) != {"properties"} or not isinstance(schema["properties"], dict):
+        raise ValueError("Result description must contain only properties")
+    for field in schema["properties"].values():
+        if not isinstance(field, dict) or set(field) != {"description"} or not isinstance(field["description"], str) or not field["description"].strip():
+            raise ValueError("Each result property must contain only a non-empty description")
+
+
+def validate_result(data: Any, schema: JSONSchema, *, where: str = "result") -> None:
+    if not isinstance(data, dict):
+        raise ValueError(f"{where} must be an object")
+    unknown = set(data) - set(schema.get("properties", {}))
+    if unknown:
+        raise ValueError(f"Unknown fields in {where}: {sorted(unknown)}")
+    try:
+        json.dumps(data, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{where} must contain JSON values") from exc
+
+
+def arguments_with_defaults(data: dict[str, Any], schema: JSONSchema) -> dict[str, Any]:
+    """Validate first, then supply omitted optional parameters for execution."""
+    validate_json(data, schema)
+    result = deepcopy(data)
+    for variant in schema.get("anyOf", []):
+        try:
+            validate_json(data, variant)
+        except ValueError:
+            continue
+        return arguments_with_defaults(data, variant)
+    if isinstance(result, list):
+        return [arguments_with_defaults(item, schema["items"]) if isinstance(item, (dict, list)) else item for item in result]
+    required = schema.get("required", [])
+    for name, child in schema.get("properties", {}).items():
+        if name not in result and name not in required:
+            result[name] = deepcopy(child.get("default"))
+        elif name in result and isinstance(result[name], (dict, list)):
+            result[name] = arguments_with_defaults(result[name], child)
+    return result
 
 
 def empty_object_schema() -> JSONSchema:
@@ -78,14 +224,14 @@ def empty_object_schema() -> JSONSchema:
 def actions_response_schema(action_schemas: Mapping[str, JSONSchema]) -> JSONSchema:
     """Собрать строгую схему ответа агента из доступных действий.
 
-    ``anyOf`` связывает значение ``type`` с соответствующей схемой ``data``.
+    ``anyOf`` связывает значение ``action_id`` со схемой ``data``.
     Это позволяет одновременно разрешить несколько разных действий и не
     превращать аргументы в бесконтрольный JSON-объект.
     """
 
     variants = []
     no_action_variant = None
-    for action_id, data_schema in sorted(action_schemas.items()):
+    for action_id, data_schema in action_schemas.items():
         variant = object_schema(
             {
                 "action_id": {"type": "string", "enum": [action_id]},
@@ -139,7 +285,9 @@ def response_format(action_schemas: Mapping[str, JSONSchema]) -> dict[str, Any]:
         "type": "json_schema",
         "json_schema": {
             "name": "agent_actions",
-            "strict": True,
+            # Strict provider mode requires every property to be present, which
+            # conflicts with genuine optional parameters. Core validates calls.
+            "strict": False,
             "schema": actions_response_schema(action_schemas),
         },
     }
@@ -148,6 +296,9 @@ def response_format(action_schemas: Mapping[str, JSONSchema]) -> dict[str, Any]:
 def validate_json(value: Any, schema: JSONSchema, *, where: str = "value") -> None:
     """Проверить данные по JSON Schema и дать понятную ошибку."""
 
+    # properties is the complete allowed parameter list. Keep this enforcement
+    # internal rather than exposing additionalProperties in the model catalog.
+    schema = _validation_schema(schema)
     if Draft202012Validator is None:  # pragma: no cover
         try:
             _fallback_validate(value, schema, where)
@@ -163,6 +314,20 @@ def validate_json(value: Any, schema: JSONSchema, *, where: str = "value") -> No
         path = "".join(f"[{part!r}]" for part in exc.absolute_path)
         suffix = f" в {where}{path}" if path else f" в {where}"
         raise ValueError(f"Данные не соответствуют схеме{suffix}: {exc.message}") from exc
+
+
+def _validation_schema(schema: JSONSchema) -> JSONSchema:
+    result = deepcopy(schema)
+    if result.get("type") == "object" or "properties" in result:
+        result.setdefault("type", "object")
+        result["additionalProperties"] = result.get("x-jarvis-open-object") is True
+        result["properties"] = {name: _validation_schema(child) for name, child in result.get("properties", {}).items()}
+    if isinstance(result.get("items"), dict):
+        result["items"] = _validation_schema(result["items"])
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        if keyword in result:
+            result[keyword] = [_validation_schema(child) for child in result[keyword]]
+    return result
 
 
 def validate_schema(schema: JSONSchema, *, where: str = "schema") -> None:
@@ -181,12 +346,8 @@ def validate_schema(schema: JSONSchema, *, where: str = "schema") -> None:
         raise ValueError(f"Некорректная {where}: {exc.message}") from exc
 
 
-def validate_strict_schema(schema: JSONSchema, *, where: str = "schema") -> None:
-    """Проверить схему на требования Structured Outputs.
-
-    Для объектов все поля обязательны, лишние поля запрещены, а вложенные
-    объекты и варианты ``anyOf`` проверяются рекурсивно.
-    """
+def validate_data_schema(schema: JSONSchema, *, where: str = "schema") -> None:
+    """Validate input/event types, properties and the required subset."""
 
     validate_schema(schema, where=where)
     if not isinstance(schema, dict):
@@ -194,24 +355,24 @@ def validate_strict_schema(schema: JSONSchema, *, where: str = "schema") -> None
     if schema.get("x-jarvis-open-object") is True:
         return
     schema_type = schema.get("type")
-    if schema_type == "object":
+    if schema_type == "object" or (isinstance(schema_type, list) and "object" in schema_type):
         properties = schema.get("properties")
         required = schema.get("required")
         if not isinstance(properties, dict):
             raise ValueError(f"В {where} отсутствует properties")
-        if schema.get("additionalProperties") is not False:
-            raise ValueError(f"В {where} additionalProperties должен быть false")
-        if not isinstance(required, list) or set(required) != set(properties):
-            raise ValueError(f"В {where} required должен содержать все properties")
+        if not isinstance(required, list) or not set(required) <= set(properties):
+            raise ValueError(f"В {where} required должен содержать только имена properties")
         for name, child in properties.items():
-            validate_strict_schema(child, where=f"{where}.{name}")
+            validate_data_schema(child, where=f"{where}.{name}")
+            if name not in required and "default" in child:
+                validate_json(child["default"], child, where=f"default for {name}")
     elif schema_type == "array":
         if "items" not in schema:
             raise ValueError(f"В {where} отсутствует items")
-        validate_strict_schema(schema["items"], where=f"{where}[]")
+        validate_data_schema(schema["items"], where=f"{where}[]")
     for keyword in ("anyOf", "oneOf", "allOf"):
         for index, child in enumerate(schema.get(keyword, [])):
-            validate_strict_schema(child, where=f"{where}.{keyword}[{index}]")
+            validate_data_schema(child, where=f"{where}.{keyword}[{index}]")
 
 
 def _fallback_validate(value: Any, schema: JSONSchema, where: str) -> None:
@@ -324,7 +485,7 @@ class InputPart:
 class Event:
     """Внутренний конверт одного события, поступающего агенту."""
 
-    type: str
+    event_id: str
     data: dict[str, Any]
     source: str = "system"
     target: str | None = None
@@ -339,9 +500,7 @@ class Event:
 
     def model_value(self) -> dict[str, Any]:
         """Представление события в одном сообщении контекста модели."""
-        if self.handler_id is not None and self.handler_id != "core:speech":
-            return {"handler_id": self.handler_id, "data": self.data}
-        return {"type": self.type, "data": self.data}
+        return {"event_id": self.event_id, "data": self.data}
 
     def model_content(self) -> str:
         return json_text(self.model_value())
@@ -366,7 +525,7 @@ class Event:
 
         return {
             "id": self.id,
-            "type": self.type,
+            "event_id": self.event_id,
             "data": self.data,
             "source": self.source,
             "target": self.target,
@@ -396,7 +555,7 @@ class CallResult:
     call_id: str
     data: dict[str, Any]
     agent_id: str | None = None
-    type: str = "call_result"
+    event_id: str = "call_result"
     parts: tuple[InputPart, ...] = ()
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
@@ -406,7 +565,7 @@ class CallResult:
         """Представление результата в одном сообщении контекста модели."""
 
         return {
-            "type": self.type,
+            "event_id": self.event_id,
             "call_id": self.call_id,
             "data": self.data,
         }
@@ -425,7 +584,7 @@ class CallResult:
 
     def debug_value(self) -> dict[str, Any]:
         return {
-            "type": self.type,
+            "event_id": self.event_id,
             "call_id": self.call_id,
             "data": self.data,
             "agent_id": self.agent_id,

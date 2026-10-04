@@ -1,13 +1,15 @@
 """Единая точка речи ядра: TTS-сервер, whisper и VAD-поток микрофона.
 
-Сервис стартует блокирующе при запуске Jarvis и грузит все модели в VRAM.
+При API-запуске сервис грузит модели блокирующе; в режиме подписки может
+стартовать в фоне. Вызов speech дожидается готовности фоновой инициализации.
 Любой сбой инициализации не останавливает Jarvis: речь помечается
 недоступной, действие ``speech`` возвращает ошибку, события не публикуются.
 """
 
 from __future__ import annotations
 
-import sys
+from ..infrastructure.console import logger
+
 import shutil
 import threading
 from pathlib import Path
@@ -31,6 +33,29 @@ class SpeechService:
         self._pipeline: Pipeline | None = None
         self._detach: list[Callable[[], None]] = []
         self._lock = threading.RLock()
+        self._ready = threading.Event()
+        self._ready.set()
+        self._background: threading.Thread | None = None
+
+    def begin_background(self, jarvis_dir: Path, *, emit: SpeechEvent, debug: Any = None, on_ready=None) -> None:
+        """Start speech without delaying the subscription agent's startup event."""
+        self._ready.clear()
+
+        def run():
+            try:
+                self.start(jarvis_dir, emit=emit, debug=debug)
+            except Exception as exc:  # noqa: BLE001
+                self._report(debug, "speech_start_failed", exc)
+            finally:
+                self._ready.set()
+                if on_ready is not None:
+                    try:
+                        on_ready()
+                    except Exception as exc:  # noqa: BLE001
+                        self._report(debug, "speech_ready_callback_failed", exc)
+
+        self._background = threading.Thread(target=run, name="jarvis-speech-init", daemon=True)
+        self._background.start()
 
     @property
     def can_speak(self) -> bool:
@@ -56,7 +81,7 @@ class SpeechService:
                     speaker = Speaker(config)
                     speaker.start()
                 elif TTS_ENABLED:
-                    print("s2 binary not found; speech action is unavailable. STT remains independent.", file=sys.stderr)
+                    logger.info("s2 binary not found; speech action is unavailable. STT remains independent.")
             except Exception as exc:  # noqa: BLE001
                 self._report(debug, "speech_tts_failed", exc)
                 speaker = None
@@ -94,11 +119,12 @@ class SpeechService:
         self._detach = detach
         self.available = speaker is not None or pipe is not None
         if self.available:
-            print("Речь: инициализация завершена.", flush=True)
+            logger.info("Речь: инициализация завершена.")
 
     def speak_result(self, text: str) -> dict[str, Any]:
         """Озвучить text. Результат — только статус; сбой является ошибкой."""
 
+        self._ready.wait()
         if not self.available or self._speaker is None:
             raise RuntimeError("speech_unavailable")
         text = (text or "").strip()
@@ -122,6 +148,10 @@ class SpeechService:
             speaker.interrupt()
 
     def shutdown(self) -> None:
+        background = self._background
+        if background is not None and background is not threading.current_thread():
+            background.join()
+        self._background = None
         with self._lock:
             speaker, self._speaker = self._speaker, None
             detach, self._detach = self._detach, []
@@ -140,13 +170,13 @@ class SpeechService:
 
         if debug is not None:
             debug.log("speech_stt_error", error=message)
-        print(f"Ошибка речи: {message}", file=sys.stderr, flush=True)
+        logger.error(f"Ошибка речи: {message}")
 
     @staticmethod
     def _report(debug: Any, event: str, exc: Exception) -> None:
         if debug is not None:
             debug.log(event, error=str(exc))
-        print(f"Речь недоступна: {exc}", file=sys.stderr, flush=True)
+        logger.error(f"Речь недоступна: {exc}")
 
 
 service = SpeechService()

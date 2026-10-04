@@ -1,5 +1,6 @@
 """Explicit model preparation; never starts speech or calls the model API."""
 
+from .console import logger
 from pathlib import Path
 import shutil
 
@@ -21,7 +22,7 @@ def download_models(root: Path) -> None:
     if STT_ENABLED:
         from ..speech.vad import ensure_model
 
-        print(f"STT model: {ensure_whisper_model(root)}")
+        logger.info(f"STT model: {ensure_whisper_model(root)}")
         ensure_model(str(root / "runtime" / "models" / "silero_vad.onnx"))
     config = build_config(root)
     if TTS_ENABLED and shutil.which(str(config.tts_server_bin)):
@@ -38,8 +39,8 @@ def download_models(root: Path) -> None:
                     temporary = destination.with_suffix(destination.suffix + ".tmp")
                     shutil.copyfile(downloaded, temporary)
                     temporary.replace(destination)
-            print(f"TTS asset: {destination}")
+            logger.info(f"TTS asset: {destination}")
     elif TTS_ENABLED:
-        print(
+        logger.info(
             "s2 is not installed: TTS weights skipped, speech action will be unavailable."
         )

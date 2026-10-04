@@ -118,7 +118,8 @@ def register_developer_actions(registry):
         ),
     }
     for name, (description, arguments, result, run) in definitions.items():
+        required = {"read_file": ["path"], "execute_command": ["command"]}.get(name)
         spec = action_definition(
-            description, object_schema(arguments), object_schema(result), run
+            description, object_schema(arguments, required=required), object_schema(result), run
         )
         registry.register(replace(spec, id=name, owner="core:developer"))

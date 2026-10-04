@@ -16,6 +16,12 @@ from jarvis.core.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_empty_subagent_knows_only_existing_system_events(self):
+        actions, events = ActionRegistry(), EventRegistry()
+        register_core_protocol(actions, events)
+        plain = events.for_capabilities(modules=set(), handlers=set())
+        self.assertEqual(set(plain), {"structure_error", "message_from_agent", "capability_error"})
+
     def test_core_actions_register_without_jsonschema_dependency(self):
         with patch("jarvis.core.protocol.Draft202012Validator", None):
             actions = ActionRegistry()
@@ -24,15 +30,15 @@ class ProtocolTests(unittest.TestCase):
             self.assertIsNotNone(actions.get("speech"))
 
     def test_event_is_one_compact_model_value(self):
-        event = Event(type="sample", data={"text": "Привет"})
+        event = Event(event_id="sample", data={"text": "Привет"})
         self.assertEqual(
             json.loads(event.model_content()),
-            {"type": "sample", "data": {"text": "Привет"}},
+            {"event_id": "sample", "data": {"text": "Привет"}},
         )
 
     def test_multimodal_event_is_one_message_and_filters_unsupported_parts(self):
         event = Event(
-            type="example.message",
+            event_id="example.message",
             data={"text": "Что на фото?"},
             parts=(InputPart("image", "image/jpeg", "aGVsbG8="),),
         )
@@ -52,7 +58,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(
             json.loads(result.model_content()),
             {
-                "type": "call_result",
+                "event_id": "call_result",
                 "call_id": "say-1",
                 "data": {"spoken": True},
             },

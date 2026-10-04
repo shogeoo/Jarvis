@@ -7,7 +7,7 @@ from dataclasses import replace
 from typing import Any, Iterable
 
 from ..capabilities.api import ActionDefinition, EventDefinition
-from .protocol import validate_json, validate_strict_schema
+from .protocol import validate_json, validate_data_schema, validate_result_schema, validate_catalog_text
 
 
 class ActionRegistry:
@@ -22,10 +22,7 @@ class ActionRegistry:
     def _validate_spec(spec: ActionDefinition) -> None:
         if not spec.id:
             raise ValueError("У действия должен быть непустой id")
-        for name, schema in (
-            ("аргументов", spec.args_schema),
-            ("результата", spec.result_schema),
-        ):
+        for name, schema in (("аргументов", spec.data_schema),):
             if not isinstance(schema, dict):
                 raise ValueError(f"Схема {name} действия {spec.id} должна быть объектом")
             is_object_schema = schema.get("type") == "object"
@@ -41,7 +38,9 @@ class ActionRegistry:
             )
             if not is_object_schema and not is_object_union:
                 raise ValueError(f"Схема {name} действия {spec.id} должна быть объектом")
-            validate_strict_schema(schema, where=f"схема {name} действия {spec.id}")
+            validate_data_schema(schema, where=f"схема {name} действия {spec.id}")
+        validate_result_schema(spec.result_schema)
+        validate_catalog_text({"description": spec.description, "data_schema": spec.data_schema, "result_schema": spec.result_schema})
         if not callable(spec.run):
             raise ValueError(f"Некорректное действие {spec.id!r}")
 
@@ -117,7 +116,7 @@ class ActionRegistry:
         base = values[0]
         for spec in values:
             if (
-                spec.args_schema != base.args_schema
+                spec.data_schema != base.data_schema
                 or spec.result_schema != base.result_schema
             ):
                 raise ValueError(f"Разные схемы для действия {action_id}")
@@ -141,7 +140,7 @@ class ActionRegistry:
             return dict(self._actions)
 
     def for_capabilities(
-        self, *, modules: set[str], actions: set[str], primary: bool = False, developer: bool = False
+        self, *, modules: set[str], actions: set[str], primary: bool = False, developer: bool = False, protected: bool = False
     ) -> dict[str, ActionDefinition]:
         owners = {
             "core",
@@ -152,6 +151,8 @@ class ActionRegistry:
             owners.add("core:speech")
             owners.add("core:primary")
             owners.add("core:reply")
+        if primary or protected:
+            owners.add("core:protected")
         if developer:
             owners.add("core:developer")
         with self._lock:
@@ -159,23 +160,24 @@ class ActionRegistry:
                 name: spec
                 for name, spec in self._actions.items()
                 if any(owner in owners for owner in spec.owner.split("|"))
+                or (name in actions and spec.owner.startswith("core"))
             }
 
     def validate(self, action_id: str, data: dict[str, Any]) -> ActionDefinition:
         spec = self.require(action_id)
-        validate_json(data, spec.args_schema, where=f"аргументы {action_id}")
+        validate_json(data, spec.data_schema, where=f"аргументы {action_id}")
         return spec
 
     @staticmethod
     def catalog(specs: dict[str, ActionDefinition]) -> list[dict[str, Any]]:
         return [
             {
-                "type": spec.id,
+                "action_id": spec.id,
                 "description": spec.description,
-                "args_schema": spec.args_schema,
+                "data_schema": spec.data_schema,
                 "result_schema": spec.result_schema,
             }
-            for spec in sorted(specs.values(), key=lambda item: item.id)
+            for spec in specs.values()
         ]
 
 
@@ -189,24 +191,25 @@ class EventRegistry:
 
     @staticmethod
     def _validate_spec(spec: EventDefinition) -> None:
-        if not spec.type:
+        if not spec.event_id:
             raise ValueError("У события должен быть непустой type")
         if spec.data_schema.get("type") != "object":
-            raise ValueError(f"Схема события {spec.type} должна быть объектом")
-        validate_strict_schema(spec.data_schema, where=f"схема события {spec.type}")
+            raise ValueError(f"Схема события {spec.event_id} должна быть объектом")
+        validate_data_schema(spec.data_schema, where=f"схма события {spec.event_id}")
+        validate_catalog_text({"description": spec.description, "data_schema": spec.data_schema})
 
     def register(self, spec: EventDefinition, *, owner: str = "builtin") -> None:
         self._validate_spec(spec)
         with self._lock:
-            existing = self._records.get(spec.type, {})
+            existing = self._records.get(spec.event_id, {})
             if any(item.data_schema != spec.data_schema for item in existing.values()):
-                raise ValueError(f"Разные схемы для события {spec.type}")
-            self._records.setdefault(spec.type, {})[owner] = spec
-            self._rebuild(spec.type)
+                raise ValueError(f"Разные схемы для события {spec.event_id}")
+            self._records.setdefault(spec.event_id, {})[owner] = spec
+            self._rebuild(spec.event_id)
 
     def replace_owner(self, specs: Iterable[EventDefinition], *, owner: str) -> None:
         specs = list(specs)
-        names = [spec.type for spec in specs]
+        names = [spec.event_id for spec in specs]
         if len(names) != len(set(names)):
             raise ValueError(f"Владелец {owner} объявил повторяющееся событие")
         for spec in specs:
@@ -219,20 +222,20 @@ class EventRegistry:
             old = []
             for records in self._records.values():
                 if owner in records:
-                    old.append(records[owner].type)
+                    old.append(records[owner].event_id)
                     del records[owner]
-            for event_type in old:
-                self._rebuild(event_type)
+            for event_id in old:
+                self._rebuild(event_id)
             try:
                 for spec in specs:
-                    existing = self._records.get(spec.type, {})
+                    existing = self._records.get(spec.event_id, {})
                     if any(
                         item.data_schema != spec.data_schema
                         for item in existing.values()
                     ):
-                        raise ValueError(f"Разные схемы для события {spec.type}")
-                    self._records.setdefault(spec.type, {})[owner] = spec
-                    self._rebuild(spec.type)
+                        raise ValueError(f"Разные схемы для события {spec.event_id}")
+                    self._records.setdefault(spec.event_id, {})[owner] = spec
+                    self._rebuild(spec.event_id)
             except Exception:
                 self._records = previous_records
                 self._events = previous_events
@@ -241,30 +244,30 @@ class EventRegistry:
     def unregister_owner(self, owner: str) -> None:
         with self._lock:
             affected = []
-            for event_type, records in self._records.items():
+            for event_id, records in self._records.items():
                 if owner in records:
                     del records[owner]
-                    affected.append(event_type)
-            for event_type in affected:
-                self._rebuild(event_type)
+                    affected.append(event_id)
+            for event_id in affected:
+                self._rebuild(event_id)
 
-    def _rebuild(self, event_type: str) -> None:
-        records = self._records.get(event_type, {})
+    def _rebuild(self, event_id: str) -> None:
+        records = self._records.get(event_id, {})
         if not records:
-            self._records.pop(event_type, None)
-            self._events.pop(event_type, None)
+            self._records.pop(event_id, None)
+            self._events.pop(event_id, None)
             return
-        self._events[event_type] = next(iter(records.values()))
+        self._events[event_id] = next(iter(records.values()))
 
-    def get(self, event_type: str) -> EventDefinition | None:
+    def get(self, event_id: str) -> EventDefinition | None:
         with self._lock:
-            return self._events.get(event_type)
+            return self._events.get(event_id)
 
-    def validate(self, event_type: str, data: dict[str, Any]) -> None:
-        spec = self.get(event_type)
+    def validate(self, event_id: str, data: dict[str, Any]) -> None:
+        spec = self.get(event_id)
         if spec is None:
-            raise ValueError(f"Событие не зарегистрировано: {event_type}")
-        validate_json(data, spec.data_schema, where=f"данные события {event_type}")
+            raise ValueError(f"Событие не зарегистрировано: {event_id}")
+        validate_json(data, spec.data_schema, where=f"данные события {event_id}")
 
     def all(self) -> dict[str, EventDefinition]:
         with self._lock:
@@ -280,9 +283,10 @@ class EventRegistry:
         }
         if primary:
             owners.add("core:speech")
+            owners.add("core:primary")
         with self._lock:
             return {
-                event_type: definition
-                for event_type, definition in self._events.items()
-                if any(owner in owners for owner in self._records[event_type])
+                event_id: definition
+                for event_id, definition in self._events.items()
+                if any(owner in owners for owner in self._records[event_id])
             }
