@@ -19,6 +19,7 @@ from ..infrastructure.context import MemoryStore
 from ..infrastructure.automations import AutomationStore
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
+from ..infrastructure.semantic_memory import SemanticMemory
 from ..capabilities.api import ActionDefinition, EventDefinition
 from ..presets import PresetStore
 
@@ -26,6 +27,7 @@ from ..presets import PresetStore
 PRIMARY_AGENT_NAME = "Jarvis"
 from .lifecycle import ProcessManager
 from .prompts import agent_system_prompt
+from .descriptions import apply_descriptions
 from .protocol import (
     ActionRequest,
     CallResult,
@@ -46,7 +48,6 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
     """Зарегистрировать зарезервированные элементы протокола."""
     from .system_actions import register_system_actions
     register_system_actions(actions)
-    events.register(EventDefinition("user_message", "A direct text request from the user.", object_schema({"text": {"type": "string"}})), owner="core")
 
     actions.register(
         ActionDefinition(
@@ -96,7 +97,7 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         EventDefinition(
             event_id="system_started",
             description=(
-                'Jarvis has completed startup. datetime is the local ISO 8601 time with timezone. The agent may take initiative but is not required to.'
+                'The system has started. This event gives you an opportunity to take initiative: consider your personality, available capabilities and current context, then independently choose a useful action or begin an interaction. Initiative is welcome but no specific action is mandatory. datetime is the local startup time with timezone.'
             ),
             data_schema=object_schema({
                 "datetime": {
@@ -359,10 +360,8 @@ class Agent:
         disabled_actions: set[str] | None = None,
         disabled_handlers: set[str] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
-        automated_call_ids: list[str] | None = None,
         person_prompt: str | None = None,
         protected: bool | None = None,
-        catalog_order: dict[str, list[str]] | None = None,
     ):
         self.agent_id = agent_id
         self.name = name
@@ -371,11 +370,8 @@ class Agent:
         self.manager = manager
         self.primary = primary
         selected = manager.presets.load(preset)
-        self.person_prompt = selected.person_prompt if person_prompt is None or preset == "module_manager" else person_prompt
+        self.person_prompt = selected.person_prompt if person_prompt is None or preset in {"main", "module_manager"} else person_prompt
         self.protected = selected.protected if protected is None else protected
-        if not isinstance(catalog_order or {}, dict) or not all(isinstance(key, str) and isinstance(value, list) and all(isinstance(name, str) for name in value) for key, value in (catalog_order or {}).items()):
-            raise ValueError("Invalid persisted catalog order")
-        self._catalog_order = {key: list(value) for key, value in (catalog_order or {}).items()}
         self._assignment_order = {
             "modules": list(enabled_modules or ()),
             "actions": list(enabled_actions or ()),
@@ -390,7 +386,7 @@ class Agent:
         self._capabilities_lock = threading.RLock()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": ""},
-            *[dict(message) for message in (restored_messages or ())],
+            *[dict(message) for message in (restored_messages or ()) if message.get("role") != "system"],
         ]
         for message in self.history[1:]:
             if message.get("role") != "user":
@@ -418,13 +414,11 @@ class Agent:
         self._generation_lock = threading.RLock()
         self._active_stream = None
         self._used_call_ids = self._scan_call_ids(self.history)
-        if automated_call_ids is not None and (
-            not isinstance(automated_call_ids, list) or
-            not all(isinstance(call_id, str) for call_id in automated_call_ids)
-        ):
-            raise ValueError("Invalid persisted automated_call_ids")
-        self._automated_call_ids = set(automated_call_ids if automated_call_ids is not None else
-                                      (call_id for call_id in self._used_call_ids if call_id.startswith("auto_act-")))
+
+    def _is_automated_result(self, item: Event | CallResult) -> bool:
+        return (isinstance(item, CallResult)
+                and bool(re.fullmatch(r"auto-[0-9]{5,}", item.call_id))
+                and item.call_id in self._used_call_ids)
 
     @staticmethod
     def _scan_call_ids(messages: list[dict[str, Any]]) -> set[str]:
@@ -490,12 +484,6 @@ class Agent:
         with self._capabilities_lock:
             return {"modules": set(self._disabled_modules), "actions": set(self._disabled_actions), "handlers": set(self._disabled_handlers)}
 
-    def forget_catalog_entry(self, kind: str, capability_id: str) -> None:
-        key = {"action": "actions", "handler": "events", "module": "modules"}[kind]
-        identifier = self.manager.capabilities.event_id_for_handler(capability_id) if kind == "handler" else capability_id
-        with self._capabilities_lock:
-            self._catalog_order[key] = [name for name in self._catalog_order.get(key, []) if name != identifier]
-
     def is_enabled_action(self, action_id: str) -> bool:
         if action_id in {"no_action", "speech"}:
             return True
@@ -515,7 +503,6 @@ class Agent:
 
     def disable_module(self, module_id: str) -> None:
         with self._capabilities_lock:
-            self._catalog_order["modules"] = [name for name in self._catalog_order.get("modules", []) if name != module_id]
             self._enabled_modules.discard(module_id)
             self._disabled_modules.add(module_id)
         self._persist_context()
@@ -530,7 +517,6 @@ class Agent:
 
     def disable_action(self, action_id: str) -> None:
         with self._capabilities_lock:
-            self._catalog_order["actions"] = [name for name in self._catalog_order.get("actions", []) if name != action_id]
             self._enabled_actions.discard(action_id)
             self._disabled_actions.add(action_id)
         self._persist_context()
@@ -544,9 +530,7 @@ class Agent:
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
-        event_id = self.manager.capabilities.event_id_for_handler(handler_id)
         with self._capabilities_lock:
-            self._catalog_order["events"] = [name for name in self._catalog_order.get("events", []) if name != event_id]
             self._enabled_handlers.discard(handler_id)
             self._disabled_handlers.add(handler_id)
         self._persist_context()
@@ -576,7 +560,6 @@ class Agent:
             snapshot = self.capabilities_snapshot()
             disabled = self.disabled_snapshot()
             assignments = {key: [name for name in self._assignment_order[key] if name in snapshot[key]] for key in ("modules", "actions", "handlers")}
-            catalog_order = {key: list(value) for key, value in self._catalog_order.copy().items()}
         return {
             "agent_id": self.agent_id,
             "name": self.name,
@@ -585,12 +568,10 @@ class Agent:
             "protected": self.protected,
             "parent_id": self.parent_id,
             **assignments,
-            "catalog_order": catalog_order,
             "disabled_modules": sorted(disabled["modules"]),
             "disabled_actions": sorted(disabled["actions"]),
             "disabled_handlers": sorted(disabled["handlers"]),
             "messages": list(self.history[1:]),
-            "automated_call_ids": sorted(self._automated_call_ids),
         }
 
     def _persist_context(self) -> None:
@@ -616,6 +597,7 @@ class Agent:
             modules=snapshot["modules"], actions=snapshot["actions"],
             primary=self.primary,
             developer=self.preset == "module_manager",
+            protected=self.protected,
         )
         actions = {name: spec for name, spec in actions.items() if name not in self._disabled_actions and name not in paused["actions"]}
         assigned_actions = [name for name in self._assignment_order["actions"] if name in actions]
@@ -635,19 +617,24 @@ class Agent:
                     if name == "edit_automation":
                         schema = object_schema({"automation_id": {"type": "string"}, "automation": schema})
                     actions[name] = replace(actions[name], data_schema=schema)
+        actions, events = apply_descriptions(actions, events)
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt + ("\n\nCapability storage root: " + str(self.manager.capabilities.root.resolve()) if self.preset == "module_manager" else ""),
-                self.manager.master_prompt,
+                self.person_prompt.replace("{storage_root}", str(self.manager.capabilities.root.resolve())) if self.preset == "module_manager" else self.person_prompt,
+                self.manager.environment,
                 actions,
                 events,
                 self.manager.capabilities.catalog(
                     {key: [name for name in self._assignment_order[key] if name in snapshot[key] and not (key == "actions" and self.manager.actions.get(name) and self.manager.actions.get(name).owner.startswith("core"))] for key in snapshot},
                     describe_unloaded=True,
                 ),
-                model_capabilities=self.manager.model_capabilities,
-                catalog_order=self._catalog_order,
+                agent_id=self.agent_id,
+                agent_name=self.name,
+                model_capabilities=self.manager.model_capabilities or ModelCapabilities(
+                    self.manager.model, ("text", "image", "audio", "video", "file")
+                ),
+                semantic_memory=self.manager.semantic_memory.snapshot() if self.primary else None,
             ),
         }
         return actions, events
@@ -813,14 +800,14 @@ class Agent:
 
                 automation = self.manager.matching_automation(model_value)
                 if not automation:
-                    if not isinstance(item, CallResult) or item.call_id not in self._automated_call_ids:
+                    if not self._is_automated_result(item):
                         requires_model = True
                     continue
                 automated_actions = self.manager.automation_requests(
                     automation, specs=specs, agent=self
                 )
                 if automated_actions is None:
-                    if not isinstance(item, CallResult) or item.call_id not in self._automated_call_ids:
+                    if not self._is_automated_result(item):
                         requires_model = True
                     continue
                 assistant_content = json.dumps(
@@ -830,7 +817,6 @@ class Agent:
                 )
                 self.history.append({"role": "assistant", "content": assistant_content})
                 self._used_call_ids.update(self._scan_call_ids([self.history[-1]]))
-                self._automated_call_ids.update(action.call_id for action in automated_actions)
                 self.manager.debug.model(self.agent_id, assistant_content)
                 self._persist_context()
                 self._set_state("acting", action_count=len(automated_actions), automated=True)
@@ -909,6 +895,8 @@ class Agent:
             try:
                 if repeated:
                     raise ValueError(f"call_id уже использован в context: {sorted(repeated)!r}")
+                if any(re.fullmatch(r"auto-[0-9]{5,}", identifier) for identifier in appeared):
+                    raise ValueError("auto-xxxxx call_id зарезервирован для автоматизаций")
                 value = json.loads(content)
                 validate_json(
                     value,
@@ -1014,7 +1002,7 @@ class AgentManager:
         bus: EventBus,
         capabilities: Any,
         presets: PresetStore,
-        master_prompt: str,
+        environment: str,
         config: Any = None,
         services: dict[str, Any] | None = None,
         debug: Debugger | None = None,
@@ -1028,12 +1016,15 @@ class AgentManager:
         self.bus = bus
         self.capabilities = capabilities
         self.presets = presets
-        self.master_prompt = master_prompt
+        self.environment = environment
         self.config = config
         self.services = services if services is not None else {}
         self.model_capabilities = model_capabilities
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
+        self.semantic_memory = SemanticMemory(
+            (Path(config.jarvis_dir) if config is not None else presets.root.parent) / "memory" / "main" / "semantic.json"
+        )
         self.results = CallResultTracker(debug=self.debug)
         automation_path = (
             Path(config.jarvis_dir) / "automations.json"
@@ -1089,10 +1080,9 @@ class AgentManager:
                         error=str(exc),
                     )
                     return None
-                call_number = 1
-                while f"auto_act-{call_number}" in reserved:
-                    call_number += 1
-                call_id = f"auto_act-{call_number}"
+                call_number = max((int(value[5:]) for value in reserved
+                                   if re.fullmatch(r"auto-[0-9]{5,}", value)), default=0) + 1
+                call_id = f"auto-{call_number:05d}"
                 reserved.add(call_id)
                 requests.append(
                     ActionRequest(
@@ -1247,18 +1237,16 @@ class AgentManager:
             parent_id=record["parent_id"],
             primary=primary,
             agent_id=record["agent_id"],
-            capabilities_override=snapshot,
-            disabled_override={
+            capabilities_override=None if record.get("restore_from_preset") else snapshot,
+            disabled_override=None if record.get("restore_from_preset") else {
                 "modules": set(record.get("disabled_modules") or ()),
                 "actions": set(record.get("disabled_actions") or ()),
                 "handlers": set(record.get("disabled_handlers") or ()),
             },
             restored_messages=record["messages"],
-            automated_call_ids=record.get("automated_call_ids"),
-            person_prompt=record.get("person_prompt"),
-            protected=record.get("protected"),
-            catalog_order=record.get("catalog_order"),
-            persist_initial=False,
+            person_prompt=None if record.get("restore_from_preset") else record.get("person_prompt"),
+            protected=None if record.get("restore_from_preset") else record.get("protected"),
+            persist_initial=bool(record.get("restore_from_preset") or record.get("restore_missing_context")),
         )
 
     def spawn(self, *, parent_id: str, name: str, preset: str) -> dict[str, Any]:
@@ -1280,14 +1268,12 @@ class AgentManager:
         parent_id: str | None,
         primary: bool = False,
         agent_id: str | None = None,
-        capabilities_override: dict[str, set[str]] | None = None,
+        capabilities_override: dict[str, list[str] | set[str]] | None = None,
         disabled_override: dict[str, set[str]] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
-        automated_call_ids: list[str] | None = None,
         persist_initial: bool = True,
         person_prompt: str | None = None,
         protected: bool | None = None,
-        catalog_order: dict[str, list[str]] | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
@@ -1315,8 +1301,10 @@ class AgentManager:
                 "handlers": set(selected.disabled_handlers),
             }
         disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
-        from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL
+        from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL, SYSTEM_PROTECTED
         system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "module_manager" else set())
+        if selected.protected:
+            system_ids |= SYSTEM_PROTECTED
         initial["actions"].difference_update(system_ids)
         self.capabilities.load_snapshot(
             self.capabilities.runnable_snapshot(initial), start_handlers=False
@@ -1344,10 +1332,8 @@ class AgentManager:
                 disabled_actions=(disabled_override or {}).get("actions"),
                 disabled_handlers=(disabled_override or {}).get("handlers"),
                 restored_messages=restored_messages,
-                automated_call_ids=automated_call_ids,
                 person_prompt=person_prompt,
                 protected=protected,
-                catalog_order=catalog_order,
             )
             self.agents[resolved_id] = agent
             self.bus.bind(agent)
@@ -1446,7 +1432,6 @@ class AgentManager:
             with agent._generation_lock:
                 agent.history.clear()
                 agent._used_call_ids.clear()
-                agent._automated_call_ids.clear()
                 agent.person_prompt = ""
             with agent._capabilities_lock:
                 agent._enabled_modules.clear()

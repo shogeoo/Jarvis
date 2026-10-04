@@ -152,18 +152,15 @@ def result_description(schema: JSONSchema) -> JSONSchema:
 
 
 def validate_catalog_text(value: Any) -> None:
-    """Reject non-English descriptions rather than silently rewriting metadata."""
-    import re
+    """Validate description values without restricting their language."""
     if isinstance(value, dict):
         for key, child in value.items():
-            if key == "description" and (not isinstance(child, str) or not child.strip() or re.search(r"[А-Яа-яЁё]", child)):
-                raise ValueError("CAPABILITY descriptions must be non-empty English text")
+            if key == "description" and (not isinstance(child, str) or not child.strip()):
+                raise ValueError("CAPABILITY descriptions must be non-empty text")
             validate_catalog_text(child)
     elif isinstance(value, list):
         for child in value:
             validate_catalog_text(child)
-    elif isinstance(value, str) and re.search(r"[А-Яа-яЁё]", value):
-        raise ValueError("CAPABILITY text must be English")
 
 
 def canonical_event_value(value: dict[str, Any], resolve_handler=None) -> dict[str, Any]:

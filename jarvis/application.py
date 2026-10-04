@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import shutil
 
 from openai import OpenAI
 
 from .core.protocol import Event
-from .core.prompts import read_master_prompt
+from .core.prompts import read_environment
 from .core.registry import ActionRegistry, EventRegistry
 from .core.runtime import AgentManager, EventBus, register_core_protocol
 from .infrastructure.config import Config
 from .infrastructure.context import MemoryStore
 from .infrastructure.debug import Debugger
 from .infrastructure.console import configure_logging
-from .infrastructure.model_capabilities import discover_model_capabilities
+from .infrastructure.model_capabilities import ModelCapabilities, SUPPORTED_INPUT_MODALITIES, discover_model_capabilities
 from .infrastructure.runtime_layout import ensure_runtime_layout
 from .capabilities.manager import CapabilityManager
 from .presets import PresetStore
@@ -68,11 +69,7 @@ class JarvisApplication:
             )
             from .infrastructure.subscription_auth import SubscriptionAuth
 
-            api_capabilities = discover_model_capabilities(
-                config.model,
-                config.base_url,
-                config.api_key,
-            )
+            api_capabilities = ModelCapabilities(config.model or "unknown", SUPPORTED_INPUT_MODALITIES)
             try:
                 self.client = SubscriptionClient(
                     api_client=api_client,
@@ -80,9 +77,10 @@ class JarvisApplication:
                     subscription_model=config.subscription_model,
                     api_capabilities=api_capabilities,
                     auth=SubscriptionAuth(config.jarvis_dir),
-                    on_fallback=lambda value: setattr(
-                        self.agents, "model_capabilities", value
+                    api_capabilities_loader=lambda: discover_model_capabilities(
+                        config.model, config.base_url, config.api_key
                     ),
+                    on_fallback=lambda value: setattr(self.agents, "model_capabilities", value),
                 )
                 self.client.ensure_chatgpt_login(self.debug.initialization_notice)
             except Exception:
@@ -91,15 +89,13 @@ class JarvisApplication:
                 else:
                     api_client.close()
                 raise
-            capabilities = SUBSCRIPTION_MODALITIES
+            capabilities = type(SUBSCRIPTION_MODALITIES)(
+                config.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
+            )
         else:
             self.client = api_client
-            capabilities = discover_model_capabilities(
-                config.model,
-                config.base_url,
-                config.api_key,
-            )
-        master_prompt = read_master_prompt()
+            capabilities = ModelCapabilities(config.model or "unknown", SUPPORTED_INPUT_MODALITIES)
+        environment = read_environment()
         self.agents = AgentManager(
             model=config.model,
             client=self.client,
@@ -108,7 +104,7 @@ class JarvisApplication:
             bus=self.bus,
             capabilities=self.capabilities,
             presets=self.presets,
-            master_prompt=master_prompt,
+            environment=environment,
             config=config,
             services=self.services,
             debug=self.debug,
@@ -117,15 +113,33 @@ class JarvisApplication:
         )
 
     def start(self) -> "JarvisApplication":
-        if shutil.which(str(build_config(self.config.jarvis_dir).tts_server_bin)):
+        has_s2 = bool(shutil.which(str(build_config(self.config.jarvis_dir).tts_server_bin)))
+        if has_s2:
             self.actions.unregister_owner("core:reply")
-        speech_service.start(
-            self.config.jarvis_dir,
-            emit=self._emit_speech,
-            debug=self.debug,
-        )
-        if not speech_service.can_speak:
+        else:
             self.actions.unregister_owner("core:speech")
+        if self.config.subscription_enabled:
+            speech_service.begin_background(
+                self.config.jarvis_dir,
+                emit=self._emit_speech,
+                debug=self.debug,
+                on_ready=lambda: self.actions.unregister_owner("core:speech")
+                if not speech_service.can_speak else None,
+            )
+        else:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-model-info") as pool:
+                model_info = pool.submit(
+                    discover_model_capabilities,
+                    self.config.model, self.config.base_url, self.config.api_key,
+                )
+                speech_service.start(
+                    self.config.jarvis_dir,
+                    emit=self._emit_speech,
+                    debug=self.debug,
+                )
+                self.agents.model_capabilities = model_info.result()
+            if not speech_service.can_speak:
+                self.actions.unregister_owner("core:speech")
         self.main_agent = self.agents.restore(name="main", preset="main")
         if self.main_agent is not None:
             self.debug.initialized()

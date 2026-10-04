@@ -29,13 +29,33 @@ class SystemStateTests(unittest.TestCase):
         self.bus = EventBus(self.events, debug=Debugger(enabled=False))
         self.capabilities = CapabilityManager(self.bus, self.actions, self.events, root=self.root)
         self.memory = MemoryStore(self.root / "memory")
-        self.manager = AgentManager(model="test", client=_Client([]), actions=self.actions, events=self.events, bus=self.bus, capabilities=self.capabilities, presets=PresetStore(self.root / "presets"), master_prompt="environment", memory=self.memory)
+        self.manager = AgentManager(model="test", client=_Client([]), actions=self.actions, events=self.events, bus=self.bus, capabilities=self.capabilities, presets=PresetStore(self.root / "presets"), environment="environment", memory=self.memory)
         self.addCleanup(self.manager.shutdown)
         self.main = self.manager.spawn_root(name="main", preset="main")
 
     def invoke(self, name, data):
         context = SimpleNamespace(agent_id="main", action_id=name, agent_manager=self.capabilities._agent_api, capabilities=self.capabilities, metadata={"preset": "main"})
         return self.actions.require(name).run(data, context)
+
+    def test_instantiated_main_is_not_an_available_preset(self):
+        listed = self.invoke("list_agent_presets", {})["presets"]
+        names = {item["name"] for item in listed}
+        self.assertNotIn("main", names)
+        self.assertIn("worker", names)
+        self.assertTrue(self.manager.require_agent("main").protected)
+        self.assertIn("enable_capability", self.main._contract()[0])
+
+    def test_restored_main_uses_current_builtin_personality_without_losing_context(self):
+        record = self.main.memory_record()
+        record["person_prompt"] = "Stale saved personality."
+        record["messages"] = [{"role": "user", "content": "Keep this history."}]
+        self.main.stop()
+        self.manager.bus.unbind("main")
+        self.manager.agents.pop("main")
+        restored = self.manager._spawn_record(record, primary=True)
+        self.assertEqual(restored.person_prompt, self.manager.presets.load("main").person_prompt)
+        self.assertNotIn("Stale saved personality.", restored.history[0]["content"])
+        self.assertEqual(restored.history[1], record["messages"][0])
 
     def test_preset_edit_preserves_existing_instance_and_restore_personality(self):
         child_id = self.manager.spawn(parent_id="main", name="old", preset="worker")["agent_id"]
@@ -78,9 +98,11 @@ class SystemStateTests(unittest.TestCase):
         self.manager.presets.create("module_manager", "Module manager", {"actions": [], "handlers": [], "modules": []})
         agent_id = self.manager.spawn(parent_id="main", name="modules", preset="module_manager")["agent_id"]
         specs = self.manager.require_agent(agent_id)._contract()[0]
-        for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
+        for action_id in ("read_file", "write_file", "edit_file", "execute_command"):
             self.assertIn(action_id, specs)
             self.assertNotIn(action_id, self.main._contract()[0])
+        for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
+            self.assertNotIn(action_id, specs)
 
     def test_concurrent_automation_creations_and_edit_preserve_other_rules(self):
         store = self.manager.automations

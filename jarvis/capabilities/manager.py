@@ -1250,8 +1250,6 @@ class CapabilityManager:
             with self._lock:
                 self._global_paused[key].add(capability_id)
                 self._save_global_state()
-            for agent in affected:
-                agent.forget_catalog_entry(kind, capability_id)
             if kind == "module":
                 action_ids = self.module_action_ids(capability_id)
             elif kind == "action":
@@ -1547,6 +1545,7 @@ class _AgentApi:
     def enable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
         self._reject_module_part(kind, capability_id)
         manager = self._manager
+        agent = manager.require_agent(agent_id)
         if kind == "module":
             manager.enable_module(agent_id, capability_id)
         elif kind == "action":
@@ -1556,9 +1555,9 @@ class _AgentApi:
         else:
             raise ValueError(f"Неизвестный вид capability: {kind!r}")
         persistent = False
-        if agent_id == "main":
-            manager.presets.add_capability("main", kind, capability_id)
-            manager.presets.set_disabled("main", kind, capability_id, False)
+        if agent_id == "main" or agent.protected:
+            manager.presets.add_capability(agent.preset, kind, capability_id)
+            manager.presets.set_disabled(agent.preset, kind, capability_id, False)
             persistent = True
         return {
             "enabled": True,
@@ -1570,6 +1569,7 @@ class _AgentApi:
     def disable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
         self._reject_module_part(kind, capability_id)
         manager = self._manager
+        agent = manager.require_agent(agent_id)
         if kind == "module":
             manager.disable_module(agent_id, capability_id)
         elif kind == "action":
@@ -1578,11 +1578,14 @@ class _AgentApi:
             manager.disable_handler(agent_id, capability_id)
         else:
             raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        if agent_id == "main":
-            manager.presets.set_disabled("main", kind, capability_id, True)
+        if agent_id == "main" or agent.protected:
+            manager.presets.set_disabled(agent.preset, kind, capability_id, True)
         return {"enabled": False, "kind": kind, "id": capability_id}
 
     def presets_list(self) -> list[dict[str, Any]]:
+        active_singletons = {
+            agent.preset for agent in self._manager.agents_snapshot() if agent.protected
+        }
         return [
             {
                 "name": preset.name,
@@ -1592,10 +1595,5 @@ class _AgentApi:
                 "protected": preset.protected,
             }
             for preset in self._manager.presets.list()
+            if not preset.protected or preset.name not in active_singletons
         ]
-
-    def preset_add_capability(
-        self, kind: str, capability_id: str
-    ) -> dict[str, Any]:
-        self._manager.presets.add_capability("main", kind, capability_id)
-        return {"kind": kind, "id": capability_id, "preset": "main"}

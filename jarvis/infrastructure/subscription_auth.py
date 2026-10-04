@@ -91,7 +91,7 @@ class SubscriptionAuth:
         try:
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(state, stream)
+                json.dump(state, stream, ensure_ascii=False, indent=2)
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())

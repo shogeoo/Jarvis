@@ -1,8 +1,9 @@
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest
@@ -10,6 +11,7 @@ from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import CallResultTracker, EventBus, register_core_protocol
 from jarvis.infrastructure.debug import Debugger
 from jarvis.speech import service as speech_service
+from jarvis.speech.service import SpeechService
 from jarvis.speech.config import TTS_REFERENCE, TTS_REFERENCE_TEXT
 
 
@@ -72,6 +74,29 @@ class SpeechProtocolTests(unittest.TestCase):
     def test_voice_reference_assets_live_in_core_package(self):
         self.assertTrue(TTS_REFERENCE.is_file())
         self.assertTrue(TTS_REFERENCE_TEXT.is_file())
+
+    def test_speech_action_waits_for_background_initialization(self):
+        service = SpeechService()
+        release = threading.Event()
+        finished = threading.Event()
+        result = []
+
+        def initialize(*args, **kwargs):
+            release.wait(2)
+            service._speaker = Mock()
+            service._speaker.submit.return_value.result.return_value = {"status": "successful"}
+            service.available = True
+
+        with patch.object(service, "start", side_effect=initialize):
+            service.begin_background(Path("/tmp"), emit=Mock())
+            worker = threading.Thread(target=lambda: (result.append(service.speak_result("hello")), finished.set()))
+            worker.start()
+            self.assertFalse(finished.wait(0.05))
+            release.set()
+            self.assertTrue(finished.wait(2))
+            worker.join()
+        self.assertEqual(result, [{"status": "successful"}])
+        service.shutdown()
 
     def test_speech_event_carries_text_only(self):
         event = self.events.get("speech_detected")

@@ -25,7 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Скачать модели речи и выйти; s2 устанавливается отдельно",
     )
-    parser.add_argument("--message", help="Передать main стартовое текстовое поручение")
     return parser
 
 
@@ -51,7 +50,6 @@ def main(argv=None) -> int:
 
 def _run(config, args, stream) -> int:
     from .application import JarvisApplication
-    from .core.protocol import Event
 
     stop = threading.Event()
     received_signal = None
@@ -71,15 +69,6 @@ def _run(config, args, stream) -> int:
         if app.main_agent is None:
             logger.error("Main restore failed; persisted data preserved.")
             return 1
-        if args.message and app.main_agent is not None:
-            app.bus.publish(
-                Event(
-                    "user_message",
-                    {"text": args.message},
-                    target=app.main_agent.agent_id,
-                    source="cli",
-                )
-            )
         while not stop.wait(0.2):
             pass
         return 128 + (received_signal or signal.SIGINT)

@@ -2,6 +2,7 @@ import json
 import io
 import os
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -38,7 +39,23 @@ class ApplicationTests(unittest.TestCase):
             return _Response(content)
 
         client.chat.completions.create.side_effect = model_response
-        discover.return_value = ModelCapabilities("test", ("text",))
+        startup_order = []
+        discovery_started = threading.Event()
+        release_discovery = threading.Event()
+
+        def model_discovery(*args, **kwargs):
+            startup_order.append("discover")
+            discovery_started.set()
+            self.assertTrue(release_discovery.wait(2))
+            return ModelCapabilities("test", ("text",))
+
+        def load_speech(*args, **kwargs):
+            self.assertTrue(discovery_started.wait(2))
+            startup_order.append("speech")
+            release_discovery.set()
+
+        speech.start.side_effect = load_speech
+        discover.side_effect = model_discovery
         with tempfile.TemporaryDirectory() as project_dir:
             project = Path(project_dir)
             root = fixtures.write_jarvis_root(project / ".jarvis")
@@ -52,7 +69,10 @@ class ApplicationTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 memory = MemoryStore(Path(temporary))
                 output = io.StringIO()
-                app = JarvisApplication(config, memory=memory, stream=output).start()
+                app = JarvisApplication(config, memory=memory, stream=output)
+                self.assertEqual(startup_order, [])
+                app.start()
+                self.assertEqual(startup_order, ["discover", "speech"])
                 try:
                     self.assertEqual(
                         json.loads((root / "automations.json").read_text(encoding="utf-8")),
@@ -61,13 +81,15 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
-                    ordered_blocks = [app.main_agent.person_prompt.strip(), app.agents.master_prompt.strip(), "Текущая модель поддерживает следующие модальности:", '{\n  "actions":']
+                    ordered_blocks = ["ENVIRONMENT:\n", "PERSON:\n", "MEMORY:\n", "MODEL INFO:\n", "AGENT_INFO:\n", "CAPABILITIES:\n"]
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
-                    for header in ("personprompt:", "masterprompt:", "CAPABILITY:"):
-                        self.assertNotIn(header, system_prompt)
-                    self.assertIn("среде Jarvis", system_prompt)
-                    self.assertIn("Текущая модель поддерживает следующие модальности: text", system_prompt)
+                    info = system_prompt.split("AGENT_INFO:\n", 1)[1].split("\n\nCAPABILITIES:", 1)[0]
+                    self.assertEqual(info, "Тебя зовут Jarvis. Твой идентификатор main.")
+                    self.assertIn("Текущая модель: test", system_prompt)
+                    self.assertIn('"entries": []', system_prompt)
+                    self.assertIn("Jarvis — среда существования", system_prompt)
+                    self.assertIn("Модель поддерживает эти модальности: text", system_prompt)
                     self.assertIn('"action_id": "say"', system_prompt)
                     self.assertIn('"event_id": "tick.event"', system_prompt)
                     self.assertIn('"event_id": "structure_error"', system_prompt)
@@ -89,6 +111,8 @@ class ApplicationTests(unittest.TestCase):
                         preset="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
+                    info = other_agent.history[0]["content"].split("AGENT_INFO:\n", 1)[1].split("\n\nCAPABILITIES:", 1)[0]
+                    self.assertEqual(info, f"Тебя зовут other. Твой идентификатор {other_agent.agent_id}.")
                     paused = app.capabilities.toggle_global_state("action", "say")
                     self.assertEqual(paused["state"], "paused")
                     self.assertEqual(

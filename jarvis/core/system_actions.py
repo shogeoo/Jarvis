@@ -172,7 +172,7 @@ def run_list_agent_presets(data, context):
 
 def define_list_agent_presets():
     return action_definition(
-        'List saved presets, their initial capability assignments and protected flag.',
+        'List presets available for creating agents. An instantiated protected singleton, including main, is omitted.',
         object_schema({}),
         object_schema(
             {
@@ -214,7 +214,7 @@ def run_enable_capability(data, context):
 
 def define_enable_capability():
     return action_definition(
-        'Assign and enable a capability for this agent, loading runtime if needed. Enable a whole module, not its individual members. Main changes also update its preset.',
+        'Assign and enable a capability for this protected agent itself, loading runtime if needed. Enable a whole module, not its individual members. Changes to a protected agent also update its preset.',
         object_schema(
             {
                 "kind": {
@@ -252,7 +252,7 @@ def run_disable_capability(data, context):
 
 def define_disable_capability():
     return action_definition(
-        'Disable a capability for this agent only, stop its running calls and unload unused runtime. Remove its descriptions from the current catalog. Main disabled state also updates its preset.',
+        'Disable a capability for this protected agent itself, stop its running calls and unload unused runtime. Remove its descriptions from the current catalog. Changes to a protected agent also update its preset.',
         object_schema(
             {
                 "kind": {
@@ -405,9 +405,39 @@ def define_toggle_capability():
 
 
 SYSTEM_MAIN = frozenset(["spawn_agent","interrupt_agent","delete_agent","list_agents","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities"] + ["create_preset", "edit_preset", "remove_preset", "create_automation", "edit_automation", "remove_automation", "list_automations"])
-SYSTEM_DEVELOPER = frozenset(["list_capabilities", "capability_info", "toggle_capability", "read_file", "write_file", "edit_file", "execute_command"])
+SYSTEM_DEVELOPER = frozenset(["read_file", "write_file", "edit_file", "execute_command"])
+SYSTEM_DEVELOPER_OPTIONAL = frozenset(["list_capabilities", "capability_info", "toggle_capability"])
 SYSTEM_ALL = frozenset(["send_message_to_agent"])
-SYSTEM_MAIN = SYSTEM_MAIN | frozenset({"reply"})
+SYSTEM_MAIN = SYSTEM_MAIN | frozenset({"reply", "memory_write", "memory_edit", "memory_delete"})
+SYSTEM_PROTECTED = frozenset({"enable_capability", "disable_capability"})
+
+
+def register_memory_actions(registry):
+    def write(data, context):
+        return {"id": context.agent_manager._manager.semantic_memory.write(data["content"])}
+
+    def edit(data, context):
+        context.agent_manager._manager.semantic_memory.edit(data["id"], data["content"])
+        return {"status": "updated"}
+
+    def delete(data, context):
+        context.agent_manager._manager.semantic_memory.delete(data["id"])
+        return {"status": "deleted"}
+
+    definitions = (
+        ("memory_write", "Save a confirmed, stable fact in Jarvis semantic memory. Returns its generated ID.",
+         object_schema({"content": {"type": "string", "description": "One concise, confirmed semantic fact to remember."}}),
+         object_schema({"id": {"type": "string", "description": "Generated semantic memory entry ID."}}), write),
+        ("memory_edit", "Replace one semantic memory entry by its ID.",
+         object_schema({"id": {"type": "string", "description": "ID of the semantic memory entry to replace."},
+                        "content": {"type": "string", "description": "Complete replacement fact."}}),
+         object_schema({"status": {"type": "string", "enum": ["updated"]}}), edit),
+        ("memory_delete", "Delete one semantic memory entry by its ID.",
+         object_schema({"id": {"type": "string", "description": "ID of the semantic memory entry to delete."}}),
+         object_schema({"status": {"type": "string", "enum": ["deleted"]}}), delete),
+    )
+    for identifier, description, arguments, result, handler in definitions:
+        registry.register(replace(action_definition(description, arguments, result, handler), id=identifier, owner="core:primary"))
 
 
 def reply(data, context):
@@ -486,9 +516,10 @@ def register_state_actions(registry):
 def register_system_actions(registry):
     from .developer_actions import register_developer_actions
     register_developer_actions(registry)
+    register_memory_actions(registry)
     registry.register(replace(action_definition("Reply to the user with text in the JSON console trace. No separate plain-text console output. Available only when the configured s2 binary is absent.", object_schema({"text": {"type": "string"}}), object_schema({"status": {"type": "string", "enum": ["successful"]}}), reply), id="reply", owner="core:reply"))
     register_state_actions(registry)
     for action_id in ["spawn_agent","interrupt_agent","delete_agent","list_agents","send_message_to_agent","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities","list_capabilities","capability_info","toggle_capability"]:
         definition = globals()["define_" + action_id]()
-        owner = "core" if action_id in SYSTEM_ALL else "core:developer" if action_id in SYSTEM_DEVELOPER else "core:primary"
+        owner = "core" if action_id in SYSTEM_ALL else "core:developer" if action_id in SYSTEM_DEVELOPER else "core:optional" if action_id in SYSTEM_DEVELOPER_OPTIONAL else "core:protected" if action_id in SYSTEM_PROTECTED else "core:primary"
         registry.register(replace(definition, id=action_id, owner=owner))

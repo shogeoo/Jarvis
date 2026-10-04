@@ -45,7 +45,7 @@ class ModelCapabilitiesTests(unittest.TestCase):
 
         prompt = ModelCapabilities("model", ("text", "image")).prompt_block()
 
-        self.assertEqual("Текущая модель поддерживает следующие модальности: text, image.", prompt)
+        self.assertEqual("Текущая модель: model\nМодель поддерживает эти модальности: text, image", prompt)
 
     def test_all_five_modalities_render_as_model_info_content(self):
         from jarvis.infrastructure.model_capabilities import (
@@ -55,7 +55,7 @@ class ModelCapabilitiesTests(unittest.TestCase):
 
         self.assertEqual(
             ModelCapabilities("GPT-6 Luna", SUPPORTED_INPUT_MODALITIES).prompt_block(),
-            "Текущая модель поддерживает следующие модальности: text, image, audio, video, file.",
+            "Текущая модель: GPT-6 Luna\nМодель поддерживает эти модальности: text, image, audio, video, file",
         )
 
 

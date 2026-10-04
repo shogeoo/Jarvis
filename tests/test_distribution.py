@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from jarvis.application import JarvisApplication
 from jarvis.core.protocol import ActionRequest
-from jarvis.core.prompts import read_master_prompt
+from jarvis.core.prompts import read_environment
 from jarvis.infrastructure.config import Config, load_config, ROOT, DEFAULT_JARVIS_DIR
 from jarvis.infrastructure.model_capabilities import ModelCapabilities
 from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
@@ -47,28 +47,32 @@ class DistributionTests(unittest.TestCase):
             self.assertIsNone(config.reasoning_effort)
 
     def test_baseline_resources_and_presets_do_not_need_installed_extensions(self):
-        self.assertNotIn("action_definition", read_master_prompt())
+        self.assertNotIn("action_definition", read_environment())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ensure_runtime_layout(root)
             store = PresetStore(root / "presets")
             self.assertTrue(store.load("main").protected)
             self.assertIn("Module Manager", store.load("module_manager").person_prompt)
+            self.assertEqual(store.load("main").actions, ())
+            self.assertEqual(store.load("module_manager").actions, ())
+            self.assertEqual(json.loads((root / "presets/module_manager/capabilities.json").read_text()),
+                             {"modules": [], "actions": [], "handlers": []})
             self.assertEqual(list((root / "actions").iterdir()), [])
-            original = root / "presets" / "main" / "personprompt.txt"
+            original = root / "presets" / "main" / "person.txt"
             original.write_text("Personal prompt", encoding="utf-8")
             ensure_runtime_layout(root)
             from importlib.resources import files
-            self.assertEqual(original.read_text(), files("jarvis").joinpath("assets", "main.txt").read_text())
-            manager = root / "presets" / "module_manager" / "personprompt.txt"
+            self.assertEqual(original.read_text(), files("jarvis").joinpath("assets", "main_person.txt").read_text())
+            manager = root / "presets" / "module_manager" / "person.txt"
             manager.write_text("Changed", encoding="utf-8")
             ensure_runtime_layout(root)
-            self.assertEqual(manager.read_text(), files("jarvis").joinpath("assets", "module_manager.txt").read_text())
+            self.assertEqual(manager.read_text(), files("jarvis").joinpath("assets", "module_manager_person.txt").read_text())
             custom = root / "presets" / "custom"
             custom.mkdir()
-            (custom / "personprompt.txt").write_text("Keep this personality")
+            (custom / "person.txt").write_text("Keep this personality")
             ensure_runtime_layout(root)
-            self.assertEqual((custom / "personprompt.txt").read_text(), "Keep this personality")
+            self.assertEqual((custom / "person.txt").read_text(), "Keep this personality")
 
     def test_environment_example_contains_only_model_settings(self):
         template = (ROOT / ".env.example").read_text()
@@ -138,7 +142,6 @@ class DistributionTests(unittest.TestCase):
                     "write_file",
                     "edit_file",
                     "execute_command",
-                    "capability_info",
                 ):
                     self.assertIn(name, dev_specs)
                 self.assertFalse(app.capabilities._hosts)

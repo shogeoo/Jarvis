@@ -11,7 +11,7 @@ import fixtures
 import test_runtime as runtime_tests
 from jarvis.capabilities import action_definition, handler_definition, HandlerContext
 from jarvis.capabilities.worker import _load_leaf, _load_module
-from jarvis.core.prompts import read_master_prompt, agent_system_prompt
+from jarvis.core.prompts import read_environment, agent_system_prompt
 from jarvis.core.protocol import (
     ActionRequest,
     CallResult,
@@ -28,7 +28,7 @@ from jarvis.infrastructure.context import MemoryStore
 
 def catalog(agent):
     agent._contract()
-    return json.loads(agent.history[0]["content"].rsplit("\n\n", 1)[1])
+    return json.loads(agent.history[0]["content"].split("CAPABILITIES:\n", 1)[1])
 
 
 class CatalogRuntimeTests(unittest.TestCase):
@@ -59,7 +59,6 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.assertNotIn("echo.repeat", self.ids("actions"))
         self.assertNotIn("echo.echoed", self.ids("events"))
         serialized = json.dumps(value, ensure_ascii=False)
-        self.assertIsNone(re.search(r"[А-Яа-яЁё]", serialized))
         self.assertNotIn('"handler_id"', serialized)
         self.assertNotIn('"path"', json.dumps(module))
         self.assertNotIn("standalone", value)
@@ -104,7 +103,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.manager.enable_handler("main", "zzz")
         self.assertEqual(self.ids("events"), before + ["aaa", "zzz"])
 
-    def test_modules_and_new_members_append_without_reordering_old_members(self):
+    def test_module_members_follow_current_module_definition(self):
         fixtures.write_echo_module(self.root)
         self.manager.enable_module("main", "echo")
         before = catalog(self.agent)["modules"][0]["actions"]
@@ -124,21 +123,21 @@ class CatalogRuntimeTests(unittest.TestCase):
         path.write_text(source)
         self.manager.toggle_capability("module", "echo")
         actual = catalog(self.agent)["modules"][0]["actions"]
-        self.assertEqual(actual[:-1], before)
-        self.assertEqual(actual[-1]["action_id"], "echo.aaa")
+        self.assertEqual(
+            [item["action_id"] for item in actual], ["echo.aaa", "echo.repeat"]
+        )
+        self.assertEqual(actual[1], before[0])
 
-    def test_global_pause_and_resume_append_to_catalog_end(self):
+    def test_global_pause_and_resume_preserve_assignment_order(self):
         for name in ("aaa", "zzz"):
             fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
             self.manager.enable_action("main", name)
         before = self.ids("actions")
         self.manager.toggle_capability("action", "aaa")
         self.manager.toggle_capability("action", "aaa")
-        self.assertEqual(
-            self.ids("actions"), [name for name in before if name != "aaa"] + ["aaa"]
-        )
+        self.assertEqual(self.ids("actions"), before)
 
-    def test_catalog_order_survives_restore(self):
+    def test_assigned_capability_order_survives_restore_without_catalog_order(self):
         memory = MemoryStore(self.root / "memory")
         self.manager.memory = memory
         for name in ("zzz", "aaa"):
@@ -147,11 +146,45 @@ class CatalogRuntimeTests(unittest.TestCase):
         before = catalog(self.agent)
         self.manager.persist_agent(self.agent)
         self.manager.shutdown()
+        instance = json.loads((self.root / "memory/main/instance.json").read_text())
+        self.assertNotIn("catalog_order", instance)
+        self.assertEqual(
+            [item for item in instance["actions"] if item in {"zzz", "aaa"}],
+            ["zzz", "aaa"],
+        )
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
         )
         restored = restored_manager.restore(name="main", preset="main")
         self.assertEqual(catalog(restored), before)
+
+    def test_restore_uses_current_capability_description(self):
+        memory = MemoryStore(self.root / "memory")
+        self.manager.memory = memory
+        fixtures.write_action(self.root / "actions", "dynamic", fixtures.SAY_ACTION)
+        self.manager.enable_action("main", "dynamic")
+        before = next(
+            item
+            for item in catalog(self.agent)["actions"]
+            if item["action_id"] == "dynamic"
+        )
+        self.manager.persist_agent(self.agent)
+        self.manager.shutdown()
+        path = self.root / "actions/dynamic/action.py"
+        source = path.read_text()
+        path.write_text(
+            source.replace(before["description"], "Current dynamic description.")
+        )
+        restored_manager = self.fixture.manager(
+            runtime_tests._Client([]), memory=memory
+        )
+        restored = restored_manager.restore(name="main", preset="main")
+        after = next(
+            item
+            for item in catalog(restored)["actions"]
+            if item["action_id"] == "dynamic"
+        )
+        self.assertEqual(after["description"], "Current dynamic description.")
 
     def test_only_assigned_system_development_tool_is_visible_to_main(self):
         self.assertNotIn("execute_command", self.ids("actions"))
@@ -260,13 +293,14 @@ class CatalogRuntimeTests(unittest.TestCase):
 
 
 class DeclarationTests(unittest.TestCase):
-    def test_system_prompt_has_four_blocks_without_section_headers(self):
-        prompt = agent_system_prompt("  Personality.\n", "Environment.\n", {}, {}, {"modules": []})
-        expected = "Personality.\n\nEnvironment.\n\nТекущая модель поддерживает следующие модальности: text, image, audio, video, file.\n\n"
+    def test_system_prompt_has_labeled_blocks_in_required_order(self):
+        prompt = agent_system_prompt(
+            "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
+            agent_id="agent-001", agent_name="Example",
+        )
+        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n\nAGENT_INFO:\nТебя зовут Example. Твой идентификатор agent-001.\n\nCAPABILITIES:\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
         self.assertEqual(prompt, expected)
-        for header in ("personprompt:", "masterprompt:", "CAPABILITY:"):
-            self.assertNotIn(header, prompt)
 
     def description(self):
         return {
@@ -334,11 +368,10 @@ class DeclarationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             action_definition(document, run=lambda data, context: {})
 
-    def test_non_english_description_is_rejected(self):
+    def test_cyrillic_description_is_accepted(self):
         document = self.description()
         document["description"] = "Описание"
-        with self.assertRaisesRegex(ValueError, "English"):
-            action_definition(document, run=lambda data, context: {})
+        self.assertEqual(action_definition(document, run=lambda data, context: {}).description, "Описание")
 
     def test_nullable_object_and_nested_array_defaults(self):
         schema = object_schema(
@@ -428,12 +461,14 @@ class DeclarationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Declared ID"):
                 _load_leaf(root, Path("actions/echo"), "action", "different")
 
-    def test_masterprompt_is_common_and_contains_no_development_sdk(self):
-        prompt = read_master_prompt()
+    def test_environment_is_common_and_contains_no_development_sdk(self):
+        prompt = read_environment()
         self.assertNotIn("action_definition", prompt)
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
-        self.assertIn('"event_id":"call_result"', prompt)
+        self.assertIn("event_id имеет значение call_result", prompt)
+        for concrete in ("main", "module_manager", "system_started", "telegram", "speech", "spawn_agent"):
+            self.assertNotIn(concrete, prompt)
 
     def test_legacy_automation_is_read_without_rewriting_saved_file(self):
         with tempfile.TemporaryDirectory() as temporary:

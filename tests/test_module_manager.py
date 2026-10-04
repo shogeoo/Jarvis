@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from jarvis.core.lifecycle import ProcessManager
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import register_core_protocol
-from jarvis.core.prompts import read_master_prompt
+from jarvis.core.prompts import read_environment
 from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
 from jarvis.presets import PresetStore
 
@@ -40,7 +40,7 @@ class ModuleManagerContractTests(unittest.TestCase):
 
     def test_module_manager_has_complete_sdk_and_system_development_tools(self):
         preset = self.presets.load("module_manager")
-        prompt = preset.person_prompt + read_master_prompt()
+        prompt = preset.person_prompt + read_environment()
         for marker in (
             "СТРОЖАЙШЕ ЗАПРЕЩЕНО читать исходный код Jarvis",
             "action_definition",
@@ -59,12 +59,11 @@ class ModuleManagerContractTests(unittest.TestCase):
             "write_file",
             "edit_file",
             "execute_command",
-            "list_capabilities",
-            "capability_info",
-            "toggle_capability",
             "send_message_to_agent",
         }
         self.assertTrue(expected.issubset(specs))
+        self.assertTrue({"list_capabilities", "capability_info", "toggle_capability"}.isdisjoint(specs))
+        self.assertEqual(self.presets.load("module_manager").actions, ())
         main = self.actions.for_capabilities(modules=set(), actions=set(), primary=True)
         self.assertTrue(
             {"read_file", "write_file", "edit_file", "execute_command"}.isdisjoint(main)
