@@ -102,6 +102,7 @@ class SemanticMemoryTests(unittest.TestCase):
             self.assertTrue(identifiers.isdisjoint(other))
             memory = SemanticMemory(root / "memory/main/semantic.json")
             context = SimpleNamespace(
+                agent_id="main",
                 agent_manager=SimpleNamespace(
                     _manager=SimpleNamespace(semantic_memory=memory)
                 )

@@ -81,7 +81,7 @@ class ApplicationTests(unittest.TestCase):
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
                     info = system_prompt.split("<AGENT_INFO>\n", 1)[1].split("\n</AGENT_INFO>", 1)[0]
-                    self.assertEqual(info, "Тебя зовут Jarvis. Твой идентификатор main.")
+                    self.assertEqual(info, "Твой идентификатор: main. Твой пресет: main.")
                     self.assertIn("Текущая модель: test", system_prompt)
                     self.assertIn('"entries": []', system_prompt)
                     self.assertIn("Jarvis — среда существования", system_prompt)
@@ -96,19 +96,18 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(
                         app.capabilities.loaded_snapshot(),
                         {
-                            "modules": set(),
+                            "modules": {"capability_development"},
                             "actions": {"say"},
                             "handlers": {"tick"},
                         },
                     )
                     other = app.agents.spawn(
                         parent_id=app.main_agent.agent_id,
-                        name="other",
-                        preset="worker",
+                        preset_id="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
                     info = other_agent.history[0]["content"].split("<AGENT_INFO>\n", 1)[1].split("\n</AGENT_INFO>", 1)[0]
-                    self.assertEqual(info, f"Тебя зовут other. Твой идентификатор {other_agent.agent_id}.")
+                    self.assertEqual(info, f"Твой идентификатор: {other_agent.agent_id}. Твой пресет: worker.")
                     paused = app.capabilities.toggle_global_state("action", "say")
                     self.assertEqual(paused["state"], "paused")
                     self.assertEqual(

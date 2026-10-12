@@ -16,7 +16,6 @@ import select
 import subprocess
 import sys
 import threading
-import venv
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -48,7 +47,7 @@ DEFAULT_ROOT = DEFAULT_JARVIS_DIR
 _ENTRYPOINTS = {"action": "action.py", "handler": "handler.py", "module": "module.py"}
 _DIRS = {"action": "actions", "handler": "handlers", "module": "modules"}
 # Точка в ID корневой единицы запрещена: она означает единицу модуля.
-_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_NAME = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 
 
 @dataclass(slots=True)
@@ -213,7 +212,38 @@ class CapabilityManager:
         )
 
     def existing_modules(self) -> set[str]:
-        return {path.name for path in self.discover_modules()}
+        return {path.name for path in self.discover_modules()} | self.builtin_modules()
+
+    def builtin_modules(self) -> set[str]:
+        return {spec.owner.removeprefix("core:module:") for spec in self.actions.all().values() if spec.owner.startswith("core:module:")}
+
+    def builtin_module_catalog(self, module_id):
+        from ..core.descriptions import apply_descriptions, read_descriptions
+        actions, _ = apply_descriptions({name: spec for name, spec in self.actions.all().items() if spec.owner == f"core:module:{module_id}"}, {})
+        description = read_descriptions()["modules"].get(module_id, {}).get("description", "Develop capabilities.")
+        return {"module_id": module_id, "description": description, "actions": self.actions.catalog(actions), "events": []}
+
+    def resolve_kind(self, capability_id: str) -> str:
+        self.validate_unit_id(capability_id, kind="capability")
+        candidates = []
+        if capability_id in self.builtin_modules():
+            candidates.append("module")
+        spec = self.actions.get(capability_id)
+        if spec is not None and spec.owner.startswith("core"):
+            candidates.append("action")
+        for kind in ("action", "handler", "module"):
+            if (self._unit_path(kind, capability_id) / _ENTRYPOINTS[kind]).is_file():
+                candidates.append(kind)
+        if len(candidates) != 1:
+            raise ValueError(f"Capability ID must identify exactly one unit: {capability_id!r}; found {candidates}")
+        return candidates[0]
+
+    def partition(self, capability_ids):
+        snapshot = {"modules": [], "actions": [], "handlers": []}
+        keys = {"module": "modules", "action": "actions", "handler": "handlers"}
+        for capability_id in capability_ids:
+            snapshot[keys[self.resolve_kind(capability_id)]].append(capability_id)
+        return snapshot
 
     def existing_actions(self) -> set[str]:
         return {path.name for path in self.discover_actions()}
@@ -223,7 +253,7 @@ class CapabilityManager:
 
     def loaded_modules(self) -> set[str]:
         with self._lock:
-            return set(self._modules)
+            return set(self._modules) | self.builtin_modules()
 
     def loaded_actions(self) -> set[str]:
         with self._lock:
@@ -289,7 +319,15 @@ class CapabilityManager:
         ]
         return {"modules": modules, "actions": actions, "handlers": handlers}
 
-    def capability_info(self, *, kind: str, capability_id: str) -> dict[str, Any]:
+    def capability_info(self, capability_id: str) -> dict[str, Any]:
+        kind = self.resolve_kind(capability_id)
+        if capability_id in self.builtin_modules():
+            return self.builtin_module_catalog(capability_id)
+        spec = self.actions.get(capability_id)
+        if kind == "action" and spec is not None and spec.owner.startswith("core"):
+            from ..core.descriptions import apply_descriptions
+            actions, _ = apply_descriptions({capability_id: spec}, {})
+            return self.actions.catalog(actions)[0]
         if kind == "module":
             catalog = self._describe("module", capability_id)
             return self._module_summary(LoadedModule(capability_id, ModuleDefinition(catalog["description"], (), ()), self.module_path(capability_id), UnitHost(f"module:{capability_id}", "module", capability_id, capability_id, self.module_path(capability_id), catalog)))
@@ -329,6 +367,8 @@ class CapabilityManager:
         return result
 
     def module_action_ids(self, module_id: str) -> set[str]:
+        if module_id in self.builtin_modules():
+            return {spec.id for spec in self.actions.all().values() if spec.owner == f"core:module:{module_id}"}
         with self._lock:
             runtime = self._modules.get(module_id)
         if runtime is not None:
@@ -346,11 +386,7 @@ class CapabilityManager:
 
     # --- процесс единицы ---------------------------------------------
     def _python(self, path: Path) -> Path:
-        """Окружение единицы; без собственного .venv используется ядро."""
-
-        python = path / ".venv" / "bin" / "python"
-        if python.is_file():
-            return python
+        """Dependencies and custom environments belong to capability code."""
         return Path(sys.executable)
 
     def _worker_command(self, kind: str, unit_id: str) -> list[str]:
@@ -625,14 +661,13 @@ class CapabilityManager:
             elif target == "agent_manager":
                 obj = self._agent_api
                 method = str(message.get("method", ""))
-                if method in {"enable", "disable", "delete", "interrupt"}:
+                if method in {"spawn", "delete", "interrupt", "list_agents", "get_agent", "edit_agent", "presets_list"} and message.get("caller_agent_id") != "main":
+                    raise ValueError("Only main may manage agents and presets")
+                if method in {"enable", "disable"}:
                     kwargs = message.get("kwargs", {})
-                    args = message.get("args", [])
-                    target_id = kwargs.get("agent_id") or (args[0] if args else None)
-                    if target_id is not None:
-                        agent = self._manager().require_agent(target_id)
-                        if self._manager().presets.load(agent.preset).protected and message.get("caller_agent_id") != target_id:
-                            raise ValueError("Защищённый агент не может быть изменён извне")
+                    target_id = kwargs.get("agent_id") or (message.get("args") or [None])[0]
+                    if target_id != message.get("caller_agent_id"):
+                        raise ValueError("Capability assignment targets the calling agent only")
             else:
                 raise ValueError(f"Неизвестная цель RPC: {target!r}")
             func = obj
@@ -739,7 +774,10 @@ class CapabilityManager:
             ],
         }
 
-    def validate(self, *, kind: str, capability_id: str) -> dict[str, Any]:
+    def validate(self, capability_id: str) -> dict[str, Any]:
+        kind = self.resolve_kind(capability_id)
+        if capability_id in self.builtin_modules() or (self.actions.get(capability_id) is not None and self.actions.get(capability_id).owner.startswith("core")):
+            return self.capability_info(capability_id)
         if kind == "module":
             return self.validate_module(capability_id)
         if kind == "action":
@@ -822,6 +860,8 @@ class CapabilityManager:
                 self.unload_handler(handler_id)
 
     def load_action(self, action_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
+        if "." not in action_id and self.resolve_kind(action_id) != "action":
+            raise ValueError("Expected standalone action capability")
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
@@ -866,6 +906,8 @@ class CapabilityManager:
         return self._action_summary(runtime.definition, path)
 
     def load_handler(self, handler_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
+        if "." not in handler_id and self.resolve_kind(handler_id) != "handler":
+            raise ValueError("Expected standalone handler capability")
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
@@ -910,6 +952,10 @@ class CapabilityManager:
         return self._handler_summary(runtime.definition, path)
 
     def load_module(self, module_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
+        if self.resolve_kind(module_id) != "module":
+            raise ValueError("Expected module capability")
+        if module_id in self.builtin_modules():
+            return self.builtin_module_catalog(module_id)
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
@@ -1001,6 +1047,8 @@ class CapabilityManager:
             self._hosts.pop(host.key, None)
 
     def start_module(self, module_id: str) -> None:
+        if module_id in self.builtin_modules():
+            return
         with self._lock:
             runtime = self._modules.get(module_id)
         if runtime is None:
@@ -1243,7 +1291,7 @@ class CapabilityManager:
         key = kind_to_key.get(kind)
         if key is None:
             raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        self.validate(kind=kind, capability_id=capability_id)
+        self.validate(capability_id)
         manager = self._manager()
         if manager is None:
             raise RuntimeError("Менеджер агентов не запущен")
@@ -1313,42 +1361,6 @@ class CapabilityManager:
         )
         return True
 
-    def create_environment(self, kind: str, unit_id: str) -> dict[str, Any]:
-        path = self._unit_path(kind, unit_id)
-        if not path.is_dir():
-            raise ValueError(f"Единица не найдена: {kind} {unit_id!r}")
-        requirements = path / "requirements.txt"
-        requirements_name = "requirements.txt" if requirements.is_file() else None
-        if requirements_name:
-            unpinned = [
-                line.strip()
-                for line in requirements.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-                and not line.lstrip().startswith(("#", "-"))
-                and "==" not in line
-            ]
-            if unpinned:
-                raise ValueError(
-                    "Зависимости должны быть закреплены через ==: "
-                    + ", ".join(unpinned)
-                )
-        environment = path / ".venv"
-        if not environment.exists():
-            venv.EnvBuilder(with_pip=True).create(environment)
-        if requirements_name is not None:
-            python = environment / "bin" / "python"
-            subprocess.run(
-                [str(python), "-m", "pip", "install", "-r", str(requirements)],
-                cwd=path,
-                check=True,
-            )
-        return {
-            "kind": kind,
-            "id": unit_id,
-            "environment": str(environment),
-            "requirements": requirements_name,
-        }
-
     def shutdown(self) -> None:
         self._closing.set()
         for action_id in list(self.loaded_actions()):
@@ -1399,6 +1411,9 @@ class CapabilityManager:
                 )
             modules = []
             for module_id in snapshot.get("modules", ()):
+                if module_id in self.builtin_modules():
+                    modules.append(self.builtin_module_catalog(module_id))
+                    continue
                 runtime = self._modules.get(module_id)
                 if runtime is None:
                     if not describe_unloaded:
@@ -1482,8 +1497,8 @@ class _AgentApi:
             raise RuntimeError("Менеджер агентов не запущен")
         return manager
 
-    def spawn(self, parent_id: str, name: str, preset: str) -> dict[str, Any]:
-        return self._manager.spawn(parent_id=parent_id, name=name, preset=preset)
+    def spawn(self, parent_id: str, preset_id: str) -> dict[str, Any]:
+        return self._manager.spawn(parent_id=parent_id, preset_id=preset_id)
 
     def delete(self, agent_id: str) -> dict[str, Any]:
         return self._manager.delete(agent_id=agent_id)
@@ -1525,7 +1540,6 @@ class _AgentApi:
                 event_id="message_from_agent",
                 data={
                     "from_agent_id": sender.agent_id,
-                    "from_name": sender.name,
                     "text": text,
                 },
                 source=f"action:{action_id}",
@@ -1535,68 +1549,22 @@ class _AgentApi:
         )
         return {"delivered": delivered, "agent_id": target.agent_id}
 
-    @staticmethod
-    def _reject_module_part(kind: str, capability_id: str) -> None:
-        if kind != "module" and "." in capability_id:
-            module_id = capability_id.split(".", 1)[0]
-            raise ValueError(
-                f"Часть модуля отдельно не переключается: {capability_id!r} "
-                f"принадлежит модулю {module_id!r} — укажите kind='module', "
-                f"id={module_id!r}"
-            )
+    def enable(self, agent_id: str, capability_id: str):
+        kind = self._capabilities.resolve_kind(capability_id)
+        getattr(self._manager, "enable_" + kind)(agent_id, capability_id)
+        return {"enabled": True, "capability_id": capability_id}
 
-    def enable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
-        self._reject_module_part(kind, capability_id)
-        manager = self._manager
-        agent = manager.require_agent(agent_id)
-        if kind == "module":
-            manager.enable_module(agent_id, capability_id)
-        elif kind == "action":
-            manager.enable_action(agent_id, capability_id)
-        elif kind == "handler":
-            manager.enable_handler(agent_id, capability_id)
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        persistent = False
-        if agent_id == "main" or agent.protected:
-            manager.presets.add_capability(agent.preset, kind, capability_id)
-            manager.presets.set_disabled(agent.preset, kind, capability_id, False)
-            persistent = True
-        return {
-            "enabled": True,
-            "kind": kind,
-            "id": capability_id,
-            "persistent": persistent,
-        }
+    def disable(self, agent_id: str, capability_id: str):
+        kind = self._capabilities.resolve_kind(capability_id)
+        getattr(self._manager, "disable_" + kind)(agent_id, capability_id)
+        return {"enabled": False, "capability_id": capability_id}
 
-    def disable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
-        self._reject_module_part(kind, capability_id)
-        manager = self._manager
-        agent = manager.require_agent(agent_id)
-        if kind == "module":
-            manager.disable_module(agent_id, capability_id)
-        elif kind == "action":
-            manager.disable_action(agent_id, capability_id)
-        elif kind == "handler":
-            manager.disable_handler(agent_id, capability_id)
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        if agent_id == "main" or agent.protected:
-            manager.presets.set_disabled(agent.preset, kind, capability_id, True)
-        return {"enabled": False, "kind": kind, "id": capability_id}
+    def get_agent(self, agent_id):
+        return self._manager.get_agent(agent_id)
 
-    def presets_list(self) -> list[dict[str, Any]]:
-        active_singletons = {
-            agent.preset for agent in self._manager.agents_snapshot() if agent.protected
-        }
-        return [
-            {
-                "name": preset.name,
-                "modules": list(preset.modules),
-                "actions": list(preset.actions),
-                "handlers": list(preset.handlers),
-                "protected": preset.protected,
-            }
-            for preset in self._manager.presets.list()
-            if not preset.protected or preset.name not in active_singletons
-        ]
+    def edit_agent(self, agent_id, changes):
+        return self._manager.edit_agent(agent_id, changes)
+
+    def presets_list(self):
+        from ..core.preset_actions import get_preset
+        return [get_preset(preset) for preset in self._manager.presets.list()]

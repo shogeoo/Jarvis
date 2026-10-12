@@ -52,22 +52,21 @@ class DistributionTests(unittest.TestCase):
             root = Path(temporary)
             ensure_runtime_layout(root)
             store = PresetStore(root / "presets")
-            self.assertTrue(store.load("main").protected)
-            self.assertIn("Capabilities Manager", store.load("capabilities_manager").person_prompt)
+            self.assertNotIn("protected", json.loads((root / "presets/main/preset.json").read_text()))
+            self.assertIn("CapabilityManager", store.load("capability_manager").person_prompt)
             self.assertEqual(store.load("main").actions, ())
-            self.assertEqual(store.load("capabilities_manager").actions, ())
-            self.assertEqual(json.loads((root / "presets/capabilities_manager/capabilities.json").read_text()),
-                             {"modules": [], "actions": [], "handlers": []})
+            self.assertEqual(store.load("capability_manager").modules, ("capability_development",))
+            self.assertEqual(json.loads((root / "presets/capability_manager/preset.json").read_text())["capabilities"], ["capability_development", "list_capabilities", "capability_info", "toggle_capability"])
             self.assertEqual(list((root / "capabilities" / "actions").iterdir()), [])
             original = root / "presets" / "main" / "person.txt"
             original.write_text("Personal prompt", encoding="utf-8")
             ensure_runtime_layout(root)
             from importlib.resources import files
-            self.assertEqual(original.read_text(), files("jarvis").joinpath("assets", "main_person.txt").read_text())
-            manager = root / "presets" / "capabilities_manager" / "person.txt"
+            self.assertEqual(original.read_text(), "Personal prompt")
+            manager = root / "presets" / "capability_manager" / "person.txt"
             manager.write_text("Changed", encoding="utf-8")
             ensure_runtime_layout(root)
-            self.assertEqual(manager.read_text(), files("jarvis").joinpath("assets", "capabilities_manager_person.txt").read_text())
+            self.assertEqual(manager.read_text(), "Changed")
             custom = root / "presets" / "custom"
             custom.mkdir()
             (custom / "person.txt").write_text("Keep this personality")
@@ -112,7 +111,7 @@ class DistributionTests(unittest.TestCase):
         return_value=ModelCapabilities("test", ("text",)),
     )
     @patch("jarvis.application.OpenAI")
-    def test_fresh_start_without_s2_omits_speech_and_can_spawn_capabilities_manager(
+    def test_fresh_start_without_s2_omits_speech_and_can_spawn_capability_manager(
         self, openai, discovery, which, speech
     ):
         client = _Client([])
@@ -132,19 +131,19 @@ class DistributionTests(unittest.TestCase):
                 self.assertIn("speech_detected", app.events.all())
                 self.assertFalse(app.capabilities._hosts)
                 result = app.agents.spawn(
-                    parent_id="main", name="builder", preset="capabilities_manager"
+                    parent_id="main", preset_id="capability_manager"
                 )
                 developer = app.agents.require_agent(result["agent_id"])
                 dev_specs, _ = developer._contract()
-                self.assertEqual(developer.capabilities_snapshot(), {"modules": set(), "actions": set(), "handlers": set()})
+                self.assertEqual(developer.capabilities_snapshot(), {"modules": {"capability_development"}, "actions": {"list_capabilities", "capability_info", "toggle_capability"}, "handlers": set()})
                 instance = developer.memory_record()
-                self.assertEqual(instance["actions"], [])
+                self.assertEqual(instance["capabilities_add"], [])
                 self.assertIn(str(app.config.jarvis_dir.resolve()), developer.history[0]["content"])
                 for name in (
-                    "read_file",
-                    "write_file",
-                    "edit_file",
-                    "execute_command",
+                    "capability_development.read_file",
+                    "capability_development.write_file",
+                    "capability_development.edit_file",
+                    "capability_development.execute_command",
                     "list_capabilities",
                     "capability_info",
                     "toggle_capability",
@@ -155,11 +154,11 @@ class DistributionTests(unittest.TestCase):
                 command = f"printf ready > {marker}; sleep 100"
                 app.capabilities.dispatch(
                     action=ActionRequest(
-                        "execute_command",
+                        "capability_development.execute_command",
                         {"command": command, "cwd": str(root)},
                         "long-command",
                     ),
-                    spec=dev_specs["execute_command"],
+                    spec=dev_specs["capability_development.execute_command"],
                     agent=developer,
                 )
                 self.assertTrue(_wait(marker.exists))

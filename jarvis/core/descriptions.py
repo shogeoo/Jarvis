@@ -66,6 +66,10 @@ def _overlay(original, descriptions):
 
 def apply_descriptions(actions, events, *, path: Path | None = None):
     catalog = read_descriptions(path)
+    action_descriptions = dict(catalog["actions"])
+    for module in catalog["modules"].values():
+        for entry in module.get("actions", []):
+            action_descriptions.update(entry)
 
     def describe(spec, document, fields):
         changes = {"description": document.get("description", spec.description)}
@@ -74,8 +78,8 @@ def apply_descriptions(actions, events, *, path: Path | None = None):
         return replace(spec, **changes)
 
     return (
-        {identifier: describe(spec, catalog["actions"][identifier], ("data_schema", "result_schema"))
-         if spec.owner.startswith("core") and identifier in catalog["actions"] else spec
+        {identifier: describe(spec, action_descriptions[identifier], ("data_schema", "result_schema"))
+         if spec.owner.startswith("core") and identifier in action_descriptions else spec
          for identifier, spec in actions.items()},
         {identifier: describe(spec, catalog["handlers"][identifier], ("data_schema",))
          if identifier in catalog["handlers"] else spec

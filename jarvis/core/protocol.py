@@ -72,7 +72,6 @@ _FIELD_DESCRIPTIONS = {
     "actions": "Standalone action identifiers assigned to the agent.",
     "handlers": "Standalone observer identifiers assigned to the agent.",
     "modules": "Module identifiers assigned to the agent.",
-    "protected": "Whether the preset or agent has protected singleton semantics.",
     "enabled": "Whether the capability is locally enabled for the agent.",
     "delivered": "Whether the recipient accepted the message into its queue.",
     "written": "Whether the file was written successfully.",

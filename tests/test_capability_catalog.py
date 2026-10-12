@@ -66,6 +66,9 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_disabled_and_paused_capabilities_are_not_described(self):
         fixtures.write_echo_module(self.root)
         self.manager.enable_module("main", "echo")
+        self.manager.edit_agent("main", {"capabilities_add": ["say", "tick"]})
+        self.manager.presets.edit("main", changes={"capabilities_remove": ["say", "tick"]})
+        self.manager.refresh_presets("main")
         self.manager.disable_handler("main", "tick")
         self.assertNotIn("tick.event", self.ids("events"))
         self.manager.disable_action("main", "say")
@@ -148,7 +151,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         instance = json.loads((self.root / "memory/main/instance.json").read_text())
         self.assertNotIn("catalog_order", instance)
         self.assertEqual(
-            [item for item in instance["actions"] if item in {"zzz", "aaa"}],
+            [item for item in instance["capabilities_add"] if item in {"zzz", "aaa"}],
             ["zzz", "aaa"],
         )
         restored_manager = self.fixture.manager(
@@ -185,13 +188,15 @@ class CatalogRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(after["description"], "Current dynamic description.")
 
-    def test_only_assigned_system_development_tool_is_visible_to_main(self):
-        self.assertNotIn("execute_command", self.ids("actions"))
-        self.manager.enable_action("main", "execute_command")
-        self.assertEqual(self.ids("actions")[-1], "execute_command")
+    def test_development_module_is_visible_only_when_assigned_and_not_flattened(self):
+        self.assertNotIn("capability_development", self.ids("modules"))
+        self.manager.enable_module("main", "capability_development")
+        self.assertEqual(self.ids("modules")[-1], "capability_development")
+        self.assertNotIn("capability_development.execute_command", self.ids("actions"))
+        self.assertIn("capability_development.execute_command", self.agent._contract()[0])
 
     def test_startup_event_is_described_only_to_main(self):
-        info = self.manager.spawn(parent_id="main", name="worker", preset="worker")
+        info = self.manager.spawn(parent_id="main", preset_id="worker")
         worker = self.manager.require_agent(info["agent_id"])
         self.assertIn("system_started", self.ids("events"))
         self.assertNotIn(
@@ -260,7 +265,7 @@ class DeclarationTests(unittest.TestCase):
             "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
             agent_id="agent-001", agent_name="Example",
         )
-        expected = "<ENVIRONMENT>\nEnvironment.\n</ENVIRONMENT>\n\n<PERSON>\nPersonality.\n</PERSON>\n\n<MODEL_INFO>\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n</MODEL_INFO>\n\n<AGENT_INFO>\nТебя зовут Example. Твой идентификатор agent-001.\n</AGENT_INFO>\n\n<CAPABILITIES>\n"
+        expected = "<ENVIRONMENT>\nEnvironment.\n</ENVIRONMENT>\n\n<PERSON>\nPersonality.\n</PERSON>\n\n<MODEL_INFO>\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n</MODEL_INFO>\n\n<AGENT_INFO>\nТвой идентификатор: agent-001. Твой пресет: .\n</AGENT_INFO>\n\n<CAPABILITIES>\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2) + "\n</CAPABILITIES>"
         self.assertEqual(prompt, expected)
 
@@ -429,7 +434,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
         self.assertIn("event_id имеет значение call_result", prompt)
-        for concrete in ("main", "capabilities_manager", "system_started", "telegram", "speech", "spawn_agent"):
+        for concrete in ("main", "capability_manager", "system_started", "telegram", "speech", "spawn_agent"):
             self.assertNotIn(concrete, prompt)
 
 if __name__ == "__main__":

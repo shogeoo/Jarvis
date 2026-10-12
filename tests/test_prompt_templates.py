@@ -45,8 +45,8 @@ class PromptTemplateTests(unittest.TestCase):
             self.assertLess(system.index("<MODEL_INFO>"), system.index("<AGENT_INFO>"))
 
     def test_values_containing_braces_are_not_reformatted(self):
-        self.assertEqual(render_template("agent_info.txt", name="Agent {custom}", agent_id="agent-001"),
-                         "Тебя зовут Agent {custom}. Твой идентификатор agent-001.")
+        self.assertEqual(render_template("agent_info.txt", preset_id="custom_{preset}", agent_id="agent-001"),
+                         "Твой идентификатор: agent-001. Твой пресет: custom_{preset}.")
 
     def test_missing_field_reports_which_template_is_invalid(self):
         with self.assertRaisesRegex(ValueError, "agent_info.txt"):

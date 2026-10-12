@@ -190,14 +190,16 @@ class CapabilityTests(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_module_environment_rejects_unpinned_dependencies(self):
+    def test_core_does_not_create_or_select_capability_environments(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
             module = fixtures.write_echo_module(root)
-            (module / "requirements.txt").write_text("requests>=2\n", encoding="utf-8")
+            (module / "requirements.txt").write_text("requests>=2\\n")
             manager, actions, events = self.manager(root)
-            with self.assertRaisesRegex(ValueError, "закреплены"):
-                manager.create_environment("module", "echo")
+            self.addCleanup(manager.shutdown)
+            self.assertFalse(hasattr(manager, "create_environment"))
+            import sys
+            self.assertEqual(str(manager._python(module)), sys.executable)
 
 
 if __name__ == "__main__":

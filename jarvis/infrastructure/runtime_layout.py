@@ -35,22 +35,17 @@ def _state_if_missing(path: Path, default: dict) -> None:
         logger.error(f"Jarvis cannot read {path}; original file preserved:\n{traceback.format_exc()}")
 
 
-def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
+def _ensure_preset(root: Path, name: str) -> None:
     preset = root / "presets" / name
     preset.mkdir(parents=True, exist_ok=True)
     prompt = (files("jarvis").joinpath("assets", name + "_person.txt").read_text(encoding="utf-8")
-              if name in {"main", "capabilities_manager"} else f"Ты — агент preset {name}.\n")
+              if name in {"main", "capability_manager"} else f"Ты — агент preset {name}.\n")
     prompt_path = preset / "person.txt"
-    if name in {"main", "capabilities_manager"}:
-        if not prompt_path.exists() or prompt_path.read_text(encoding="utf-8") != prompt:
-            temporary = preset / "person.txt.tmp"
-            temporary.write_text(prompt, encoding="utf-8")
-            temporary.replace(prompt_path)
-    else:
-        _write_if_missing(prompt_path, prompt)
-    _write_if_missing(preset / "capabilities.json", json.dumps(_EMPTY, indent=2) + "\n")
-    _write_if_missing(preset / "preset.json", json.dumps({"protected": protected}, indent=2) + "\n")
-    _state_if_missing(preset / "disabled_capabilities.json", _EMPTY)
+    _write_if_missing(prompt_path, prompt)
+    default = ["capability_development", "list_capabilities", "capability_info", "toggle_capability"] if name == "capability_manager" else []
+    # Existing legacy metadata is migrated by PresetStore without overwriting PERSON.
+    metadata = {} if (preset / "capabilities.json").exists() else {"model": None, "capabilities": default}
+    _write_if_missing(preset / "preset.json", json.dumps(metadata, indent=2) + "\n")
 
 
 def ensure_runtime_layout(root: Path) -> None:
@@ -64,8 +59,12 @@ def ensure_runtime_layout(root: Path) -> None:
         (root / relative).mkdir(parents=True, exist_ok=True)
     _write_if_missing(root / "memory" / "main" / "semantic.json", json.dumps({"entries": []}, indent=2) + "\n")
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
-    _ensure_preset(root, "main", protected=True)
-    _ensure_preset(root, "capabilities_manager")
+    old_manager = root / "presets" / "capabilities_manager"
+    new_manager = root / "presets" / "capability_manager"
+    if old_manager.exists() and not new_manager.exists():
+        old_manager.rename(new_manager)
+    _ensure_preset(root, "main")
+    _ensure_preset(root, "capability_manager")
     for preset in (root / "presets").iterdir():
         if preset.is_dir() and not preset.name.startswith("."):
-            _ensure_preset(root, preset.name, protected=preset.name == "main")
+            _ensure_preset(root, preset.name)

@@ -322,6 +322,8 @@ class SubscriptionClient:
         self.auth.ensure_login(announce)
 
     def create(self, **kwargs):
+        if "/" in (kwargs.get("model") or ""):
+            return self._api_request(kwargs)
         with self._lock:
             if self._api_only:
                 return self._api_request(kwargs)
@@ -339,6 +341,8 @@ class SubscriptionClient:
             self.on_fallback(self.api_capabilities)
 
     def _api_request(self, options: dict[str, Any]):
+        requested_model = options.get("model") or self.api_model
+        api_model = requested_model if "/" in requested_model else self.api_model
         messages = deepcopy(options["messages"])
         subscription_model_info = ModelCapabilities(self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities).prompt_block()
         messages[0]["content"] = messages[0]["content"].replace(
@@ -364,7 +368,7 @@ class SubscriptionClient:
                 )
             ]
         return self.api_client.chat.completions.create(
-            **{**options, "model": self.api_model, "messages": messages}
+            **{**options, "model": api_model, "messages": messages}
         )
 
     def _generate(
@@ -377,7 +381,7 @@ class SubscriptionClient:
                 "Subscription request must start with Jarvis system prompt"
             )
         body: dict[str, Any] = {
-            "model": self.subscription_model,
+            "model": options.get("model") or self.subscription_model,
             "input": _history_items(messages),
             "store": False,
             "stream": True,
@@ -419,9 +423,9 @@ class SubscriptionClient:
             if response.status_code >= 400:
                 message = response.text[:1000]
                 response.close()
-                raise RuntimeError(
-                    f"ChatGPT subscription request failed ({response.status_code}): {message}"
-                )
+                error = RuntimeError(f"ChatGPT subscription request failed ({response.status_code}): {message}")
+                error.status_code = response.status_code
+                raise error
             break
         content = ""
         completed = False

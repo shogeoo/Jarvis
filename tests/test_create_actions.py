@@ -34,6 +34,8 @@ class CreateActionsTests(unittest.TestCase):
         self.state_manager = SimpleNamespace(
             actions=self.actions,
             presets=PresetStore(self.root / "presets"),
+            capabilities=self.manager,
+            refresh_presets=lambda preset_id: None,
         )
 
     def load_action(self, action_id):
@@ -54,18 +56,15 @@ class CreateActionsTests(unittest.TestCase):
 
     def test_create_preset_refuses_other_agents(self):
         module = self.load_action("create_preset")
-        result = module.run(
+        with self.assertRaisesRegex(ValueError, "main"):
+            module.run(
             {
                 "preset_id": "intruder",
-                "person_prompt": "Not allowed.",
-                "actions": [],
-                "handlers": [],
-                "modules": [],
+                "person": "Not allowed.",
+                "capabilities": [],
             },
             self.preset_context("agent-001"),
         )
-        self.assertEqual(result["status"], "not_created")
-        self.assertIn("main", result["error"])
         self.assertFalse((self.root / "presets" / "intruder").exists())
 
     def test_create_preset_rejects_unknown_capability_ids(self):
@@ -73,15 +72,13 @@ class CreateActionsTests(unittest.TestCase):
         result = module.run(
             {
                 "preset_id": "broken",
-                "person_prompt": "References nothing real.",
-                "actions": ["missing-action"],
-                "handlers": ["missing-handler"],
-                "modules": [],
+                "person": "References nothing real.",
+                "capabilities": ["missing_action", "missing_handler"],
             },
             self.preset_context("main"),
         )
         self.assertEqual(result["status"], "not_created")
-        self.assertIn("missing-action", result["error"])
+        self.assertIn("missing_action", result["error"])
         self.assertFalse((self.root / "presets" / "broken").exists())
 
     def test_create_preset_accepts_existing_capability_ids(self):
@@ -89,10 +86,8 @@ class CreateActionsTests(unittest.TestCase):
         result = module.run(
             {
                 "preset_id": "listener",
-                "person_prompt": "Listen to ticks.",
-                "actions": ["say"],
-                "handlers": ["tick"],
-                "modules": [],
+                "person": "Listen to ticks.",
+                "capabilities": ["say", "tick"],
             },
             self.preset_context("main"),
         )
@@ -103,20 +98,17 @@ class CreateActionsTests(unittest.TestCase):
         preset_dir = self.root / "presets" / "listener"
         self.assertTrue(preset_dir.is_dir())
         capabilities = json.loads(
-            (preset_dir / "capabilities.json").read_text(encoding="utf-8")
+            (preset_dir / "preset.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(capabilities["actions"], ["say"])
-        self.assertEqual(capabilities["handlers"], ["tick"])
+        self.assertEqual(capabilities["capabilities"], ["say", "tick"])
 
     def test_create_preset_refuses_overwrite(self):
         module = self.load_action("create_preset")
         context = self.preset_context("main")
         payload = {
             "preset_id": "listener",
-            "person_prompt": "Original prompt.",
-            "actions": ["say"],
-            "handlers": [],
-            "modules": [],
+            "person": "Original prompt.",
+            "capabilities": ["say"],
         }
         self.assertEqual(module.run(payload, context)["status"], "created")
         payload["person_prompt"] = "Replacement prompt."

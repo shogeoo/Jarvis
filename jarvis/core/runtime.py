@@ -80,12 +80,11 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         EventDefinition(
             event_id="message_from_agent",
             description=(
-                'A direct message from another agent. from_agent_id and from_name identify the sender; text contains their message or task.'
+                'A direct message from another agent. from_agent_id identifies the sender; text contains their message or task.'
             ),
             data_schema=object_schema(
                 {
                     "from_agent_id": {"type": "string"},
-                    "from_name": {"type": "string"},
                     "text": {"type": "string"},
                 }
             ),
@@ -360,7 +359,9 @@ class Agent:
         disabled_handlers: set[str] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
         person_prompt: str | None = None,
-        protected: bool | None = None,
+        additional_instructions: str = "",
+        model: str | None = None,
+        capabilities_add: list[str] | None = None,
     ):
         self.agent_id = agent_id
         self.name = name
@@ -369,8 +370,10 @@ class Agent:
         self.manager = manager
         self.primary = primary
         selected = manager.presets.load(preset)
-        self.person_prompt = selected.person_prompt if person_prompt is None or preset in {"main", "capabilities_manager"} else person_prompt
-        self.protected = selected.protected if protected is None else protected
+        self.additional_instructions = additional_instructions
+        self.model_override = model
+        supplied = [value for values in (enabled_modules, enabled_actions, enabled_handlers) for value in (values or [])]
+        self._additional_capabilities = list(capabilities_add) if capabilities_add is not None else [value for value in supplied if value not in selected.capabilities]
         self._assignment_order = {
             "modules": list(enabled_modules or ()),
             "actions": list(enabled_actions or ()),
@@ -435,6 +438,32 @@ class Agent:
         return used
 
     @property
+    def person_prompt(self):
+        return self.manager.presets.load(self.preset).person_prompt
+
+    def effective_model(self):
+        preset = self.manager.presets.load(self.preset)
+        return self.model_override or preset.model or self.manager.default_model()
+
+    def _refresh_configuration(self):
+        preset = self.manager.presets.load(self.preset)
+        ordered = list(dict.fromkeys([*preset.capabilities, *self._additional_capabilities]))
+        partition = self.manager.capabilities.partition(ordered)
+        previous = self.capabilities_snapshot()
+        current = {key: set(values) for key, values in partition.items()}
+        runnable = self.manager.capabilities.runnable_snapshot(current)
+        self.manager.capabilities.load_snapshot(runnable, start_handlers=False)
+        with self._capabilities_lock:
+            self._assignment_order = partition
+            self._enabled_modules = current["modules"]
+            self._enabled_actions = current["actions"]
+            self._enabled_handlers = current["handlers"]
+        self.manager.capabilities.start_snapshot(runnable)
+        removed = {key: previous[key] - current[key] for key in previous}
+        if any(removed.values()):
+            self.manager.capabilities.release_snapshot(removed, agents=self.manager.agents_snapshot())
+
+    @property
     def state(self) -> str:
         with self._state_lock:
             return self._state
@@ -478,6 +507,9 @@ class Agent:
         with self._capabilities_lock:
             return {"modules": set(self._disabled_modules), "actions": set(self._disabled_actions), "handlers": set(self._disabled_handlers)}
 
+    def capabilities_snapshot_lists(self):
+        return {key: [value for value in self._assignment_order[key] if value in values] for key, values in self.capabilities_snapshot().items()}
+
     def is_enabled_action(self, action_id: str) -> bool:
         if action_id in {"no_action", "speech"}:
             return True
@@ -488,45 +520,42 @@ class Agent:
         )
 
     def enable_module(self, module_id: str) -> None:
-        with self._capabilities_lock:
-            if module_id not in self._enabled_modules:
-                self._assignment_order["modules"] = [name for name in self._assignment_order["modules"] if name != module_id] + [module_id]
-            self._enabled_modules.add(module_id)
-            self._disabled_modules.discard(module_id)
+        if module_id not in self.manager.presets.load(self.preset).capabilities and module_id not in self._additional_capabilities:
+            self._additional_capabilities.append(module_id)
+        self._refresh_configuration()
         self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
-        with self._capabilities_lock:
-            self._enabled_modules.discard(module_id)
-            self._disabled_modules.add(module_id)
+        if module_id in self.manager.presets.load(self.preset).capabilities:
+            raise ValueError("Cannot remove a mandatory preset capability")
+        self._additional_capabilities = [value for value in self._additional_capabilities if value != module_id]
+        self._refresh_configuration()
         self._persist_context()
 
     def enable_action(self, action_id: str) -> None:
-        with self._capabilities_lock:
-            if action_id not in self._enabled_actions:
-                self._assignment_order["actions"] = [name for name in self._assignment_order["actions"] if name != action_id] + [action_id]
-            self._enabled_actions.add(action_id)
-            self._disabled_actions.discard(action_id)
+        if action_id not in self.manager.presets.load(self.preset).capabilities and action_id not in self._additional_capabilities:
+            self._additional_capabilities.append(action_id)
+        self._refresh_configuration()
         self._persist_context()
 
     def disable_action(self, action_id: str) -> None:
-        with self._capabilities_lock:
-            self._enabled_actions.discard(action_id)
-            self._disabled_actions.add(action_id)
+        if action_id in self.manager.presets.load(self.preset).capabilities:
+            raise ValueError("Cannot remove a mandatory preset capability")
+        self._additional_capabilities = [value for value in self._additional_capabilities if value != action_id]
+        self._refresh_configuration()
         self._persist_context()
 
     def enable_handler(self, handler_id: str) -> None:
-        with self._capabilities_lock:
-            if handler_id not in self._enabled_handlers:
-                self._assignment_order["handlers"] = [name for name in self._assignment_order["handlers"] if name != handler_id] + [handler_id]
-            self._enabled_handlers.add(handler_id)
-            self._disabled_handlers.discard(handler_id)
+        if handler_id not in self.manager.presets.load(self.preset).capabilities and handler_id not in self._additional_capabilities:
+            self._additional_capabilities.append(handler_id)
+        self._refresh_configuration()
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
-        with self._capabilities_lock:
-            self._enabled_handlers.discard(handler_id)
-            self._disabled_handlers.add(handler_id)
+        if handler_id in self.manager.presets.load(self.preset).capabilities:
+            raise ValueError("Cannot remove a mandatory preset capability")
+        self._additional_capabilities = [value for value in self._additional_capabilities if value != handler_id]
+        self._refresh_configuration()
         self._persist_context()
 
     def accepts_event(self, event: Event) -> bool:
@@ -548,23 +577,11 @@ class Agent:
         return False
 
     def memory_record(self) -> dict[str, Any]:
-        """Снимок экземпляра для долговременной памяти."""
-
-        with self._capabilities_lock:
-            snapshot = self.capabilities_snapshot()
-            disabled = self.disabled_snapshot()
-            assignments = {key: [name for name in self._assignment_order[key] if name in snapshot[key]] for key in ("modules", "actions", "handlers")}
         return {
-            "agent_id": self.agent_id,
-            "name": self.name,
-            "preset": self.preset,
-            "person_prompt": self.person_prompt,
-            "protected": self.protected,
-            "parent_id": self.parent_id,
-            **assignments,
-            "disabled_modules": sorted(disabled["modules"]),
-            "disabled_actions": sorted(disabled["actions"]),
-            "disabled_handlers": sorted(disabled["handlers"]),
+            "agent_id": self.agent_id, "preset_id": self.preset,
+            "parent_id": self.parent_id, "model": self.model_override,
+            "additional_instructions": self.additional_instructions,
+            "capabilities_add": list(self._additional_capabilities),
             "messages": list(self.history[1:]),
         }
 
@@ -574,7 +591,9 @@ class Agent:
     def _contract(
         self,
         snapshot: dict[str, set[str]] | None = None,
+        *, model_id: str | None = None,
     ) -> tuple[dict[str, ActionDefinition], dict[str, EventDefinition]]:
+        self._refresh_configuration()
         assigned = self.capabilities_snapshot()
         paused = self.manager.capabilities.global_paused()
         enabled = {key: assigned[key] - paused[key] for key in assigned}
@@ -590,8 +609,6 @@ class Agent:
         actions = self.manager.actions.for_capabilities(
             modules=snapshot["modules"], actions=snapshot["actions"],
             primary=self.primary,
-            developer=self.preset == "capabilities_manager",
-            protected=self.protected,
         )
         actions = {name: spec for name, spec in actions.items() if name not in self._disabled_actions and name not in paused["actions"]}
         assigned_actions = [name for name in self._assignment_order["actions"] if name in actions]
@@ -608,7 +625,7 @@ class Agent:
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt.replace("{storage_root}", str(self.manager.capabilities.root.resolve())) if self.preset == "capabilities_manager" else self.person_prompt,
+                self.person_prompt.replace("{storage_root}", str(self.manager.capabilities.storage_root.resolve())) if self.preset == "capability_manager" else self.person_prompt,
                 self.manager.environment,
                 actions,
                 events,
@@ -618,9 +635,9 @@ class Agent:
                 ),
                 agent_id=self.agent_id,
                 agent_name=self.name,
-                model_capabilities=self.manager.model_capabilities or ModelCapabilities(
-                    self.manager.model, ("text", "image", "audio", "video", "file")
-                ),
+                preset_id=self.preset,
+                additional_instructions=self.additional_instructions,
+                model_capabilities=self.manager.capabilities_for_model(model_id or self.effective_model()),
                 semantic_memory=self.manager.semantic_memory.snapshot() if self.primary else None,
             ),
         }
@@ -794,11 +811,16 @@ class Agent:
 
         schemas = {name: spec.data_schema for name, spec in specs.items()}
 
+        candidates = list(dict.fromkeys(value for value in (self.model_override, self.manager.presets.load(self.preset).model, self.manager.default_model()) if value))
+        candidate_index = 0
+        active_model = candidates[0]
         failures = 0
         while not self._stop.is_set() and generation == self._generation:
             try:
+                specs, _ = self._contract(model_id=active_model)
+                schemas = {name: spec.data_schema for name, spec in specs.items()}
                 stream = self.manager.client.chat.completions.create(
-                    model=self.manager.model,
+                    model=active_model,
                     messages=list(self.history),
                     response_format=response_format(schemas),
                     **({"reasoning_effort": self.manager.config.reasoning_effort}
@@ -830,7 +852,16 @@ class Agent:
                     return
                 failures += 1
                 self.manager.debug.error(str(exc))
-                if failures >= 5:
+                unavailable = getattr(exc, "status_code", None) in {403, 404} or (getattr(exc, "status_code", None) == 400 and "model" in str(exc).lower()) or "model not found" in str(exc).lower() or "model unavailable" in str(exc).lower()
+                if unavailable and candidate_index + 1 < len(candidates):
+                    candidate_index += 1
+                    active_model = candidates[candidate_index]
+                    self.history[0]["content"] = self.history[0]["content"].replace(
+                        self.manager.capabilities_for_model(candidates[candidate_index - 1]).prompt_block(),
+                        self.manager.capabilities_for_model(active_model).prompt_block(), 1)
+                    failures = 0
+                    continue
+                if failures >= 5 or unavailable:
                     self._model_failure(exc)
                     return
                 delay = min(0.25 * 2 ** (failures - 1), 4.0)
@@ -870,7 +901,7 @@ class Agent:
                 global_changes: set[tuple[str, str]] = set()
                 for action in actions:
                     if action.action_id == "toggle_capability":
-                        target = (action.data["kind"], action.data["id"])
+                        target = action.data["capability_id"]
                         if target in global_changes:
                             raise ValueError(
                                 "Global disable and enable for one capability must be called in separate responses; wait for call_result"
@@ -979,6 +1010,7 @@ class AgentManager:
         self.bus = bus
         self.capabilities = capabilities
         self.presets = presets
+        self.presets.resolve_kind = capabilities.resolve_kind
         self.environment = environment
         self.config = config
         self.services = services if services is not None else {}
@@ -998,15 +1030,29 @@ class AgentManager:
         self._lifecycle_lock = threading.RLock()
         bus.manager = self  # type: ignore[attr-defined]
 
+    def default_model(self):
+        if self.config is not None and self.config.subscription_enabled:
+            return self.config.subscription_model
+        return self.model
+
+    def capabilities_for_model(self, model):
+        if self.config is not None and self.config.subscription_enabled and "/" not in model:
+            return ModelCapabilities(model, ("text", "image"))
+        modalities = self.model_capabilities.input_modalities if self.model_capabilities is not None else ("text", "image", "audio", "video", "file")
+        return ModelCapabilities(model, modalities)
+
+    def refresh_presets(self, preset_id):
+        for agent in self.agents_snapshot():
+            if agent.preset == preset_id:
+                agent._refresh_configuration()
+
     def _new_id(self) -> str:
         with self._lock:
-            if len(self.agents) >= 1000:
-                raise RuntimeError("Исчерпаны идентификаторы agent-000..agent-999")
-            for _ in range(2000):
-                candidate = f"agent-{secrets.randbelow(1000):03d}"
-                if candidate not in self.agents:
-                    return candidate
-        raise RuntimeError("Не удалось подобрать свободный идентификатор агента")
+            ids = set(self.agents)
+            if self.memory is not None:
+                ids.update(record["agent_id"] for record in self.memory.load_all())
+            number = max((int(value[6:]) for value in ids if re.fullmatch(r"agent-[0-9]+", value)), default=0) + 1
+            return f"agent-{number:05d}"
 
     def deliver_result(self, result: CallResult) -> bool:
         """Доставить результат только инициировавшему агенту."""
@@ -1107,34 +1153,29 @@ class AgentManager:
         return main_agent
 
     def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
-        snapshot = {
-            "modules": list(record.get("modules") or ()),
-            "actions": list(record.get("actions") or ()),
-            "handlers": list(record.get("handlers") or ()),
-        }
+        preset_id = record.get("preset_id", record.get("preset"))
+        selected = self.presets.load(preset_id)
+        additions = record.get("capabilities_add", [])
+        instructions = record.get("additional_instructions", "")
+        legacy = "_legacy_capabilities" in record
+        if legacy:
+            additions = [value for value in record["_legacy_capabilities"] if value not in selected.capabilities]
+            old_person = record.get("_legacy_person")
+            if old_person and old_person != selected.person_prompt:
+                instructions = old_person
         return self._spawn(
-            name=record["name"],
-            preset=record["preset"],
-            parent_id=record["parent_id"],
-            primary=primary,
-            agent_id=record["agent_id"],
-            capabilities_override=None if record.get("restore_from_preset") else snapshot,
-            disabled_override=None if record.get("restore_from_preset") else {
-                "modules": set(record.get("disabled_modules") or ()),
-                "actions": set(record.get("disabled_actions") or ()),
-                "handlers": set(record.get("disabled_handlers") or ()),
-            },
-            restored_messages=record["messages"],
-            person_prompt=None if record.get("restore_from_preset") else record.get("person_prompt"),
-            protected=None if record.get("restore_from_preset") else record.get("protected"),
-            persist_initial=bool(record.get("restore_from_preset") or record.get("restore_missing_context")),
+            name=preset_id, preset=preset_id, parent_id=record["parent_id"],
+            primary=primary, agent_id=record["agent_id"],
+            restored_messages=record["messages"], additional_instructions=instructions,
+            model=record.get("model"), capabilities_add=additions,
+            persist_initial=legacy or bool(record.get("restore_from_preset") or record.get("restore_missing_context")),
         )
 
-    def spawn(self, *, parent_id: str, name: str, preset: str) -> dict[str, Any]:
+    def spawn(self, *, parent_id: str, preset_id: str) -> dict[str, Any]:
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
-        selected = self.presets.load(preset)
-        agent = self._spawn(name=name, preset=preset, parent_id=parent_id)
+        selected = self.presets.load(preset_id)
+        agent = self._spawn(name=selected.name, preset=preset_id, parent_id=parent_id)
         return self.describe(agent)
 
     def _spawn(self, **kwargs) -> Agent:
@@ -1154,16 +1195,15 @@ class AgentManager:
         restored_messages: list[dict[str, Any]] | None = None,
         persist_initial: bool = True,
         person_prompt: str | None = None,
-        protected: bool | None = None,
+        additional_instructions: str = "",
+        model: str | None = None,
+        capabilities_add: list[str] | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Имя агента не должно быть пустым")
         selected = self.presets.load(preset)
-        with self._lock:
-            if selected.protected and any(agent.preset == preset for agent in self.agents.values()):
-                raise ValueError(f"Пресет {preset} защищён: его экземпляр уже существует")
         if capabilities_override is not None:
             initial = {
                 "modules": set(capabilities_override.get("modules", ())),
@@ -1172,20 +1212,17 @@ class AgentManager:
             }
         else:
             initial = {
-                "modules": set(selected.modules) - set(selected.disabled_modules),
-                "actions": set(selected.actions) - set(selected.disabled_actions),
-                "handlers": set(selected.handlers) - set(selected.disabled_handlers),
+                "modules": set(selected.modules),
+                "actions": set(selected.actions),
+                "handlers": set(selected.handlers),
             }
-            disabled_override = {
-                "modules": set(selected.disabled_modules),
-                "actions": set(selected.disabled_actions),
-                "handlers": set(selected.disabled_handlers),
-            }
-        disabled_override = disabled_override or {"modules": set(), "actions": set(), "handlers": set()}
-        from .system_actions import SYSTEM_MAIN, SYSTEM_DEVELOPER, SYSTEM_ALL, SYSTEM_PROTECTED
-        system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else SYSTEM_DEVELOPER if preset == "capabilities_manager" else set())
-        if selected.protected:
-            system_ids |= SYSTEM_PROTECTED
+        if capabilities_add:
+            additions = self.capabilities.partition(capabilities_add)
+            for key in initial:
+                initial[key].update(additions[key])
+        disabled_override = {"modules": set(), "actions": set(), "handlers": set()}
+        from .system_actions import SYSTEM_MAIN, SYSTEM_ALL
+        system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else set())
         initial["actions"].difference_update(system_ids)
         self.capabilities.load_snapshot(
             self.capabilities.runnable_snapshot(initial), start_handlers=False
@@ -1206,15 +1243,17 @@ class AgentManager:
                 self,
                 parent_id=parent_id,
                 primary=primary,
-                enabled_modules=[name for name in (capabilities_override or {"modules": selected.modules})["modules"] if name in initial["modules"]],
-                enabled_actions=[name for name in (capabilities_override or {"actions": selected.actions})["actions"] if name in initial["actions"]],
-                enabled_handlers=[name for name in (capabilities_override or {"handlers": selected.handlers})["handlers"] if name in initial["handlers"]],
+                enabled_modules=list(initial["modules"]),
+                enabled_actions=list(initial["actions"]),
+                enabled_handlers=list(initial["handlers"]),
                 disabled_modules=(disabled_override or {}).get("modules"),
                 disabled_actions=(disabled_override or {}).get("actions"),
                 disabled_handlers=(disabled_override or {}).get("handlers"),
                 restored_messages=restored_messages,
                 person_prompt=person_prompt,
-                protected=protected,
+                additional_instructions=additional_instructions,
+                model=model,
+                capabilities_add=capabilities_add,
             )
             self.agents[resolved_id] = agent
             self.bus.bind(agent)
@@ -1265,8 +1304,6 @@ class AgentManager:
 
     def interrupt(self, *, agent_id: str, requester_id: str | None = None) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
-        if agent.protected and requester_id != agent_id:
-            raise ValueError(f"Защищённый агент {agent_id} не может быть прерван извне")
         agent.interrupt()
         return {"agent_id": agent_id, "state": "waiting"}
 
@@ -1276,18 +1313,25 @@ class AgentManager:
 
     def _delete_locked(self, *, agent_id: str) -> dict[str, Any]:
         self.require_agent(agent_id)
+        records = self.memory.load_all() if self.memory is not None else []
         ordered = []
+        visited = set()
         def walk(current: str) -> None:
+            if current in visited:
+                return
+            visited.add(current)
             for child in self.agents_snapshot():
                 if child.parent_id == current:
                     walk(child.agent_id)
+            for record in records:
+                if record["parent_id"] == current:
+                    walk(record["agent_id"])
             ordered.append(current)
         walk(agent_id)
-        for candidate in ordered:
-            if self.require_agent(candidate).protected:
-                raise ValueError(f"Защищённый агент {candidate} не может быть удалён")
         with self._lock:
-            removed = [self.agents.pop(candidate) for candidate in ordered]
+            removed = [self.agents.pop(candidate) for candidate in ordered if candidate in self.agents]
+            if self.primary_agent_id in visited:
+                self.primary_agent_id = None
         errors = []
         for agent in removed:
             candidate = agent.agent_id
@@ -1313,7 +1357,6 @@ class AgentManager:
             with agent._generation_lock:
                 agent.history.clear()
                 agent._used_call_ids.clear()
-                agent.person_prompt = ""
             with agent._capabilities_lock:
                 agent._enabled_modules.clear()
                 agent._enabled_actions.clear()
@@ -1321,16 +1364,21 @@ class AgentManager:
                 agent._disabled_modules.clear()
                 agent._disabled_actions.clear()
                 agent._disabled_handlers.clear()
+        if self.memory is not None:
+            for record in records:
+                if record["agent_id"] in visited:
+                    try:
+                        self.memory.delete(record["preset_id"], record["agent_id"])
+                    except Exception as exc:
+                        errors.append(str(exc))
         if errors:
             raise RuntimeError("Agent cleanup failed: " + "; ".join(errors))
         return {"agent_id": agent_id, "deleted": True}
 
     def remove_preset(self, preset_id: str) -> None:
         with self._lifecycle_lock:
-            if self.presets.load(preset_id).protected:
-                raise ValueError("Protected preset cannot be removed")
             records = self.memory.load_all() if self.memory is not None else []
-            tree = {item["agent_id"] for item in records if item["preset"] == preset_id}
+            tree = {item["agent_id"] for item in records if item["preset_id"] == preset_id}
             tree.update(agent.agent_id for agent in self.agents_snapshot() if agent.preset == preset_id)
             changed = True
             while changed:
@@ -1338,35 +1386,21 @@ class AgentManager:
                 tree.update(item["agent_id"] for item in records if item["parent_id"] in tree)
                 tree.update(agent.agent_id for agent in self.agents_snapshot() if agent.parent_id in tree)
                 changed = len(tree) != before
-            for agent in self.agents_snapshot():
-                if agent.agent_id in tree and agent.protected:
-                    raise ValueError("Protected descendant cannot be removed")
-            for record in records:
-                if record["agent_id"] in tree and record.get("protected"):
-                    raise ValueError("Protected saved descendant cannot be removed")
             for agent_id in list(tree):
                 if agent_id in self.agents:
                     self.delete(agent_id=agent_id)
             if self.memory is not None:
                 for record in records:
                     if record["agent_id"] in tree:
-                        self.memory.delete(record["preset"], record["agent_id"])
+                        self.memory.delete(record.get("preset_id", record.get("preset")), record["agent_id"])
                 self.memory.delete_preset(preset_id)
             self.presets.delete(preset_id)
 
     @staticmethod
     def describe(agent: Agent) -> dict[str, Any]:
-        snapshot = agent.capabilities_snapshot()
-        return {
-            "agent_id": agent.agent_id,
-            "name": agent.name,
-            "parent_id": agent.parent_id,
-            "state": agent.state,
-            "preset": agent.preset,
-            "modules": sorted(snapshot["modules"]),
-            "actions": sorted(snapshot["actions"]),
-            "handlers": sorted(snapshot["handlers"]),
-        }
+        return {"agent_id": agent.agent_id, "preset_id": agent.preset,
+                "parent_id": agent.parent_id, "state": agent.state,
+                "capabilities": [value for values in agent.capabilities_snapshot_lists().values() for value in values]}
 
     def list_agents(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -1374,6 +1408,45 @@ class AgentManager:
                 self.describe(agent)
                 for agent in sorted(self.agents.values(), key=lambda item: item.agent_id)
             ]
+
+    def get_agent(self, agent_id):
+        agent = self.require_agent(agent_id)
+        agent._refresh_configuration()
+        preset = self.presets.load(agent.preset)
+        return {
+            "agent_id": agent_id, "preset_id": agent.preset, "parent_id": agent.parent_id, "state": agent.state,
+            "preset": {"person": preset.person_prompt, "model": preset.model, "capabilities": list(preset.capabilities)},
+            "additions": {"additional_instructions": agent.additional_instructions, "model": agent.model_override, "capabilities": list(agent._additional_capabilities)},
+            "effective": {"person": preset.person_prompt, "additional_instructions": agent.additional_instructions,
+                          "model": agent.effective_model(), "capabilities": list(dict.fromkeys([*preset.capabilities, *agent._additional_capabilities]))},
+        }
+
+    def edit_agent(self, agent_id, changes):
+        agent = self.require_agent(agent_id)
+        if not isinstance(changes, dict) or set(changes) - {"model", "additional_instructions", "capabilities_add", "capabilities_remove"}:
+            raise ValueError("Invalid individual changes")
+        additions = list(agent._additional_capabilities)
+        added = self.presets._normalize(changes.get("capabilities_add", []))
+        removed = self.presets._normalize(changes.get("capabilities_remove", []))
+        self.capabilities.partition(added)
+        if set(removed) & set(self.presets.load(agent.preset).capabilities):
+            raise ValueError("Cannot remove a mandatory preset capability")
+        instructions = changes.get("additional_instructions", agent.additional_instructions)
+        model = changes.get("model", agent.model_override)
+        if not isinstance(instructions, str) or (model is not None and (not isinstance(model, str) or not model.strip())):
+            raise ValueError("Invalid instructions or model override")
+        additions = list(dict.fromkeys([*additions, *added]))
+        additions = [value for value in additions if value not in removed]
+        previous = agent._additional_capabilities
+        agent._additional_capabilities = additions
+        try:
+            agent._refresh_configuration()
+        except Exception:
+            agent._additional_capabilities = previous
+            raise
+        agent.additional_instructions, agent.model_override = instructions, model
+        self.persist_agent(agent)
+        return {"agent_id": agent_id, "updated": True}
 
     def agents_with_module(self, module_id: str) -> list[str]:
         with self._lock:
@@ -1407,7 +1480,8 @@ class AgentManager:
         self.capabilities.load_module(module_id, start_handlers=False)
         agent.enable_module(module_id)
         try:
-            self.capabilities.start_module(module_id)
+            if module_id not in self.capabilities.builtin_modules():
+                self.capabilities.start_module(module_id)
         except Exception:
             agent.disable_module(module_id)
             if not self.agents_with_module(module_id):
@@ -1417,6 +1491,8 @@ class AgentManager:
 
     def disable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        if module_id in self.presets.load(agent.preset).capabilities:
+            raise ValueError("Cannot remove a mandatory preset capability")
         for pending in self.results.for_capability(self.capabilities.module_action_ids(module_id), {agent_id}):
             self.disable_call(agent_id, pending.call_id)
         agent.disable_module(module_id)
@@ -1446,6 +1522,8 @@ class AgentManager:
 
     def disable_action(self, agent_id: str, action_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)
+        if action_id in self.presets.load(agent.preset).capabilities:
+            raise ValueError("Cannot remove a mandatory preset capability")
         for pending in self.results.for_capability({action_id}, {agent_id}):
             self.disable_call(agent_id, pending.call_id)
         agent.disable_action(action_id)

@@ -9,7 +9,8 @@ from jarvis.presets import PresetStore
 class PresetStoreTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name) / "presets"
+        self.root.mkdir()
         main = self.root / "main"
         main.mkdir()
         (main / "person.txt").write_text("Jarvis\n", encoding="utf-8")
@@ -22,6 +23,8 @@ class PresetStoreTests(unittest.TestCase):
         (main / "preset.json").write_text(
             '{"protected": true}\n', encoding="utf-8"
         )
+        (self.root.parent / "capabilities/modules/agents").mkdir(parents=True, exist_ok=True)
+        (self.root.parent / "capabilities/handlers/tick").mkdir(parents=True, exist_ok=True)
         self.store = PresetStore(self.root)
 
     def tearDown(self):
@@ -34,9 +37,10 @@ class PresetStoreTests(unittest.TestCase):
                 "changed",
                 {"modules": ["agents"], "actions": [], "handlers": []},
             )
-        with self.assertRaises(ValueError):
-            self.store.delete("main")
-        self.assertEqual(self.store.load("main").person_prompt, "Jarvis")
+        self.store.edit("main", changes={"person": "changed"})
+        self.assertEqual(self.store.load("main").person_prompt, "changed")
+        self.store.delete("main")
+        self.assertFalse((self.root / "main").exists())
 
     def test_duplicate_capabilities_are_rejected(self):
         path = self.root / "main" / "capabilities.json"
@@ -51,9 +55,9 @@ class PresetStoreTests(unittest.TestCase):
         self.store.add_capability("main", "action", "say")
         self.store.add_capability("main", "handler", "tick")
         preset = self.store.load("main")
-        self.assertEqual(preset.modules, ("agents",))
+        self.assertIn("agents", preset.capabilities)
         self.assertEqual(preset.actions, ("say",))
-        self.assertEqual(preset.handlers, ("tick",))
+        self.assertIn("tick", preset.capabilities)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Contracts of the shipped capabilities_manager; no installed capabilities required."""
+"""Contracts of the built-in capability_manager and its development module."""
 
 import tempfile
 import threading
@@ -38,8 +38,8 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
             call_id="test-command",
         )
 
-    def test_capabilities_manager_has_complete_sdk_and_system_development_tools(self):
-        preset = self.presets.load("capabilities_manager")
+    def test_capability_manager_has_complete_sdk_and_system_development_tools(self):
+        preset = self.presets.load("capability_manager")
         prompt = preset.person_prompt + read_environment()
         for marker in (
             "СТРОЖАЙШЕ ЗАПРЕЩЕНО читать исходный код Jarvis",
@@ -52,36 +52,36 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
         ):
             self.assertIn(marker, prompt)
         specs = self.actions.for_capabilities(
-            modules=set(), actions=set(), developer=True
+            modules={"capability_development"}, actions={"list_capabilities", "capability_info", "toggle_capability"}
         )
         expected = {
-            "read_file",
-            "write_file",
-            "edit_file",
-            "execute_command",
+            "capability_development.read_file",
+            "capability_development.write_file",
+            "capability_development.edit_file",
+            "capability_development.execute_command",
             "list_capabilities",
             "capability_info",
             "toggle_capability",
             "send_message_to_agent",
         }
         self.assertTrue(expected.issubset(specs))
-        self.assertEqual(self.presets.load("capabilities_manager").actions, ())
+        self.assertEqual(self.presets.load("capability_manager").modules, ("capability_development",))
         main = self.actions.for_capabilities(modules=set(), actions=set(), primary=True)
         self.assertTrue(
-            (expected - {"send_message_to_agent"}).isdisjoint(main)
+            {name for name in expected if name.startswith("capability_development.")}.isdisjoint(main)
         )
 
     def test_file_tools_accept_absolute_paths_and_validate_ranges(self):
         with tempfile.TemporaryDirectory() as outside:
             target = Path(outside) / "nested" / "file.txt"
-            self.actions.require("write_file").run(
+            self.actions.require("capability_development.write_file").run(
                 {"path": str(target), "content": "one\ntwo\nthree\n"}, self.context
             )
-            result = self.actions.require("read_file").run(
+            result = self.actions.require("capability_development.read_file").run(
                 {"path": str(target), "start_line": 2, "end_line": 3}, self.context
             )
             self.assertEqual(result["content"], "2: two\n3: three")
-            self.actions.require("edit_file").run(
+            self.actions.require("capability_development.edit_file").run(
                 {
                     "path": str(target),
                     "start_line": 2,
@@ -92,7 +92,7 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
             )
             self.assertEqual(target.read_text(), "one\nchanged\nthree\n")
             with self.assertRaises(ValueError):
-                self.actions.require("edit_file").run(
+                self.actions.require("capability_development.edit_file").run(
                     {
                         "path": str(target),
                         "start_line": 0,
@@ -105,23 +105,23 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
 
     def test_relative_paths_use_capability_storage_without_truncation(self):
         content = "\n".join(f"line {index}" for index in range(12000))
-        self.actions.require("write_file").run(
+        self.actions.require("capability_development.write_file").run(
             {"path": "sample.txt", "content": content}, self.context
         )
         target = self.storage / "capabilities" / "sample.txt"
         self.assertEqual(target.read_text(), content)
-        result = self.actions.require("read_file").run(
+        result = self.actions.require("capability_development.read_file").run(
             {"path": "sample.txt"}, self.context
         )
         self.assertTrue(result["content"].endswith("12000: line 11999"))
 
     def test_bash_tool_captures_streams_and_honors_cwd(self):
-        result = self.actions.require("execute_command").run(
+        result = self.actions.require("capability_development.execute_command").run(
             {"command": "printf out; printf err >&2; exit 7", "cwd": str(self.root)},
             self.context,
         )
         self.assertEqual(result, {"exit_code": 7, "stdout": "out", "stderr": "err"})
-        result = self.actions.require("execute_command").run(
+        result = self.actions.require("capability_development.execute_command").run(
             {"command": "pwd", "cwd": None}, self.context
         )
         self.assertEqual(result["stdout"].strip(), str(self.storage / "capabilities"))

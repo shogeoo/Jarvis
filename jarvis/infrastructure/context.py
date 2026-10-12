@@ -275,52 +275,15 @@ class MemoryStore:
 
     def _save_locked(self, record: dict[str, Any]) -> None:
         agent_id = record.get("agent_id")
-        preset = record.get("preset") or "main"
+        preset = record.get("preset_id") or record.get("preset") or "main"
         directory = self.agent_dir(preset, agent_id)
         (directory / "files").mkdir(parents=True, exist_ok=True)
         self._rollback_if_needed(directory)
-        modules = _clean_capabilities(record.get("modules", []), _NAME)
-        standalone_actions = [
-            name
-            for name in record.get("actions", [])
-            if not any(name.startswith(module + ".") for module in modules)
-        ]
-        standalone_handlers = [
-            name
-            for name in record.get("handlers", [])
-            if not any(name.startswith(module + ".") for module in modules)
-        ]
-        actions = [
-            name for name in _clean_capabilities(standalone_actions, _CAPABILITY)
-        ]
-        handlers = [
-            name for name in _clean_capabilities(standalone_handlers, _CAPABILITY)
-        ]
-        disabled = [
-            f"{kind}:{name}"
-            for kind, field in (
-                ("module", "disabled_modules"),
-                ("action", "disabled_actions"),
-                ("handler", "disabled_handlers"),
-            )
-            for name in _clean_capabilities(record.get(field, []), _CAPABILITY)
-            if not any(name.startswith(module + ".") for module in modules)
-        ]
         instance = {
-            "agent_id": agent_id,
-            "name": record.get("name"),
-            "preset": preset,
-            "person_prompt": record.get("person_prompt"),
-            "protected": record.get("protected"),
-            "parent_id": record.get("parent_id"),
-            "modules": modules,
-            "actions": actions,
-            "handlers": handlers,
-            "disabled_capabilities": {
-                "modules": [item[7:] for item in disabled if item.startswith("module:")],
-                "actions": [item[7:] for item in disabled if item.startswith("action:")],
-                "handlers": [item[8:] for item in disabled if item.startswith("handler:")],
-            },
+            "agent_id": agent_id, "preset_id": preset,
+            "parent_id": record.get("parent_id"), "model": record.get("model"),
+            "additional_instructions": record.get("additional_instructions", ""),
+            "capabilities_add": _clean_capabilities(record.get("capabilities_add", []), _CAPABILITY),
         }
         messages = record.get("messages", [])
         if not isinstance(messages, list):
@@ -416,11 +379,7 @@ class MemoryStore:
     def delete(self, preset: str, agent_id: str) -> None:
         with self._save_lock:
             directory = self.agent_dir(preset, agent_id)
-            if agent_id == "main":
-                for name in ("instance.json", "context.json"):
-                    (directory / name).unlink(missing_ok=True)
-                shutil.rmtree(directory / "files", ignore_errors=True)
-            elif directory.exists():
+            if directory.exists():
                 shutil.rmtree(directory)
 
     def delete_preset(self, preset: str) -> None:
@@ -435,18 +394,10 @@ class MemoryStore:
     ) -> dict[str, Any]:
         if not isinstance(instance, dict) or not isinstance(context, list):
             raise ValueError(f"Invalid persisted instance/context: {directory}")
-        disabled = instance.get("disabled_capabilities", {})
-        if not isinstance(disabled, dict):
-            raise ValueError(f"Invalid disabled capabilities: {directory}")
         assigned = {
             "modules": _clean_capabilities(instance.get("modules", []), _NAME),
             "actions": _clean_capabilities(instance.get("actions", []), _CAPABILITY),
             "handlers": _clean_capabilities(instance.get("handlers", []), _CAPABILITY),
-        }
-        disabled = {
-            "modules": _clean_capabilities(disabled.get("modules", []), _NAME),
-            "actions": _clean_capabilities(disabled.get("actions", []), _CAPABILITY),
-            "handlers": _clean_capabilities(disabled.get("handlers", []), _CAPABILITY),
         }
         messages = []
         for message in context:
@@ -468,16 +419,15 @@ class MemoryStore:
         parent_id = instance.get("parent_id")
         if parent_id is not None and not valid_name(parent_id):
             raise ValueError(f"Invalid parent ID: {directory}")
-        return {
-            "agent_id": agent_id,
-            "name": instance.get("name") or agent_id,
-            "preset": preset,
-            "person_prompt": instance.get("person_prompt"),
-            "protected": instance.get("protected"),
-            "parent_id": parent_id,
-            **assigned,
-            "disabled_modules": disabled["modules"],
-            "disabled_actions": disabled["actions"],
-            "disabled_handlers": disabled["handlers"],
+        record = {
+            "agent_id": agent_id, "preset_id": preset,
+            "parent_id": parent_id, "model": instance.get("model"),
+            "additional_instructions": instance.get("additional_instructions", ""),
             "messages": messages,
         }
+        if "capabilities_add" in instance:
+            record["capabilities_add"] = _clean_capabilities(instance["capabilities_add"], _CAPABILITY)
+        else:
+            record["_legacy_capabilities"] = [value for values in assigned.values() for value in values]
+            record["_legacy_person"] = instance.get("person_prompt")
+        return record
