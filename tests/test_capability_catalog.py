@@ -77,7 +77,7 @@ class CatalogRuntimeTests(unittest.TestCase):
 
     def test_new_actions_append_in_enable_order_even_if_preloaded(self):
         for name in ("aaa", "zzz"):
-            fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
+            fixtures.write_action(self.root / "capabilities" / "actions", name, fixtures.SAY_ACTION)
             self.manager.capabilities.load_action(name)
         before = self.ids("actions")
         self.manager.enable_action("main", "zzz")
@@ -90,7 +90,7 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_new_events_append_in_enable_order_even_if_preloaded(self):
         for name in ("aaa", "zzz"):
             fixtures.write_handler(
-                self.root / "handlers",
+                self.root / "capabilities" / "handlers",
                 name,
                 fixtures.TICK_HANDLER.replace("tick.event", name),
             )
@@ -109,9 +109,9 @@ class CatalogRuntimeTests(unittest.TestCase):
         before = catalog(self.agent)["modules"][0]["actions"]
         self.manager.toggle_capability("module", "echo")
         fixtures.write_action(
-            self.root / "modules/echo/actions", "aaa", fixtures.ECHO_ACTION
+            self.root / "capabilities/modules/echo/actions", "aaa", fixtures.ECHO_ACTION
         )
-        path = self.root / "modules/echo/module.py"
+        path = self.root / "capabilities/modules/echo/module.py"
         source = (
             path.read_text()
             .replace(
@@ -130,7 +130,7 @@ class CatalogRuntimeTests(unittest.TestCase):
 
     def test_global_pause_and_resume_preserve_assignment_order(self):
         for name in ("aaa", "zzz"):
-            fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
+            fixtures.write_action(self.root / "capabilities" / "actions", name, fixtures.SAY_ACTION)
             self.manager.enable_action("main", name)
         before = self.ids("actions")
         self.manager.toggle_capability("action", "aaa")
@@ -141,7 +141,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         memory = MemoryStore(self.root / "memory")
         self.manager.memory = memory
         for name in ("zzz", "aaa"):
-            fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
+            fixtures.write_action(self.root / "capabilities" / "actions", name, fixtures.SAY_ACTION)
             self.manager.enable_action("main", name)
         before = catalog(self.agent)
         self.manager.persist_agent(self.agent)
@@ -161,7 +161,7 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_restore_uses_current_capability_description(self):
         memory = MemoryStore(self.root / "memory")
         self.manager.memory = memory
-        fixtures.write_action(self.root / "actions", "dynamic", fixtures.SAY_ACTION)
+        fixtures.write_action(self.root / "capabilities" / "actions", "dynamic", fixtures.SAY_ACTION)
         self.manager.enable_action("main", "dynamic")
         before = next(
             item
@@ -170,7 +170,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         )
         self.manager.persist_agent(self.agent)
         self.manager.shutdown()
-        path = self.root / "actions/dynamic/action.py"
+        path = self.root / "capabilities/actions/dynamic/action.py"
         source = path.read_text()
         path.write_text(
             source.replace(before["description"], "Current dynamic description.")
@@ -193,7 +193,7 @@ class CatalogRuntimeTests(unittest.TestCase):
 
     def test_automation_description_does_not_copy_unassigned_capabilities(self):
         fixtures.write_action(
-            self.root / "actions", "unassigned_secret", fixtures.SAY_ACTION
+            self.root / "capabilities" / "actions", "unassigned_secret", fixtures.SAY_ACTION
         )
         self.assertNotIn("unassigned_secret", self.agent._contract()[0])
         self.assertNotIn("unassigned_secret", self.agent.history[0]["content"])
@@ -441,10 +441,10 @@ class DeclarationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixtures.write_echo_module(root)
-            path = root / "modules/echo/handlers/monitor/handler.py"
+            path = root / "capabilities/modules/echo/handlers/monitor/handler.py"
             path.write_text(path.read_text().replace("echo.echoed", "unqualified"))
             with self.assertRaisesRegex(ValueError, "namespace"):
-                _load_module(root, Path("modules/echo"), "echo")
+                _load_module(root, Path("capabilities/modules/echo"), "echo")
 
     def test_json_action_identifier_is_checked_against_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -454,12 +454,12 @@ class DeclarationTests(unittest.TestCase):
                 + repr(self.description())
                 + ", run=lambda data, context: {})\n"
             )
-            fixtures.write_action(root / "actions", "echo", code)
+            fixtures.write_action(root / "capabilities" / "actions", "echo", code)
             self.assertIn(
-                "echo", _load_leaf(root, Path("actions/echo"), "action", "echo").actions
+                "echo", _load_leaf(root, Path("capabilities/actions/echo"), "action", "echo").actions
             )
             with self.assertRaisesRegex(ValueError, "Declared ID"):
-                _load_leaf(root, Path("actions/echo"), "action", "different")
+                _load_leaf(root, Path("capabilities/actions/echo"), "action", "different")
 
     def test_environment_is_common_and_contains_no_development_sdk(self):
         prompt = read_environment()

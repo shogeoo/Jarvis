@@ -6,6 +6,7 @@ import json
 import traceback
 from pathlib import Path
 from importlib.resources import files
+from .storage_migration import migrate_capability_directories
 
 _EMPTY = {"modules": [], "actions": [], "handlers": []}
 
@@ -54,8 +55,9 @@ def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
 
 def ensure_runtime_layout(root: Path) -> None:
     root = Path(root).expanduser()
+    migrate_capability_directories(root)
     for relative in (
-        "actions", "handlers", "modules", "presets", "runtime", "runtime/logs",
+        "capabilities/actions", "capabilities/handlers", "capabilities/modules", "presets", "runtime", "runtime/logs",
         "runtime/models", "runtime/segments", "runtime/voices", "memory",
         "memory/main", "memory/main/files", "memory/main/long_term/sessions",
         "memory/main/long_term/files",

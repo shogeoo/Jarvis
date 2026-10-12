@@ -354,6 +354,9 @@ def _load_module(root: Path, rel: Path, module_id: str) -> _Unit:
 
 
 def load_unit(root: Path, rel: Path) -> _Unit:
+    if len(rel.parts) == 3 and rel.parts[0] == "capabilities":
+        root = root / "capabilities"
+        rel = Path(*rel.parts[1:])
     parts = rel.parts
     if len(parts) == 2 and parts[0] in {"actions", "handlers"}:
         kind = "action" if parts[0] == "actions" else "handler"

@@ -135,7 +135,7 @@ class UnitHostTests(unittest.TestCase):
     def test_input_modalities_are_read_only_and_available_through_worker_rpc(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            path = root / "modules/isolated/actions/run/action.py"
+            path = root / "capabilities/modules/isolated/actions/run/action.py"
             path.write_text(
                 ACTION_CODE.replace(
                     'return {"value": data["value"]}',
@@ -174,7 +174,7 @@ class UnitHostTests(unittest.TestCase):
 
     def _root(self, temporary: str) -> Path:
         root = Path(temporary)
-        module = root / "modules" / "isolated"
+        module = root / "capabilities" / "modules" / "isolated"
         (module / "actions" / "run").mkdir(parents=True)
         (module / "handlers" / "idle").mkdir(parents=True)
         (module / "actions" / "run" / "action.py").write_text(
@@ -233,7 +233,7 @@ class UnitHostTests(unittest.TestCase):
     def test_standalone_action_unit_returns_result(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            unit = root / "actions" / "echo"
+            unit = root / "capabilities" / "actions" / "echo"
             unit.mkdir(parents=True)
             (unit / "action.py").write_text(ACTION_CODE, encoding="utf-8")
             python = unit / ".venv" / "bin" / "python"
@@ -259,7 +259,7 @@ class UnitHostTests(unittest.TestCase):
     def test_signal_reaches_running_unit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            unit = root / "actions" / "beacon"
+            unit = root / "capabilities" / "actions" / "beacon"
             unit.mkdir(parents=True)
             (unit / "action.py").write_text(SIGNAL_ACTION, encoding="utf-8")
             python = unit / ".venv" / "bin" / "python"
@@ -286,7 +286,7 @@ class UnitHostTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            unit = root / "actions" / "concurrent"
+            unit = root / "capabilities" / "actions" / "concurrent"
             unit.mkdir(parents=True)
             (unit / "action.py").write_text(code, encoding="utf-8")
             manager, actions, fake = self._manager(root)
@@ -315,7 +315,7 @@ class UnitHostTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            unit = root / "actions" / "once"
+            unit = root / "capabilities" / "actions" / "once"
             unit.mkdir(parents=True)
             (unit / "action.py").write_text(code, encoding="utf-8")
             manager, actions, fake = self._manager(root)
@@ -345,7 +345,7 @@ class UnitHostTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = self._root(temporary)
-            unit = root / "actions" / "named"
+            unit = root / "capabilities" / "actions" / "named"
             unit.mkdir(parents=True)
             (unit / "action.py").write_text(code, encoding="utf-8")
             manager, actions, fake = self._manager(root)

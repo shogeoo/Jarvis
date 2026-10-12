@@ -141,7 +141,7 @@ class CapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary))
             fixtures.write_action(
-                root / "actions",
+                root / "capabilities" / "actions",
                 "bad",
                 "from dataclasses import replace\n"
                 "from jarvis.capabilities import action_definition\n"

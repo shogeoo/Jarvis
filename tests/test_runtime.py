@@ -111,7 +111,7 @@ class RuntimeTests(unittest.TestCase):
     def load_installed_action(self, action_id):
         if self.actions.get(action_id) is not None:
             return SimpleNamespace(run=self.actions.require(action_id).run)
-        path = self.root / "actions" / action_id / "action.py"
+        path = self.root / "capabilities" / "actions" / action_id / "action.py"
         spec = importlib.util.spec_from_file_location(
             f"installed_{action_id}_action", path
         )
@@ -169,7 +169,7 @@ class RuntimeTests(unittest.TestCase):
 
     def write_action(self, action_id, data_schema, result_schema, run_body):
         fixtures.write_action(
-            self.root / "actions",
+            self.root / "capabilities" / "actions",
             action_id,
             _action_file(data_schema, result_schema, run_body),
         )

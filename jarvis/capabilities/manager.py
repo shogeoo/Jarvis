@@ -33,6 +33,7 @@ from ..core.protocol import (
 from ..core.registry import ActionRegistry, EventRegistry
 from ..infrastructure.config import DEFAULT_JARVIS_DIR
 from ..infrastructure.debug import Debugger
+from ..infrastructure.storage_migration import migrate_capability_directories
 from .api import (
     PENDING,
     ActionContext,
@@ -118,9 +119,11 @@ class CapabilityManager:
         self.actions = actions
         self.events = events
         self.root = Path(root)
-        self.actions_dir = self.root / "actions"
-        self.handlers_dir = self.root / "handlers"
-        self.modules_dir = self.root / "modules"
+        migrate_capability_directories(self.root)
+        self.storage_root = self.root / "capabilities"
+        self.actions_dir = self.storage_root / "actions"
+        self.handlers_dir = self.storage_root / "handlers"
+        self.modules_dir = self.storage_root / "modules"
         self.config = config
         self.debug = debug or Debugger(enabled=False)
         self.services = services if services is not None else {}
@@ -185,7 +188,7 @@ class CapabilityManager:
 
     @staticmethod
     def _rel(kind: str, unit_id: str) -> str:
-        return f"{_DIRS[kind]}/{unit_id}"
+        return f"capabilities/{_DIRS[kind]}/{unit_id}"
 
     def discover_modules(self) -> list[Path]:
         return self._discover_units(self.modules_dir, "module")

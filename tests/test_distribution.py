@@ -58,7 +58,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(store.load("capabilities_manager").actions, ())
             self.assertEqual(json.loads((root / "presets/capabilities_manager/capabilities.json").read_text()),
                              {"modules": [], "actions": [], "handlers": []})
-            self.assertEqual(list((root / "actions").iterdir()), [])
+            self.assertEqual(list((root / "capabilities" / "actions").iterdir()), [])
             original = root / "presets" / "main" / "person.txt"
             original.write_text("Personal prompt", encoding="utf-8")
             ensure_runtime_layout(root)
