@@ -18,10 +18,6 @@ class DescriptionTests(unittest.TestCase):
         actions, events = ActionRegistry(), EventRegistry()
         register_core_protocol(actions, events)
         specs = actions.all()
-        specs["create_automation"] = replace(specs["create_automation"], data_schema=AgentManager.automation_data_schema(None))
-        specs["edit_automation"] = replace(specs["edit_automation"], data_schema=object_schema({
-            "automation_id": {"type": "string"}, "automation": AgentManager.automation_data_schema(None),
-        }))
         return specs, events.all()
 
     def test_all_builtin_descriptions_preserve_schema_and_execution(self):

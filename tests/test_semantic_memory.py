@@ -134,7 +134,7 @@ class SemanticMemoryTests(unittest.TestCase):
             self.assertNotIn("Georgiy uses dual boot.", before)
             self.assertIn('"content": "Georgiy uses dual boot."', after)
             self.assertIn('"id": "mem_000001"', after)
-            self.assertIn("MODEL INFO:\nТекущая модель: gpt-6-luna", after)
+            self.assertIn("<MODEL_INFO>\nТекущая модель: gpt-6-luna", after)
             self.assertEqual(
                 primary["memory_edit"].run(
                     {"id": identifier, "content": "Georgiy prefers Russian."}, context
@@ -156,7 +156,7 @@ class SemanticMemoryTests(unittest.TestCase):
                 agent_name="Other",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text",)),
             )
-            self.assertNotIn("MEMORY:", without_memory)
+            self.assertNotIn("<MEMORY>", without_memory)
 
     def test_next_inference_reads_memory_written_by_previous_action(self):
         fixture = runtime_tests.RuntimeTests()

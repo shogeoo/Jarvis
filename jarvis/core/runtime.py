@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from ..infrastructure.context import MemoryStore
-from ..infrastructure.automations import AutomationStore
 from ..infrastructure.debug import Debugger
 from ..infrastructure.model_capabilities import ModelCapabilities
 from ..infrastructure.semantic_memory import SemanticMemory
@@ -415,11 +414,6 @@ class Agent:
         self._active_stream = None
         self._used_call_ids = self._scan_call_ids(self.history)
 
-    def _is_automated_result(self, item: Event | CallResult) -> bool:
-        return (isinstance(item, CallResult)
-                and bool(re.fullmatch(r"auto-[0-9]{5,}", item.call_id))
-                and item.call_id in self._used_call_ids)
-
     @staticmethod
     def _scan_call_ids(messages: list[dict[str, Any]]) -> set[str]:
         used = set()
@@ -610,13 +604,6 @@ class Agent:
         assigned_events = [self.manager.capabilities.event_id_for_handler(name) for name in self._assignment_order["handlers"] if name in snapshot["handlers"]]
         events = {**{name: spec for name, spec in events.items() if name not in assigned_events},
                   **{name: events[name] for name in assigned_events}}
-        if self.primary:
-            for name in ("create_automation", "edit_automation"):
-                if name in actions:
-                    schema = self.manager.automation_data_schema()
-                    if name == "edit_automation":
-                        schema = object_schema({"automation_id": {"type": "string"}, "automation": schema})
-                    actions[name] = replace(actions[name], data_schema=schema)
         actions, events = apply_descriptions(actions, events)
         self.history[0] = {
             "role": "system",
@@ -798,29 +785,7 @@ class Agent:
                     )
                     model_value = item.model_value()
 
-                automation = self.manager.matching_automation(model_value)
-                if not automation:
-                    if not self._is_automated_result(item):
-                        requires_model = True
-                    continue
-                automated_actions = self.manager.automation_requests(
-                    automation, specs=specs, agent=self
-                )
-                if automated_actions is None:
-                    if not self._is_automated_result(item):
-                        requires_model = True
-                    continue
-                assistant_content = json.dumps(
-                    {"actions": [action.model_value() for action in automated_actions]},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
-                self.history.append({"role": "assistant", "content": assistant_content})
-                self._used_call_ids.update(self._scan_call_ids([self.history[-1]]))
-                self.manager.debug.model(self.agent_id, assistant_content)
-                self._persist_context()
-                self._set_state("acting", action_count=len(automated_actions), automated=True)
-                self._execute_actions(automated_actions, specs)
+                requires_model = True
 
         self._persist_context()
         if not requires_model:
@@ -895,8 +860,6 @@ class Agent:
             try:
                 if repeated:
                     raise ValueError(f"call_id уже использован в context: {sorted(repeated)!r}")
-                if any(re.fullmatch(r"auto-[0-9]{5,}", identifier) for identifier in appeared):
-                    raise ValueError("auto-xxxxx call_id зарезервирован для автоматизаций")
                 value = json.loads(content)
                 validate_json(
                     value,
@@ -1026,12 +989,6 @@ class AgentManager:
             (Path(config.jarvis_dir) if config is not None else presets.root.parent) / "memory" / "main" / "semantic.json"
         )
         self.results = CallResultTracker(debug=self.debug)
-        automation_path = (
-            Path(config.jarvis_dir) / "automations.json"
-            if config is not None
-            else presets.root.parent / "automations.json"
-        )
-        self.automations = AutomationStore(automation_path, resolve_handler=self.capabilities.event_id_for_handler)
         self.stopping = threading.Event()
         self.processes = ProcessManager()
         self.services.setdefault("process_manager", self.processes)
@@ -1040,82 +997,6 @@ class AgentManager:
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
         bus.manager = self  # type: ignore[attr-defined]
-
-    def matching_automation(self, model_value: dict[str, Any]) -> list[dict[str, Any]]:
-        try:
-            return self.automations.matching(model_value)
-        except Exception as exc:  # noqa: BLE001
-            self.debug.log("automation_read_error", error=str(exc))
-            return []
-
-    def automation_requests(
-        self,
-        automations: list[dict[str, Any]],
-        *,
-        specs: dict[str, ActionDefinition],
-        agent: Agent,
-    ) -> list[ActionRequest] | None:
-        requests = []
-        reserved = set(agent._used_call_ids)
-        for automation in automations:
-            for item in automation["actions"]:
-                spec = specs.get(item["action_id"])
-                if spec is None:
-                    self.debug.log(
-                        "automation_action_unavailable",
-                        agent_id=agent.agent_id,
-                        action_id=item["action_id"],
-                    )
-                    return None
-                try:
-                    validate_json(
-                        item["data"], spec.data_schema,
-                        where=f"automation action {item['action_id']}",
-                    )
-                except ValueError as exc:
-                    self.debug.log(
-                        "automation_action_invalid",
-                        agent_id=agent.agent_id,
-                        action_id=item["action_id"],
-                        error=str(exc),
-                    )
-                    return None
-                call_number = max((int(value[5:]) for value in reserved
-                                   if re.fullmatch(r"auto-[0-9]{5,}", value)), default=0) + 1
-                call_id = f"auto-{call_number:05d}"
-                reserved.add(call_id)
-                requests.append(
-                    ActionRequest(
-                        action_id=item["action_id"],
-                        call_id=call_id,
-                        data=item["data"],
-                    )
-                )
-        agent._used_call_ids.update(action.call_id for action in requests)
-        return requests
-
-    def automation_data_schema(self) -> dict[str, Any]:
-        """Describe automation structure once, without copying capability catalogs."""
-        data = object_schema({}, additional_properties=True)
-        action = object_schema({
-            "action_id": {"type": "string", "description": "An available action identifier."},
-            "data": {**data, "description": "Arguments matching that action's data_schema."},
-        })
-        actions = {"type": "array", "minItems": 1, "items": action, "description": "Actions to execute when the trigger matches, without call identifiers."}
-        event = object_schema({
-            "event_id": {"type": "string", "description": "The exact event identifier."},
-            "data": {**data, "description": "The complete event data to match exactly."},
-        })
-        result = object_schema({
-            "event_id": {"type": "string", "enum": ["call_result"]},
-            "call_id": {"type": "string", "description": "Example invocation identifier; its value is ignored when matching."},
-            "data": {**data, "description": "The complete result data to match exactly."},
-        })
-        return object_schema({
-            "event": {**event, "type": ["object", "null"], "description": "Complete event trigger, or null when using a call_result trigger.", "default": None},
-            "call_result": {**result, "type": ["object", "null"], "description": "Complete result trigger, or null when using an event trigger.", "default": None},
-            "actions": actions,
-        }, required=["actions"])
 
     def _new_id(self) -> str:
         with self._lock:

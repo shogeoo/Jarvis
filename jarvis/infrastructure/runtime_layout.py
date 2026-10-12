@@ -59,11 +59,9 @@ def ensure_runtime_layout(root: Path) -> None:
     for relative in (
         "capabilities/actions", "capabilities/handlers", "capabilities/modules", "presets", "runtime", "runtime/logs",
         "runtime/models", "runtime/segments", "runtime/voices", "memory",
-        "memory/main", "memory/main/files", "memory/main/long_term/sessions",
-        "memory/main/long_term/files",
+        "memory/main", "memory/main/files",
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
-    _write_if_missing(root / "automations.json", "[]\n")
     _write_if_missing(root / "memory" / "main" / "semantic.json", json.dumps({"entries": []}, indent=2) + "\n")
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
     _ensure_preset(root, "main", protected=True)

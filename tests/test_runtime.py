@@ -14,7 +14,6 @@ from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest, CallResult, Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.presets import PresetStore
@@ -204,77 +203,7 @@ class RuntimeTests(unittest.TestCase):
             ["say-1", "say-2"],
         )
 
-    def test_automation_dispatches_as_an_assistant_action_into_agent_context(self):
-        client = _Client([_no_action("after-automation")])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        AutomationStore(self.root / "automations.json").append(
-            {
-                "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                "actions": [{"action_id": "say", "data": {"text": "automated"}}],
-            }
-        )
-
-        self.publish(agent, "go")
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 1))
-        assistant_actions = [
-            json.loads(message["content"])
-            for message in agent.history
-            if message["role"] == "assistant"
-            and "auto-" in message["content"]
-        ]
-        self.assertEqual(
-            assistant_actions,
-            [{"actions": [{"action_id": "say", "call_id": "auto-00001", "data": {"text": "automated"}}]}],
-        )
-        self.assertEqual(self.call_results(agent)[0]["call_id"], "auto-00001")
-        self.publish(agent, "go")
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
-        self.assertEqual(
-            [item["call_id"] for item in self.call_results(agent)],
-            ["auto-00001", "auto-00002"],
-        )
-        self.assertEqual(client.chat.completions.calls, [])
-
-    def test_automated_result_does_not_request_model_after_restore(self):
-        memory = MemoryStore(self.root / "memory")
-        client = _Client([_no_action("unexpected")])
-        manager = self.manager(client, memory=memory)
-        agent = manager.spawn_root(name="main", preset="main")
-        agent.history.append({"role": "assistant", "content": '{"actions":[{"action_id":"say","call_id":"auto-00042","data":{"text":"done"}}]}'})
-        agent._used_call_ids.add("auto-00042")
-        manager.persist_agent(agent)
-        record = memory.load("main", "main")
-        self.assertNotIn("automated_call_ids", record)
-        self.assertNotIn("automated_call_ids", json.loads((memory.root / "main/instance.json").read_text()))
-        self.assertIn("auto-00042", str(record["messages"]))
-        manager.shutdown()
-        restored_manager = self.manager(client, memory=memory)
-        restored = restored_manager.restore(name="main", preset="main")
-        restored.enqueue_result(CallResult(call_id="auto-00042", agent_id="main", data={"spoken": True, "text": "done"}))
-        self.assertTrue(_wait(lambda: len(self.call_results(restored)) == 1))
-        self.assertTrue(_wait(lambda: restored.state == "waiting"))
-        self.assertEqual(client.chat.completions.calls, [])
-
-    def test_automation_call_numbers_continue_after_restore(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            memory = MemoryStore(Path(temporary))
-            first = self.manager(_Client([]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
-            AutomationStore(self.root / "automations.json").append({
-                "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                "actions": [{"action_id": "say", "data": {"text": "automated"}}],
-            })
-            self.publish(agent, "go")
-            self.assertTrue(_wait(lambda: any(item["call_id"] == "auto-00001" for item in self.call_results(agent))))
-            first.shutdown()
-            second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
-            self.publish(restored, "go")
-            self.assertTrue(_wait(lambda: any(item["call_id"] == "auto-00002" for item in self.call_results(restored))))
-            second.shutdown()
-
-    def test_automatic_result_and_normal_event_batch_requests_model_once(self):
+    def test_result_and_normal_event_batch_requests_model_once(self):
         client = _Client([_no_action("batch-done")])
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
@@ -286,68 +215,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(client.chat.completions.calls), 1)
         self.assertIn("auto-00001", str(client.chat.completions.calls[0]["messages"]))
 
-    def test_normal_call_with_auto_prefix_is_not_an_automation(self):
-        client = _Client([_no_action("normal-done")])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        agent.enqueue_result(CallResult(call_id="auto-00099", agent_id="main", data={"spoken": True}))
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) == 1))
-
-    def test_call_result_automation_ignores_real_call_id_and_uses_normal_dispatch(self):
-        client = _Client([_no_action("after-call-result-automation")])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        AutomationStore(self.root / "automations.json").append(
-            {
-                "call_result": {
-                    "event_id": "call_result",
-                    "call_id": "example-id-not-used-at-runtime",
-                    "data": {"spoken": True, "text": "origin"},
-                },
-                "actions": [{"action_id": "say", "data": {"text": "follow-up"}}],
-            }
-        )
-
-        manager.capabilities.dispatch(
-            action=ActionRequest(
-                "say", {"text": "origin"}, "a-real-unrelated-call-id"
-            ),
-            spec=self.actions.require("say"),
-            agent=agent,
-        )
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
-        self.assertEqual(
-            [result["call_id"] for result in self.call_results(agent)],
-            ["a-real-unrelated-call-id", "auto-00001"],
-        )
-        follow_up = next(
-            json.loads(message["content"])
-            for message in agent.history
-            if message["role"] == "assistant" and "auto-00001" in message["content"]
-        )
-        self.assertEqual(follow_up["actions"][0]["data"], {"text": "follow-up"})
-        self.assertEqual(client.chat.completions.calls, [])
-
     def test_management_actions_return_their_declared_result_shapes(self):
         client = _Client([_no_action("after-management")])
-        self.install_project_action("create_automation")
         self.install_project_action("create_preset")
-        self.enable_for_main("create_automation", "create_preset")
+        self.enable_for_main("create_preset")
         manager = self.manager(client)
         agent = manager.spawn_root(name="main", preset="main")
         contract = agent._contract()[0]
-        manager.capabilities.dispatch(
-            action=ActionRequest(
-                "create_automation",
-                {
-                    "event": {"event_id": "tick.event", "data": {"text": "saved"}},
-                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-                },
-                "create-automation-call",
-            ),
-            spec=contract["create_automation"],
-            agent=agent,
-        )
         manager.capabilities.dispatch(
             action=ActionRequest(
                 "create_preset",
@@ -378,10 +252,8 @@ class RuntimeTests(unittest.TestCase):
             spec=contract["create_preset"],
             agent=agent,
         )
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 3))
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
         results = {item["call_id"]: item["data"] for item in self.call_results(agent)}
-        self.assertEqual(results["create-automation-call"]["status"], "created")
-        self.assertIsNone(results["create-automation-call"]["error"])
         self.assertEqual(results["create-preset-call"]["status"], "not_created")
         self.assertIn("missing-action", results["create-preset-call"]["error"])
         self.assertEqual(
@@ -389,29 +261,17 @@ class RuntimeTests(unittest.TestCase):
             {"status": "created", "preset_id": "empty-preset", "error": None},
         )
         self.assertTrue((self.root / "presets" / "empty-preset").is_dir())
-        stored = AutomationStore(self.root / "automations.json").list()
-        stored = [{key: value for key, value in rule.items() if key != "automation_id"} for rule in stored]
-        self.assertEqual(
-            stored,
-            [
-                {
-                    "event": {"event_id": "tick.event", "data": {"text": "saved"}},
-                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-                }
-            ],
-        )
 
     def test_primary_only_management_actions_are_not_in_subagent_prompt(self):
         client = _Client([_no_action("main-ready"), _no_action("worker-ready")])
-        self.install_project_action("create_automation")
         self.install_project_action("create_preset")
-        self.enable_for_main("create_automation", "create_preset")
+        self.enable_for_main("create_preset")
         manager = self.manager(client)
         main = manager.spawn_root(name="main", preset="main")
         worker = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
         main_prompt = main.history[0]["content"]
         worker_prompt = manager.require_agent(worker["agent_id"]).history[0]["content"]
-        for action_id in ("create_automation", "create_preset"):
+        for action_id in ("create_preset",):
             self.assertIn(f'"action_id": "{action_id}"', main_prompt)
             self.assertNotIn(f'"action_id": "{action_id}"', worker_prompt)
 
@@ -780,18 +640,6 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(self.call_results(restored)), 1)
 
             restarted.shutdown()
-
-    def test_model_cannot_use_reserved_automation_call_id(self):
-        client = _Client([
-            '{"actions":[{"action_id":"say","call_id":"auto-00001","data":{"text":"wrong"}}]}',
-            _no_action("fresh-after-reserved"),
-        ])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        self.assertEqual(self.call_results(agent), [])
-        self.assertIn("зарезервирован", str(agent.history))
 
     def test_transient_model_failure_retries_without_duplicate_input(self):
         class Flaky:

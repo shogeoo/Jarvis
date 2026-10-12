@@ -10,7 +10,6 @@ from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
@@ -104,25 +103,6 @@ class SystemStateTests(unittest.TestCase):
         for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
             self.assertIn(action_id, specs)
             self.assertNotIn(action_id, self.main._contract()[0])
-
-    def test_concurrent_automation_creations_and_edit_preserve_other_rules(self):
-        store = self.manager.automations
-        def create(index):
-            store.create({"event": {"event_id": "tick", "data": {"index": index}}, "actions": [{"action_id": "speech", "data": {"text": str(index)}}]})
-        threads = [threading.Thread(target=create, args=(index,)) for index in range(20)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        rules = store.identified()
-        self.assertEqual(len(rules), 20)
-        self.assertEqual(len({item["automation_id"] for item in rules}), 20)
-        identifier = rules[0]["automation_id"]
-        replacement = {"event": {"event_id": "new", "data": {}}, "actions": [{"action_id": "speech", "data": {"text": "edited"}}]}
-        store.edit(identifier, replacement)
-        self.assertEqual(len(store.list()), 20)
-        store.remove_id(identifier)
-        self.assertEqual(len(store.list()), 19)
 
     def test_corrupted_startup_state_is_reported_and_preserved(self):
         global_file = self.root / "capability_state.json"

@@ -22,13 +22,12 @@ from jarvis.core.protocol import (
     validate_data_schema,
     validate_result,
 )
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 
 
 def catalog(agent):
     agent._contract()
-    return json.loads(agent.history[0]["content"].split("CAPABILITIES:\n", 1)[1])
+    return json.loads(agent.history[0]["content"].split("<CAPABILITIES>\n", 1)[1].split("\n</CAPABILITIES>", 1)[0])
 
 
 class CatalogRuntimeTests(unittest.TestCase):
@@ -191,49 +190,12 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.manager.enable_action("main", "execute_command")
         self.assertEqual(self.ids("actions")[-1], "execute_command")
 
-    def test_automation_description_does_not_copy_unassigned_capabilities(self):
-        fixtures.write_action(
-            self.root / "capabilities" / "actions", "unassigned_secret", fixtures.SAY_ACTION
-        )
-        self.assertNotIn("unassigned_secret", self.agent._contract()[0])
-        self.assertNotIn("unassigned_secret", self.agent.history[0]["content"])
-        self.assertLess(len(json.dumps(self.manager.automation_data_schema())), 6000)
-
     def test_startup_event_is_described_only_to_main(self):
         info = self.manager.spawn(parent_id="main", name="worker", preset="worker")
         worker = self.manager.require_agent(info["agent_id"])
         self.assertIn("system_started", self.ids("events"))
         self.assertNotIn(
             "system_started", [event["event_id"] for event in catalog(worker)["events"]]
-        )
-
-    def test_automation_tools_use_the_same_object_parameter_contract(self):
-        specs, _ = self.agent._contract()
-        for name in ("create_automation", "edit_automation"):
-            schema = specs[name].data_schema
-            self.assertEqual(schema["type"], "object")
-            self.assertIn("properties", schema)
-            for field, parameter in schema["properties"].items():
-                self.assertIn("type", parameter, field)
-                self.assertIn("default", parameter, field)
-        spec = specs["create_automation"]
-        data = arguments_with_defaults(
-            {
-                "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-            },
-            spec.data_schema,
-        )
-        self.assertIsNone(data["call_result"])
-        context = SimpleNamespace(
-            agent_id="main",
-            action_id="create_automation",
-            agent_manager=SimpleNamespace(_manager=self.manager),
-        )
-        result = spec.run(data, context)
-        self.assertEqual(result["status"], "created")
-        self.assertEqual(
-            self.manager.automations.list()[0]["event"]["event_id"], "tick.event"
         )
 
     def test_optional_default_reaches_normal_dispatch_and_partial_result_is_accepted(
@@ -298,8 +260,8 @@ class DeclarationTests(unittest.TestCase):
             "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
             agent_id="agent-001", agent_name="Example",
         )
-        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n\nAGENT_INFO:\nТебя зовут Example. Твой идентификатор agent-001.\n\nCAPABILITIES:\n"
-        expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
+        expected = "<ENVIRONMENT>\nEnvironment.\n</ENVIRONMENT>\n\n<PERSON>\nPersonality.\n</PERSON>\n\n<MODEL_INFO>\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n</MODEL_INFO>\n\n<AGENT_INFO>\nТебя зовут Example. Твой идентификатор agent-001.\n</AGENT_INFO>\n\n<CAPABILITIES>\n"
+        expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2) + "\n</CAPABILITIES>"
         self.assertEqual(prompt, expected)
 
     def description(self):
@@ -469,19 +431,6 @@ class DeclarationTests(unittest.TestCase):
         self.assertIn("event_id имеет значение call_result", prompt)
         for concrete in ("main", "capabilities_manager", "system_started", "telegram", "speech", "spawn_agent"):
             self.assertNotIn(concrete, prompt)
-
-    def test_legacy_automation_is_read_without_rewriting_saved_file(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "automations.json"
-            old = '[{"event":{"handler_id":"watch","data":{}},"actions":[{"action_id":"echo","data":{"text":"ok"}}]}]'
-            path.write_text(old)
-            store = AutomationStore(path, resolve_handler=lambda identifier: "notice")
-            self.assertEqual(
-                store.list()[0]["event"], {"event_id": "notice", "data": {}}
-            )
-            self.assertEqual(len(store.matching({"event_id": "notice", "data": {}})), 1)
-            self.assertEqual(path.read_text(), old)
-
 
 if __name__ == "__main__":
     unittest.main()

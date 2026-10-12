@@ -404,7 +404,7 @@ def define_toggle_capability():
     )
 
 
-SYSTEM_MAIN = frozenset(["spawn_agent","interrupt_agent","delete_agent","list_agents","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities"] + ["create_preset", "edit_preset", "remove_preset", "create_automation", "edit_automation", "remove_automation", "list_automations"])
+SYSTEM_MAIN = frozenset(["spawn_agent","interrupt_agent","delete_agent","list_agents","list_agent_presets","enable_capability","disable_capability","list_active_capabilities","list_available_capabilities"] + ["create_preset", "edit_preset", "remove_preset"])
 SYSTEM_DEVELOPER = frozenset(["read_file", "write_file", "edit_file", "execute_command", "list_capabilities", "capability_info", "toggle_capability"])
 SYSTEM_ALL = frozenset(["send_message_to_agent"])
 SYSTEM_MAIN = SYSTEM_MAIN | frozenset({"reply", "memory_write", "memory_edit", "memory_delete"})
@@ -446,27 +446,9 @@ def reply(data, context):
 
 def state_action(data, context):
     if context.agent_id != "main":
-        if context.action_id.endswith("automation") or context.action_id == "list_automations":
-            raise ValueError("Only main may manage automations")
         return {"status": "not_" + {"create_preset": "created", "edit_preset": "edited", "remove_preset": "removed"}[context.action_id], "preset_id": data["preset_id"], "error": "Only main may manage presets"}
     manager = context.agent_manager._manager
     action_id = context.action_id
-    if action_id == "list_automations":
-        return {"automations": manager.automations.identified()}
-    if action_id.endswith("automation"):
-        store = manager.automations
-        operation = action_id.split("_", 1)[0]
-        identifier = data.get("automation_id")
-        try:
-            if operation == "create":
-                identifier = store.create({key: value for key, value in data.items() if key not in {"event", "call_result"} or value is not None})
-            elif operation == "edit":
-                store.edit(identifier, {key: value for key, value in data["automation"].items() if key not in {"event", "call_result"} or value is not None})
-            else:
-                store.remove_id(identifier)
-        except Exception as exc:
-            return {"status": {"create": "not_created", "edit": "not_edited", "remove": "not_removed"}[operation], "automation_id": identifier, "error": str(exc)}
-        return {"status": {"create": "created", "edit": "edited", "remove": "removed"}[operation], "automation_id": identifier, "error": None}
     operation = action_id.split("_", 1)[0]
     identifier = data["preset_id"]
     try:
@@ -493,24 +475,15 @@ def state_action(data, context):
 
 def register_state_actions(registry):
     string = {"type": "string"}
-    open_object = {"type": "object", "additionalProperties": True, "x-jarvis-open-object": True}
-    for noun in ("preset", "automation"):
-        for operation in ("create", "edit", "remove"):
-            action_id = operation + "_" + noun
-            if noun == "preset":
-                properties = {"preset_id": string}
-                if operation != "remove":
-                    properties.update({"person_prompt": string, **{key: {"type": "array", "items": string} for key in ("actions", "handlers", "modules")}})
-                args = object_schema(properties)
-            else:
-                args = open_object if operation == "create" else object_schema({"automation_id": string, **({"automation": open_object} if operation == "edit" else {})})
-            success = {"create": "created", "edit": "edited", "remove": "removed"}[operation]
-            result = object_schema({"status": {"type": "string", "enum": [success, "not_" + success]}, noun + "_id": {"type": ["string", "null"]} if noun == "automation" else string, "error": {"type": ["string", "null"]}})
-            description = (action_id + ": update Jarvis state. Editing a preset affects only future instances. Removing a preset recursively deletes its instances and descendants.") if noun == "preset" else (
-                action_id + ": manage an exact-match automation. For create/edit provide exactly one non-null event or call_result trigger and a non-empty actions array without call_id. Omit the other trigger or set it to null. Match the entire event/data structure; only a call_result trigger's call_id value is ignored."
-            )
-            registry.register(replace(action_definition(description, args, result, state_action), id=action_id, owner="core:primary"))
-    registry.register(replace(action_definition("List saved automations and their automation_id values.", object_schema({}), object_schema({"automations": {"type": "array", "items": open_object}}), state_action), id="list_automations", owner="core:primary"))
+    for operation in ("create", "edit", "remove"):
+        action_id = operation + "_preset"
+        properties = {"preset_id": string}
+        if operation != "remove":
+            properties.update({"person_prompt": string, **{key: {"type": "array", "items": string} for key in ("actions", "handlers", "modules")}})
+        success = {"create": "created", "edit": "edited", "remove": "removed"}[operation]
+        result = object_schema({"status": {"type": "string", "enum": [success, "not_" + success]}, "preset_id": string, "error": {"type": ["string", "null"]}})
+        definition = action_definition(action_id + ": update a preset. Removing a preset recursively deletes its instances and descendants.", object_schema(properties), result, state_action)
+        registry.register(replace(definition, id=action_id, owner="core:primary"))
 
 def register_system_actions(registry):
     from .developer_actions import register_developer_actions

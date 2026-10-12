@@ -106,34 +106,6 @@ class SubscriptionTests(unittest.TestCase):
             {"path": "/tmp/file"},
         )
 
-    def test_open_automation_data_round_trips_as_json(self):
-        schema = actions_response_schema(
-            {"create_automation": AgentManager.automation_data_schema(None)}
-        )
-        answer = json.dumps(
-            {
-                "actions": [
-                    {
-                        "action_id": "create_automation",
-                        "call_id": "a-2",
-                        "data": {
-                            "event": {
-                                "event_id": "speech_detected",
-                                "data": '{"text":"go"}',
-                            },
-                            "call_result": None,
-                            "actions": [
-                                {"action_id": "speech", "data": '{"text":"hello"}'}
-                            ],
-                        },
-                    }
-                ]
-            }
-        )
-        result = json.loads(_normalize_response(answer, schema))["actions"][0]["data"]
-        self.assertEqual(result["event"]["data"], {"text": "go"})
-        self.assertEqual(result["actions"][0]["data"], {"text": "hello"})
-
     def test_direct_context_keeps_system_role_history_and_image(self):
         messages = [
             {"role": "system", "content": "Jarvis system prompt"},
@@ -310,7 +282,7 @@ class SubscriptionTests(unittest.TestCase):
                 "messages": [
                     {
                         "role": "system",
-                        "content": "MODEL INFO:\n"
+                        "content": "<MODEL_INFO>\n"
                         + ModelCapabilities(
                             "gpt-6-luna", ("text", "image")
                         ).prompt_block(),
@@ -470,7 +442,7 @@ class SubscriptionTests(unittest.TestCase):
                     discover.assert_not_called()
                     speech.begin_background.assert_called_once()
                     self.assertIn(
-                        "MODEL INFO:\nТекущая модель: gpt-6-luna",
+                        "<MODEL_INFO>\nТекущая модель: gpt-6-luna",
                         app.main_agent.history[0]["content"],
                     )
                     self.assertTrue(

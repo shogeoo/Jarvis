@@ -11,6 +11,16 @@ from jarvis.infrastructure.prompt_templates import render_template
 
 
 class PromptTemplateTests(unittest.TestCase):
+    def test_additional_instructions_are_separate_and_optional(self):
+        arguments = dict(agent_id="agent-001", agent_name="Example", preset_id="developer")
+        plain = agent_system_prompt("Person", "Environment", {}, {}, {}, **arguments)
+        self.assertNotIn("<ADDITIONAL_INSTRUCTIONS>", plain)
+        expanded = agent_system_prompt("Person", "Environment", {}, {}, {}, additional_instructions="Run tests.", **arguments)
+        self.assertIn("<PERSON>\nPerson\n</PERSON>", expanded)
+        self.assertIn("<ADDITIONAL_INSTRUCTIONS>\nRun tests.\n</ADDITIONAL_INSTRUCTIONS>", expanded)
+        self.assertLess(expanded.index("</PERSON>"), expanded.index("<ADDITIONAL_INSTRUCTIONS>"))
+        self.assertLess(expanded.index("</ADDITIONAL_INSTRUCTIONS>"), expanded.index("<MODEL_INFO>"))
+
     def test_custom_templates_are_used_for_dynamic_sections(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -29,10 +39,10 @@ class PromptTemplateTests(unittest.TestCase):
                     model_capabilities=ModelCapabilities("current-model", ("text", "image")),
                     semantic_memory={"entries": []},
                 )
-            self.assertIn('MEMORY:\nCustom memory instruction.\n{\n  "entries": []\n}', system)
-            self.assertIn("MODEL INFO:\nSelected model: current-model\nInputs: text, image.", system)
-            self.assertIn("AGENT_INFO:\nIdentity: Jarvis / main.", system)
-            self.assertLess(system.index("MODEL INFO:"), system.index("AGENT_INFO:"))
+            self.assertIn('<MEMORY>\nCustom memory instruction.\n{\n  "entries": []\n}', system)
+            self.assertIn("<MODEL_INFO>\nSelected model: current-model\nInputs: text, image.", system)
+            self.assertIn("<AGENT_INFO>\nIdentity: Jarvis / main.", system)
+            self.assertLess(system.index("<MODEL_INFO>"), system.index("<AGENT_INFO>"))
 
     def test_values_containing_braces_are_not_reformatted(self):
         self.assertEqual(render_template("agent_info.txt", name="Agent {custom}", agent_id="agent-001"),

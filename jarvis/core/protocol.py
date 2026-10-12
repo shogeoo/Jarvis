@@ -48,7 +48,6 @@ _FIELD_DESCRIPTIONS = {
     "name": "Human-readable name of the agent.",
     "preset": "Name of the agent preset.",
     "preset_id": "Identifier of the preset.",
-    "automation_id": "Persistent identifier of the automation rule.",
     "person_prompt": "Personality, role and task instructions for future preset instances.",
     "kind": "Capability category: module, action or handler.",
     "id": "Identifier of the capability.",
@@ -81,7 +80,6 @@ _FIELD_DESCRIPTIONS = {
     "deleted": "Whether the agent and its descendants were deleted.",
     "spawned": "Whether the new agent instance was created.",
     "affected_agent_ids": "Agent instances affected by the global state change.",
-    "automations": "Saved automation rules with their persistent identifiers.",
     "presets": "Saved presets and their initial assignments.",
     "agents": "Current live agent instances.",
 }
