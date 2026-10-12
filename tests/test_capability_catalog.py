@@ -38,7 +38,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.addCleanup(self.fixture.tearDown)
         self.root = self.fixture.root
         self.manager = self.fixture.manager(runtime_tests._Client([]))
-        self.agent = self.manager.spawn_root(name="main", preset="main")
+        self.agent = self.manager.spawn_root(preset="main")
 
     def ids(self, kind):
         field = {"actions": "action_id", "events": "event_id", "modules": "module_id"}[
@@ -157,7 +157,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
         )
-        restored = restored_manager.restore(name="main", preset="main")
+        restored = restored_manager.restore(preset="main")
         self.assertEqual(catalog(restored), before)
 
     def test_restore_uses_current_capability_description(self):
@@ -180,7 +180,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
         )
-        restored = restored_manager.restore(name="main", preset="main")
+        restored = restored_manager.restore(preset="main")
         after = next(
             item
             for item in catalog(restored)["actions"]
@@ -263,8 +263,7 @@ class DeclarationTests(unittest.TestCase):
     def test_system_prompt_has_labeled_blocks_in_required_order(self):
         prompt = agent_system_prompt(
             "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
-            agent_id="agent-001", agent_name="Example",
-        )
+            agent_id="agent-001", )
         expected = "<ENVIRONMENT>\nEnvironment.\n</ENVIRONMENT>\n\n<PERSON>\nPersonality.\n</PERSON>\n\n<MODEL_INFO>\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n</MODEL_INFO>\n\n<AGENT_INFO>\nТвой идентификатор: agent-001. Твой пресет: .\n</AGENT_INFO>\n\n<CAPABILITIES>\n"
         expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2) + "\n</CAPABILITIES>"
         self.assertEqual(prompt, expected)

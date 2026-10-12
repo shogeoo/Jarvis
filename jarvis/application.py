@@ -140,7 +140,7 @@ class JarvisApplication:
                 self.agents.model_capabilities = model_info.result()
             if not speech_service.can_speak:
                 self.actions.unregister_owner("core:speech")
-        self.main_agent = self.agents.restore(name="main", preset="main")
+        self.main_agent = self.agents.restore(preset="main")
         if self.main_agent is not None:
             self.debug.initialized()
             self.bus.publish(

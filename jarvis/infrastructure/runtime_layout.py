@@ -1,4 +1,4 @@
-"""Create runtime structure and synchronize built-in preset personalities."""
+"""Create missing runtime files and migrate paths without replacing PERSON."""
 from __future__ import annotations
 
 from .console import logger
@@ -61,8 +61,14 @@ def ensure_runtime_layout(root: Path) -> None:
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
     old_manager = root / "presets" / "capabilities_manager"
     new_manager = root / "presets" / "capability_manager"
+    old_memory = root / "memory" / "capabilities_manager"
+    new_memory = root / "memory" / "capability_manager"
+    if (old_manager.exists() and new_manager.exists()) or (old_memory.exists() and new_memory.exists()):
+        raise ValueError("Cannot merge conflicting old and new capability_manager data")
     if old_manager.exists() and not new_manager.exists():
         old_manager.rename(new_manager)
+    if old_memory.exists():
+        old_memory.rename(new_memory)
     _ensure_preset(root, "main")
     _ensure_preset(root, "capability_manager")
     for preset in (root / "presets").iterdir():

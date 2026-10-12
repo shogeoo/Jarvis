@@ -63,6 +63,37 @@ class TargetArchitectureTests(unittest.TestCase):
         self.manager.edit_agent(child_id, {"model": None})
         self.assertEqual(self.manager.get_agent(child_id)["effective"]["model"], "new_model")
 
+    def test_unavailable_override_and_preset_fall_back_to_env_default(self):
+        self.manager.presets.edit("worker", changes={"model": "missing_preset"})
+        child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
+        self.manager.edit_agent(child_id, {"model": "missing_override"})
+        child = self.manager.require_agent(child_id)
+        models = []
+
+        def request(**options):
+            models.append(options["model"])
+            if options["model"] != "test":
+                error = RuntimeError("model unavailable")
+                error.status_code = 404
+                raise error
+            return _Response('{"actions":[{"action_id":"no_action","call_id":"env_ok","data":{}}]}')
+
+        self.manager.client.chat.completions.create = request
+        child._turn([Event("message_from_agent", {"from_agent_id": "main", "text": "Task"})], child._generation)
+        self.assertEqual(models, ["missing_override", "missing_preset", "test"])
+        self.assertEqual(child.model_override, "missing_override")
+
+    def test_main_deletion_removes_semantic_memory_and_all_descendants(self):
+        child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
+        self.manager.semantic_memory.write("A confirmed fact.")
+        main = self.main
+        self.manager.delete(agent_id="main")
+        self.assertEqual(self.manager.agents, {})
+        self.assertFalse((self.root / "memory/main").exists())
+        self.assertFalse(self.memory.agent_dir("worker", child_id).exists())
+        self.manager.persist_agent(main)
+        self.assertFalse((self.root / "memory/main").exists())
+
     def test_management_action_assignment_never_grants_subagent_authority(self):
         child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         self.manager.enable_action(child_id, "delete_agent")
@@ -87,6 +118,12 @@ class TargetArchitectureTests(unittest.TestCase):
         fixtures.write_handler(self.root / "capabilities/handlers", "say", fixtures.TICK_HANDLER)
         with self.assertRaisesRegex(ValueError, "exactly one"):
             self.capabilities.resolve_kind("say")
+
+    def test_builtin_module_and_actions_cannot_be_globally_paused(self):
+        for kind, identifier in (("module", "capability_development"), ("action", "send_message_to_agent")):
+            with self.assertRaisesRegex(ValueError, "Built-in"):
+                self.capabilities.toggle_global_state(kind, identifier)
+            self.assertFalse(self.capabilities.is_globally_paused(kind, identifier))
 
 
 class SharedToolTests(unittest.TestCase):

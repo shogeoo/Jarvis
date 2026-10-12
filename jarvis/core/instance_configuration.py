@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..infrastructure.model_capabilities import ModelCapabilities
+from ..infrastructure.model_capabilities import (
+    ModelCapabilities,
+    discover_model_capabilities,
+)
 
-PRIMARY_AGENT_NAME = "Jarvis"
 from .agent import Agent
 
 
@@ -23,6 +25,12 @@ class InstanceConfiguration:
             and "/" not in model
         ):
             return ModelCapabilities(model, ("text", "image"))
+        if self.config is not None and model != self.model and self.config.base_url:
+            if model not in self._model_capability_cache:
+                self._model_capability_cache[model] = discover_model_capabilities(
+                    model, self.config.base_url, self.config.api_key
+                )
+            return self._model_capability_cache[model]
         modalities = (
             self.model_capabilities.input_modalities
             if self.model_capabilities is not None
@@ -34,7 +42,6 @@ class InstanceConfiguration:
         for agent in self.agents_snapshot():
             if agent.preset == preset_id:
                 agent._refresh_configuration()
-
 
     @staticmethod
     def describe(agent: Agent) -> dict[str, Any]:
@@ -125,7 +132,6 @@ class InstanceConfiguration:
         agent.additional_instructions, agent.model_override = instructions, model
         self.persist_agent(agent)
         return {"agent_id": agent_id, "updated": True}
-
 
     def enable_module(self, agent_id: str, module_id: str) -> dict[str, Any]:
         agent = self.require_agent(agent_id)

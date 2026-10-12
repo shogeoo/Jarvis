@@ -12,7 +12,7 @@ from jarvis.infrastructure.prompt_templates import render_template
 
 class PromptTemplateTests(unittest.TestCase):
     def test_additional_instructions_are_separate_and_optional(self):
-        arguments = dict(agent_id="agent-001", agent_name="Example", preset_id="developer")
+        arguments = dict(agent_id="agent-001", preset_id="developer")
         plain = agent_system_prompt("Person", "Environment", {}, {}, {}, **arguments)
         self.assertNotIn("<ADDITIONAL_INSTRUCTIONS>", plain)
         expanded = agent_system_prompt("Person", "Environment", {}, {}, {}, additional_instructions="Run tests.", **arguments)
@@ -29,19 +29,18 @@ class PromptTemplateTests(unittest.TestCase):
             templates = {
                 "memory_instruction.txt": "Custom memory instruction.",
                 "model_info.txt": "Selected model: {model_id}\nInputs: {modalites}.",
-                "agent_info.txt": "Identity: {name} / {agent_id}.",
+                "agent_info.txt": "Identity: {preset_id} / {agent_id}.",
             }
             for filename, content in templates.items():
                 (assets / filename).write_text(content, encoding="utf-8")
             with patch("jarvis.infrastructure.prompt_templates.files", return_value=root):
                 system = agent_system_prompt(
-                    "Person", "Environment", {}, {}, {}, agent_id="main", agent_name="Jarvis",
-                    model_capabilities=ModelCapabilities("current-model", ("text", "image")),
+                    "Person", "Environment", {}, {}, {}, agent_id="main", preset_id="main", model_capabilities=ModelCapabilities("current-model", ("text", "image")),
                     semantic_memory={"entries": []},
                 )
             self.assertIn('<MEMORY>\nCustom memory instruction.\n{\n  "entries": []\n}', system)
             self.assertIn("<MODEL_INFO>\nSelected model: current-model\nInputs: text, image.", system)
-            self.assertIn("<AGENT_INFO>\nIdentity: Jarvis / main.", system)
+            self.assertIn("<AGENT_INFO>\nIdentity: main / main.", system)
             self.assertLess(system.index("<MODEL_INFO>"), system.index("<AGENT_INFO>"))
 
     def test_values_containing_braces_are_not_reformatted(self):

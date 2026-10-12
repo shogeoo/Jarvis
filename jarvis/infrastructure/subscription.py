@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 from copy import deepcopy
 from types import SimpleNamespace
@@ -344,12 +345,28 @@ class SubscriptionClient:
         requested_model = options.get("model") or self.api_model
         api_model = requested_model if "/" in requested_model else self.api_model
         messages = deepcopy(options["messages"])
-        subscription_model_info = ModelCapabilities(self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities).prompt_block()
-        messages[0]["content"] = messages[0]["content"].replace(
-            subscription_model_info,
-            ModelCapabilities(self.api_model, self.api_capabilities.input_modalities).prompt_block(),
-            1,
-        )
+        model_info = ModelCapabilities(
+            api_model, self.api_capabilities.input_modalities
+        ).prompt_block()
+        if (
+            "<MODEL_INFO>" in messages[0]["content"]
+            and "</MODEL_INFO>" in messages[0]["content"]
+        ):
+            messages[0]["content"] = re.sub(
+                r"<MODEL_INFO>.*?</MODEL_INFO>",
+                lambda _: "<MODEL_INFO>\n" + model_info + "\n</MODEL_INFO>",
+                messages[0]["content"],
+                count=1,
+                flags=re.DOTALL,
+            )
+        else:
+            messages[0]["content"] = messages[0]["content"].replace(
+                ModelCapabilities(
+                    self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
+                ).prompt_block(),
+                model_info,
+                1,
+            )
         for message in messages[1:]:
             if message.get("role") != "user" or not isinstance(
                 message.get("content"), list
@@ -423,7 +440,9 @@ class SubscriptionClient:
             if response.status_code >= 400:
                 message = response.text[:1000]
                 response.close()
-                error = RuntimeError(f"ChatGPT subscription request failed ({response.status_code}): {message}")
+                error = RuntimeError(
+                    f"ChatGPT subscription request failed ({response.status_code}): {message}"
+                )
                 error.status_code = response.status_code
                 raise error
             break

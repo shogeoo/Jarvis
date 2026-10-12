@@ -74,7 +74,6 @@ class ApplicationTests(unittest.TestCase):
                 app.start()
                 self.assertEqual(startup_order, ["discover", "speech"])
                 try:
-                    self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
                     ordered_blocks = ["<ENVIRONMENT>\n", "<PERSON>\n", "<MEMORY>\n", "<MODEL_INFO>\n", "<AGENT_INFO>\n", "<CAPABILITIES>\n"]

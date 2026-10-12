@@ -324,7 +324,7 @@ class MemoryStore:
         missing_context = context is None
         if instance is None:
             instance = {
-                "name": agent_id, "parent_id": None if agent_id == "main" else "main",
+                "parent_id": None if agent_id == "main" else "main",
                 "modules": [], "actions": [], "handlers": [],
                 "disabled_capabilities": {},
             }

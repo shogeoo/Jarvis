@@ -114,7 +114,6 @@ class SemanticMemoryTests(unittest.TestCase):
                 {},
                 {},
                 agent_id="main",
-                agent_name="Jarvis",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text", "image")),
                 semantic_memory=memory.snapshot(),
             )
@@ -128,7 +127,6 @@ class SemanticMemoryTests(unittest.TestCase):
                 {},
                 {},
                 agent_id="main",
-                agent_name="Jarvis",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text", "image")),
                 semantic_memory=memory.snapshot(),
             )
@@ -154,7 +152,6 @@ class SemanticMemoryTests(unittest.TestCase):
                 {},
                 {},
                 agent_id="agent-001",
-                agent_name="Other",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text",)),
             )
             self.assertNotIn("<MEMORY>", without_memory)
@@ -171,7 +168,7 @@ class SemanticMemoryTests(unittest.TestCase):
             ]
         )
         manager = fixture.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         fixture.publish(agent, "remember")
         self.assertTrue(
             runtime_tests._wait(lambda: len(client.chat.completions.calls) >= 2)

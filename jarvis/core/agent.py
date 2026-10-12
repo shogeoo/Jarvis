@@ -30,7 +30,6 @@ class Agent(AgentGeneration):
     def __init__(
         self,
         agent_id: str,
-        name: str,
         preset: str,
         manager: "AgentManager",
         *,
@@ -39,17 +38,12 @@ class Agent(AgentGeneration):
         enabled_modules: set[str] | None = None,
         enabled_actions: set[str] | None = None,
         enabled_handlers: set[str] | None = None,
-        disabled_modules: set[str] | None = None,
-        disabled_actions: set[str] | None = None,
-        disabled_handlers: set[str] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
-        person_prompt: str | None = None,
         additional_instructions: str = "",
         model: str | None = None,
         capabilities_add: list[str] | None = None,
     ):
         self.agent_id = agent_id
-        self.name = name
         self.preset = preset
         self.parent_id = parent_id
         self.manager = manager
@@ -75,9 +69,6 @@ class Agent(AgentGeneration):
         self._enabled_modules = set(enabled_modules or ())
         self._enabled_actions = set(enabled_actions or ())
         self._enabled_handlers = set(enabled_handlers or ())
-        self._disabled_modules = set(disabled_modules or ())
-        self._disabled_actions = set(disabled_actions or ())
-        self._disabled_handlers = set(disabled_handlers or ())
         self._capabilities_lock = threading.RLock()
         self.history: list[dict[str, Any]] = [
             {"role": "system", "content": ""},
@@ -219,20 +210,7 @@ class Agent(AgentGeneration):
             }
 
     def known_snapshot(self) -> dict[str, set[str]]:
-        snapshot = self.capabilities_snapshot()
-        with self._capabilities_lock:
-            snapshot["modules"].update(self._disabled_modules)
-            snapshot["actions"].update(self._disabled_actions)
-            snapshot["handlers"].update(self._disabled_handlers)
-        return snapshot
-
-    def disabled_snapshot(self) -> dict[str, set[str]]:
-        with self._capabilities_lock:
-            return {
-                "modules": set(self._disabled_modules),
-                "actions": set(self._disabled_actions),
-                "handlers": set(self._disabled_handlers),
-            }
+        return self.capabilities_snapshot()
 
     def capabilities_snapshot_lists(self):
         return {
@@ -369,7 +347,7 @@ class Agent(AgentGeneration):
         actions = {
             name: spec
             for name, spec in actions.items()
-            if name not in self._disabled_actions and name not in paused["actions"]
+            if name not in paused["actions"]
         }
         assigned_actions = [
             name for name in self._assignment_order["actions"] if name in actions
@@ -432,7 +410,6 @@ class Agent(AgentGeneration):
                     describe_unloaded=True,
                 ),
                 agent_id=self.agent_id,
-                agent_name=self.name,
                 preset_id=self.preset,
                 additional_instructions=self.additional_instructions,
                 model_capabilities=self.manager.capabilities_for_model(

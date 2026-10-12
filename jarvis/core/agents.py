@@ -15,7 +15,6 @@ from ..infrastructure.model_capabilities import ModelCapabilities
 from ..infrastructure.semantic_memory import SemanticMemory
 from ..presets import PresetStore
 
-PRIMARY_AGENT_NAME = "Jarvis"
 from .agent import Agent
 from .calls import CallResultTracker
 from .core_protocol import _capability_identity
@@ -61,6 +60,7 @@ class AgentManager(InstanceConfiguration):
         self.config = config
         self.services = services if services is not None else {}
         self.model_capabilities = model_capabilities
+        self._model_capability_cache = {}
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
         self.semantic_memory = SemanticMemory(
@@ -112,14 +112,12 @@ class AgentManager(InstanceConfiguration):
         agent.enqueue_result(result)
         return True
 
-    def spawn_root(self, *, name: str, preset: str) -> Agent:
-        """Создать первый экземпляр без родителя. Имя main — константа."""
+    def spawn_root(self, *, preset: str) -> Agent:
+        """Создать корневой экземпляр с постоянным agent_id main."""
 
-        return self._spawn(
-            name=PRIMARY_AGENT_NAME, preset=preset, parent_id=None, primary=True
-        )
+        return self._spawn(preset=preset, parent_id=None, primary=True)
 
-    def restore(self, *, name: str, preset: str) -> Agent | None:
+    def restore(self, *, preset: str) -> Agent | None:
         """Поднять экземпляры из памяти или создать новый корневой агент."""
 
         records = self.memory.load_all() if self.memory is not None else []
@@ -129,12 +127,10 @@ class AgentManager(InstanceConfiguration):
             )
             return None
         if not records:
-            return self.spawn_root(name=name, preset=preset)
-        return self._restore(records, default_name=name, default_preset=preset)
+            return self.spawn_root(preset=preset)
+        return self._restore(records)
 
-    def _restore(
-        self, records: list[dict[str, Any]], *, default_name: str, default_preset: str
-    ) -> Agent | None:
+    def _restore(self, records: list[dict[str, Any]]) -> Agent | None:
         primary = next(
             (
                 record
@@ -144,11 +140,6 @@ class AgentManager(InstanceConfiguration):
             None,
         )
         if primary is None:
-            primary = next(
-                (record for record in records if record["parent_id"] is None),
-                None,
-            )
-        if primary is None:
             self.debug.log(
                 "memory_restore_failed", error="Нет сохранённого корневого агента"
             )
@@ -156,7 +147,6 @@ class AgentManager(InstanceConfiguration):
                 "Jarvis restore failed: нет целого корневого агента; сохранённые данные оставлены"
             )
             return None
-        primary = {**primary, "name": PRIMARY_AGENT_NAME}
         try:
             main_agent = self._spawn_record(primary, primary=True)
         except Exception as exc:  # noqa: BLE001
@@ -223,7 +213,6 @@ class AgentManager(InstanceConfiguration):
             if old_person and old_person != selected.person_prompt:
                 instructions = old_person
         return self._spawn(
-            name=preset_id,
             preset=preset_id,
             parent_id=record["parent_id"],
             primary=primary,
@@ -242,8 +231,8 @@ class AgentManager(InstanceConfiguration):
     def spawn(self, *, parent_id: str, preset_id: str) -> dict[str, Any]:
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
-        selected = self.presets.load(preset_id)
-        agent = self._spawn(name=selected.name, preset=preset_id, parent_id=parent_id)
+        self.presets.load(preset_id)
+        agent = self._spawn(preset=preset_id, parent_id=parent_id)
         return self.describe(agent)
 
     def _spawn(self, **kwargs) -> Agent:
@@ -253,42 +242,28 @@ class AgentManager(InstanceConfiguration):
     def _spawn_locked(
         self,
         *,
-        name: str,
         preset: str,
         parent_id: str | None,
         primary: bool = False,
         agent_id: str | None = None,
-        capabilities_override: dict[str, list[str] | set[str]] | None = None,
-        disabled_override: dict[str, set[str]] | None = None,
         restored_messages: list[dict[str, Any]] | None = None,
         persist_initial: bool = True,
-        person_prompt: str | None = None,
         additional_instructions: str = "",
         model: str | None = None,
         capabilities_add: list[str] | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Имя агента не должно быть пустым")
         selected = self.presets.load(preset)
-        if capabilities_override is not None:
-            initial = {
-                "modules": set(capabilities_override.get("modules", ())),
-                "actions": set(capabilities_override.get("actions", ())),
-                "handlers": set(capabilities_override.get("handlers", ())),
-            }
-        else:
-            initial = {
-                "modules": set(selected.modules),
-                "actions": set(selected.actions),
-                "handlers": set(selected.handlers),
-            }
+        initial = {
+            "modules": set(selected.modules),
+            "actions": set(selected.actions),
+            "handlers": set(selected.handlers),
+        }
         if capabilities_add:
             additions = self.capabilities.partition(capabilities_add)
             for key in initial:
                 initial[key].update(additions[key])
-        disabled_override = {"modules": set(), "actions": set(), "handlers": set()}
         from .system_actions import SYSTEM_ALL, SYSTEM_MAIN
 
         system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else set())
@@ -307,7 +282,6 @@ class AgentManager(InstanceConfiguration):
                 raise ValueError(f"Экземпляр {resolved_id} уже существует")
             agent = Agent(
                 resolved_id,
-                name.strip(),
                 preset,
                 self,
                 parent_id=parent_id,
@@ -315,11 +289,7 @@ class AgentManager(InstanceConfiguration):
                 enabled_modules=list(initial["modules"]),
                 enabled_actions=list(initial["actions"]),
                 enabled_handlers=list(initial["handlers"]),
-                disabled_modules=(disabled_override or {}).get("modules"),
-                disabled_actions=(disabled_override or {}).get("actions"),
-                disabled_handlers=(disabled_override or {}).get("handlers"),
                 restored_messages=restored_messages,
-                person_prompt=person_prompt,
                 additional_instructions=additional_instructions,
                 model=model,
                 capabilities_add=capabilities_add,
@@ -444,9 +414,6 @@ class AgentManager(InstanceConfiguration):
                 agent._enabled_modules.clear()
                 agent._enabled_actions.clear()
                 agent._enabled_handlers.clear()
-                agent._disabled_modules.clear()
-                agent._disabled_actions.clear()
-                agent._disabled_handlers.clear()
         if self.memory is not None:
             for record in records:
                 if record["agent_id"] in visited:

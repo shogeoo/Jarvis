@@ -30,7 +30,7 @@ class SystemStateTests(unittest.TestCase):
         self.memory = MemoryStore(self.root / "memory")
         self.manager = AgentManager(model="test", client=_Client([]), actions=self.actions, events=self.events, bus=self.bus, capabilities=self.capabilities, presets=PresetStore(self.root / "presets"), environment="environment", memory=self.memory)
         self.addCleanup(self.manager.shutdown)
-        self.main = self.manager.spawn_root(name="main", preset="main")
+        self.main = self.manager.spawn_root(preset="main")
 
     def invoke(self, name, data):
         context = SimpleNamespace(agent_id="main", action_id=name, agent_manager=self.capabilities._agent_api, capabilities=self.capabilities, metadata={"preset": "main"})

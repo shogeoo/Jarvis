@@ -184,7 +184,7 @@ class RuntimeTests(unittest.TestCase):
             ]
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "start")
         self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
         self.assertEqual(
@@ -199,7 +199,7 @@ class RuntimeTests(unittest.TestCase):
     def test_result_and_normal_event_batch_requests_model_once(self):
         client = _Client([_no_action("batch-done")])
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         agent._used_call_ids.add("auto-00001")
         agent._turn([
             CallResult(call_id="auto-00001", agent_id="main", data={"spoken": True}),
@@ -213,7 +213,7 @@ class RuntimeTests(unittest.TestCase):
         self.install_project_action("create_preset")
         self.enable_for_main("create_preset")
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         contract = agent._contract()[0]
         manager.capabilities.dispatch(
             action=ActionRequest(
@@ -256,7 +256,7 @@ class RuntimeTests(unittest.TestCase):
         self.install_project_action("create_preset")
         self.enable_for_main("create_preset")
         manager = self.manager(client)
-        main = manager.spawn_root(name="main", preset="main")
+        main = manager.spawn_root(preset="main")
         worker = manager.spawn(parent_id=main.agent_id, preset_id="worker")
         main_prompt = main.history[0]["content"]
         worker_prompt = manager.require_agent(worker["agent_id"]).history[0]["content"]
@@ -267,7 +267,7 @@ class RuntimeTests(unittest.TestCase):
     def test_create_preset_uses_existing_capability_ids_and_refuses_overwrite(self):
         self.install_project_action("create_preset")
         manager = self.manager(_Client([]))
-        manager.spawn_root(name="main", preset="main")
+        manager.spawn_root(preset="main")
         module = self.load_installed_action("create_preset")
         context = SimpleNamespace(
             agent_id="main",
@@ -311,7 +311,7 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
-            main = manager.spawn_root(name="main", preset="main")
+            main = manager.spawn_root(preset="main")
             created = manager.spawn(parent_id=main.agent_id, preset_id="worker")
             worker_id = created["agent_id"]
             manager.persist_agent(manager.require_agent(worker_id))
@@ -350,7 +350,7 @@ class RuntimeTests(unittest.TestCase):
             ]
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         manager.enable_action(agent.agent_id, "fail")
         manager.enable_action(agent.agent_id, "next")
         self.publish(agent, "start")
@@ -400,7 +400,7 @@ class RuntimeTests(unittest.TestCase):
 
         client = _Client([_no_action("done-1"), _no_action("done-2")], block)
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "first")
         self.assertTrue(thinking.wait(2))
         self.publish(agent, "external")
@@ -434,7 +434,7 @@ class RuntimeTests(unittest.TestCase):
             block,
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "first")
         self.assertTrue(correction.wait(2))
         self.publish(agent, "second")
@@ -458,7 +458,7 @@ class RuntimeTests(unittest.TestCase):
             ]
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "start")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         values = [
@@ -473,7 +473,7 @@ class RuntimeTests(unittest.TestCase):
         self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         client = _Client([_no_action("done-1")])
         manager = self.manager(client)
-        first = manager.spawn_root(name="main", preset="main")
+        first = manager.spawn_root(preset="main")
         second_info = manager.spawn(parent_id=first.agent_id, preset_id="worker")
         second = manager.require_agent(second_info["agent_id"])
         manager.enable_action(first.agent_id, "clock")
@@ -483,21 +483,21 @@ class RuntimeTests(unittest.TestCase):
 
     def test_main_preset_has_no_singleton_policy(self):
         manager = self.manager(_Client([]))
-        manager.spawn_root(name="main", preset="main")
+        manager.spawn_root(preset="main")
         child = manager.spawn(parent_id="main", preset_id="main")
         self.assertNotEqual(child["agent_id"], "main")
         manager.delete(agent_id=child["agent_id"])
 
     def test_main_uses_reserved_main_agent_id(self):
         manager = self.manager(_Client([_no_action("done-1")]))
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.assertEqual(agent.agent_id, "main")
 
     def test_persisted_context_is_restored_on_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
+            agent = first.spawn_root(preset="main")
             self.publish(agent, "remember me")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3))
             record = memory.load("main", "main")
@@ -507,7 +507,7 @@ class RuntimeTests(unittest.TestCase):
             )
 
             second = self.manager(_Client([_no_action("done-2")]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertEqual(restored.agent_id, "main")
             self.assertEqual(len(restored.history), 3)
             self.assertIn(
@@ -520,13 +520,13 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
+            agent = first.spawn_root(preset="main")
             first.semantic_memory.write("Georgiy uses Arch Linux.")
             instance = (memory.root / "main/instance.json").read_bytes()
             first.shutdown()
             (memory.root / "main/context.json").unlink()
             second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
             self.assertEqual((memory.root / "main/instance.json").read_bytes(), instance)
             self.assertTrue((memory.root / "main/context.json").is_file())
@@ -537,14 +537,14 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([_no_action("saved-1")]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
+            agent = first.spawn_root(preset="main")
             self.publish(agent, "keep this")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3 and agent.state == "waiting"))
             first.shutdown()
             saved = (memory.root / "main/context.json").read_bytes()
             (memory.root / "main/instance.json").unlink()
             second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
             self.assertTrue((memory.root / "main/instance.json").is_file())
             self.assertEqual((memory.root / "main/context.json").read_bytes(), saved)
@@ -555,7 +555,7 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            root = first.spawn_root(name="main", preset="main")
+            root = first.spawn_root(preset="main")
             child_info = first.spawn(
                 parent_id=root.agent_id, preset_id="worker"
             )
@@ -564,7 +564,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(_wait(lambda: len(child.history) >= 3))
 
             second = self.manager(_Client([_no_action("done-2")]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertEqual(restored.agent_id, "main")
             recreated = second.require_agent(child_info["agent_id"])
             self.assertEqual(recreated.parent_id, root.agent_id)
@@ -579,7 +579,7 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            root = manager.spawn_root(name="main", preset="main")
+            root = manager.spawn_root(preset="main")
             child_info = manager.spawn(
                 parent_id=root.agent_id, preset_id="worker"
             )
@@ -592,7 +592,7 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            root = manager.spawn_root(name="main", preset="main")
+            root = manager.spawn_root(preset="main")
             manager.enable_module(root.agent_id, "echo")
             record = memory.load("main", "main")
             self.assertIn("echo", record["capabilities_add"])
@@ -608,7 +608,7 @@ class RuntimeTests(unittest.TestCase):
             memory = MemoryStore(Path(temporary))
             client = _Client(outputs)
             manager = self.manager(client, memory=memory)
-            agent = manager.spawn_root(name="main", preset="main")
+            agent = manager.spawn_root(preset="main")
             self.publish(agent, "start")
             self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 3))
             self.assertEqual(len(self.call_results(agent)), 1)
@@ -616,7 +616,7 @@ class RuntimeTests(unittest.TestCase):
             manager.shutdown()
 
             restarted = self.manager(_Client([outputs[1], _no_action("fresh-2")]), memory=memory)
-            restored = restarted.restore(name="main", preset="main")
+            restored = restarted.restore(preset="main")
             self.publish(restored, "again")
             self.assertTrue(_wait(lambda: len(restarted.client.chat.completions.calls) >= 2))
             self.assertEqual(len(self.call_results(restored)), 1)
@@ -635,7 +635,7 @@ class RuntimeTests(unittest.TestCase):
         flaky = Flaky()
         client = type("Client", (), {"chat": type("Chat", (), {"completions": flaky})()})()
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "hello")
         self.assertTrue(_wait(lambda: len(flaky.calls) == 2))
         self.assertEqual(len([m for m in agent.history if m["role"] == "user"]), 1)
@@ -643,7 +643,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_disabled_action_is_hidden_but_an_accepted_call_returns_disabled_result(self):
         manager = self.manager(_Client([_no_action("done")]))
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         spec = manager.actions.require("say")
         manager.edit_agent(agent.agent_id, {"capabilities_add": ["say"]})
         self.presets.edit("main", changes={"capabilities_remove": ["say"]})
@@ -670,7 +670,7 @@ class RuntimeTests(unittest.TestCase):
                 release.wait(3)
         client = _Client([_no_action("old"), _no_action("new")], block)
         manager = self.manager(client)
-        root = manager.spawn_root(name="main", preset="main")
+        root = manager.spawn_root(preset="main")
         child = manager.spawn(parent_id="main", preset_id="worker")
         agent = manager.require_agent(child["agent_id"])
         self.publish(agent, "first")
@@ -685,7 +685,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_agent_recursive_delete(self):
         manager = self.manager(_Client([_no_action("done")]))
-        root = manager.spawn_root(name="main", preset="main")
+        root = manager.spawn_root(preset="main")
         manager.interrupt(agent_id="main", requester_id="main")
         parent = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         child = manager.spawn(parent_id=parent, preset_id="worker")["agent_id"]
@@ -698,7 +698,7 @@ class RuntimeTests(unittest.TestCase):
     def test_presets_are_not_protected_singletons(self):
         self.presets.create("special", "Special", [])
         manager = self.manager(_Client([]))
-        manager.spawn_root(name="main", preset="main")
+        manager.spawn_root(preset="main")
         first = manager.spawn(parent_id="main", preset_id="special")["agent_id"]
         second = manager.spawn(parent_id="main", preset_id="special")["agent_id"]
         self.assertNotEqual(first, second)
@@ -710,7 +710,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_external_rpc_cannot_change_another_agent_capabilities(self):
         manager = self.manager(_Client([]))
-        manager.spawn_root(name="main", preset="main")
+        manager.spawn_root(preset="main")
         before = self.presets.load("main").actions
         with patch.object(manager.capabilities, "_send_host") as send:
             manager.capabilities._handle_rpc(SimpleNamespace(), {
@@ -730,7 +730,7 @@ class RuntimeTests(unittest.TestCase):
             })
             before = (Path(temporary) / "main" / "instance.json").read_bytes()
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
-            self.assertIsNone(manager.restore(name="main", preset="main"))
+            self.assertIsNone(manager.restore(preset="main"))
             self.assertEqual(manager.agents, {})
             self.assertEqual(memory.load("main", "main")["capabilities_add"], ["missing_action"])
             self.assertEqual((Path(temporary) / "main" / "instance.json").read_bytes(), before)
@@ -746,7 +746,7 @@ class RuntimeTests(unittest.TestCase):
             f"    import os, time\n    open({str(marker)!r}, 'w').write(str(os.getpid()))\n    time.sleep(10)\n    return {{'ok': True}}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         manager.enable_action("main", "slow")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(action=ActionRequest("slow", {}, "slow-1"), spec=manager.actions.require("slow"), agent=agent)
@@ -767,7 +767,7 @@ class RuntimeTests(unittest.TestCase):
             "    return {'undeclared': 'wrong'}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
-        root = manager.spawn_root(name="main", preset="main")
+        root = manager.spawn_root(preset="main")
         child_info = manager.spawn(parent_id="main", preset_id="worker")
         child = manager.require_agent(child_info["agent_id"])
         manager.enable_action(child.agent_id, "bad_result")
@@ -783,7 +783,7 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([]), memory=memory)
-            root = first.spawn_root(name="main", preset="main")
+            root = first.spawn_root(preset="main")
             first.edit_agent("main", {"capabilities_add": ["say", "tick"]})
             self.presets.edit("main", changes={"capabilities_remove": ["say", "tick"]})
             first.refresh_presets("main")
@@ -795,14 +795,14 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("tick", [item["id"] for item in listed["handlers"]])
             first.shutdown()
             second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertNotIn("say", restored._contract()[0])
             self.assertFalse(second.bus.publish(Event("tick.event", {"text": "ignored"}, handler_id="tick")))
 
     def test_available_list_describes_unloaded_action(self):
         self.write_action("extra", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         manager = self.manager(_Client([_no_action("done")]))
-        root = manager.spawn_root(name="main", preset="main")
+        root = manager.spawn_root(preset="main")
         self.assertNotIn("extra", manager.capabilities.loaded_actions())
         available = manager.capabilities.list_available(root.known_snapshot())
         self.assertEqual([item for item in available["actions"] if item["id"] == "extra"], [{"id": "extra", "description": "test"}])
@@ -810,7 +810,7 @@ class RuntimeTests(unittest.TestCase):
     def test_interrupt_action_rpc_matches_agent_manager_signature(self):
         self.install_project_action("interrupt_agent")
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
+        main = manager.spawn_root(preset="main")
         child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         manager.enable_action("main", "interrupt_agent")
         from jarvis.core.protocol import ActionRequest
@@ -826,7 +826,7 @@ class RuntimeTests(unittest.TestCase):
     def test_delete_action_rpc_needs_only_agent_id(self):
         self.install_project_action("delete_agent")
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
+        main = manager.spawn_root(preset="main")
         child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         manager.enable_action("main", "delete_agent")
         from jarvis.core.protocol import ActionRequest
@@ -847,7 +847,7 @@ class RuntimeTests(unittest.TestCase):
         }
         self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'old'}\n")
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
+        main = manager.spawn_root(preset="main")
         child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         manager.enable_action("main", "toggle_capability")
         manager.enable_action("main", "reloadable")
@@ -894,7 +894,7 @@ class RuntimeTests(unittest.TestCase):
             f"    import os, time\n    open({str(marker)!r}, 'w').write(str(os.getpid()))\n    time.sleep(10)\n    return {{'ok': True}}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
+        main = manager.spawn_root(preset="main")
         manager.enable_action("main", "toggle_capability")
         manager.enable_action("main", "global_slow")
         from jarvis.core.protocol import ActionRequest
@@ -925,7 +925,7 @@ class RuntimeTests(unittest.TestCase):
             _no_action("done-1"),
         ])
         manager = self.manager(client)
-        main = manager.spawn_root(name="main", preset="main")
+        main = manager.spawn_root(preset="main")
         manager.enable_action("main", "toggle_capability")
         self.publish(main, "check")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))

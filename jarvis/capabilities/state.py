@@ -16,6 +16,11 @@ from typing import Any
 
 class CapabilityState:
     def is_globally_paused(self, kind: str, capability_id: str) -> bool:
+        spec = self.actions.get(capability_id)
+        if capability_id in self.builtin_modules() or (
+            spec is not None and spec.owner.startswith("core")
+        ):
+            return False
         key = {"module": "modules", "action": "actions", "handler": "handlers"}.get(
             kind
         )
@@ -61,6 +66,11 @@ class CapabilityState:
     def _toggle_global_state_locked(
         self, kind: str, capability_id: str
     ) -> dict[str, Any]:
+        spec = self.actions.get(capability_id)
+        if capability_id in self.builtin_modules() or (
+            spec is not None and spec.owner.startswith("core")
+        ):
+            raise ValueError("Built-in capabilities cannot be globally paused")
         if self._global_state_error is not None:
             raise ValueError(
                 "Cannot update unreadable capability state: " + self._global_state_error
