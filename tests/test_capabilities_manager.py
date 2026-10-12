@@ -103,6 +103,18 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
                 )
             self.assertEqual(target.read_text(), "one\nchanged\nthree\n")
 
+    def test_relative_paths_use_capability_storage_without_truncation(self):
+        content = "\n".join(f"line {index}" for index in range(12000))
+        self.actions.require("write_file").run(
+            {"path": "sample.txt", "content": content}, self.context
+        )
+        target = self.storage / "capabilities" / "sample.txt"
+        self.assertEqual(target.read_text(), content)
+        result = self.actions.require("read_file").run(
+            {"path": "sample.txt"}, self.context
+        )
+        self.assertTrue(result["content"].endswith("12000: line 11999"))
+
     def test_bash_tool_captures_streams_and_honors_cwd(self):
         result = self.actions.require("execute_command").run(
             {"command": "printf out; printf err >&2; exit 7", "cwd": str(self.root)},
@@ -112,7 +124,7 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
         result = self.actions.require("execute_command").run(
             {"command": "pwd", "cwd": None}, self.context
         )
-        self.assertEqual(result["stdout"].strip(), str(self.root))
+        self.assertEqual(result["stdout"].strip(), str(self.storage / "capabilities"))
 
 
 if __name__ == "__main__":

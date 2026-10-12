@@ -8,11 +8,7 @@ from .protocol import object_schema
 
 def _path(value, context):
     path = Path(value).expanduser()
-    root = (
-        context.config.project_root
-        if context.config is not None
-        else context.capabilities.root.parent
-    )
+    root = context.capabilities.root / "capabilities"
     return path if path.is_absolute() else root / path
 
 
