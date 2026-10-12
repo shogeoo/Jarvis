@@ -5,14 +5,13 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import re
 import shutil
 import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+from ..capabilities.identifiers import ID_PATTERN as IDENTIFIER
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +23,11 @@ class AgentPreset:
     _categories: tuple[str, ...] = ()
 
     def _of_kind(self, kind):
-        return tuple(value for value, category in zip(self.capabilities, self._categories) if category == kind)
+        return tuple(
+            value
+            for value, category in zip(self.capabilities, self._categories)
+            if category == kind
+        )
 
     @property
     def modules(self):
@@ -52,7 +55,11 @@ class PresetStore:
 
     @staticmethod
     def validate_capability(kind, capability_id):
-        if kind not in {"module", "action", "handler"} or not isinstance(capability_id, str) or not IDENTIFIER.fullmatch(capability_id):
+        if (
+            kind not in {"module", "action", "handler"}
+            or not isinstance(capability_id, str)
+            or not IDENTIFIER.fullmatch(capability_id)
+        ):
             raise ValueError(f"Invalid capability_id: {capability_id!r}")
 
     def path(self, name):
@@ -72,7 +79,11 @@ class PresetStore:
     @classmethod
     def _normalize(cls, capabilities):
         if isinstance(capabilities, dict):
-            capabilities = [item for key in ("modules", "actions", "handlers") for item in capabilities.get(key, [])]
+            capabilities = [
+                item
+                for key in ("modules", "actions", "handlers")
+                for item in capabilities.get(key, [])
+            ]
         if not isinstance(capabilities, (list, tuple)):
             raise ValueError("capabilities must be an array of global IDs")
         for value in capabilities:
@@ -86,18 +97,50 @@ class PresetStore:
             path = self.path(name)
             person = (path / "person.txt").read_text(encoding="utf-8").strip()
             metadata_path = path / "preset.json"
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+            metadata = (
+                json.loads(metadata_path.read_text(encoding="utf-8"))
+                if metadata_path.exists()
+                else {}
+            )
             if not isinstance(metadata, dict):
                 raise ValueError(f"Invalid preset.json: {name}")
             if "capabilities" not in metadata:
                 # Only the migration path reads the obsolete split files.
-                legacy = json.loads((path / "capabilities.json").read_text(encoding="utf-8"))
+                legacy = json.loads(
+                    (path / "capabilities.json").read_text(encoding="utf-8")
+                )
                 disabled_file = path / "disabled_capabilities.json"
-                disabled = json.loads(disabled_file.read_text(encoding="utf-8")) if disabled_file.exists() else {}
-                values = [item for key in ("modules", "actions", "handlers") for item in legacy.get(key, []) if item not in disabled.get(key, [])]
+                disabled = (
+                    json.loads(disabled_file.read_text(encoding="utf-8"))
+                    if disabled_file.exists()
+                    else {}
+                )
+                values = [
+                    item
+                    for key in ("modules", "actions", "handlers")
+                    for item in legacy.get(key, [])
+                    if item not in disabled.get(key, [])
+                ]
                 if name == "capability_manager":
-                    values = list(dict.fromkeys([*values, "capability_development", "list_capabilities", "capability_info", "toggle_capability"]))
-                self._replace(name, person, {"model": metadata.get("model"), "capabilities": self._normalize(values)})
+                    values = list(
+                        dict.fromkeys(
+                            [
+                                *values,
+                                "capability_development",
+                                "list_capabilities",
+                                "capability_info",
+                                "toggle_capability",
+                            ]
+                        )
+                    )
+                self._replace(
+                    name,
+                    person,
+                    {
+                        "model": metadata.get("model"),
+                        "capabilities": self._normalize(values),
+                    },
+                )
                 metadata = {"model": metadata.get("model"), "capabilities": values}
             values = self._normalize(metadata["capabilities"])
             model = metadata.get("model")
@@ -105,14 +148,30 @@ class PresetStore:
                 raise ValueError("model must be a nonempty ID or null")
             if not person:
                 raise ValueError("person.txt must not be empty")
-            return AgentPreset(name, person, tuple(values), model, tuple(self._kind(value) for value in values))
+            return AgentPreset(
+                name,
+                person,
+                tuple(values),
+                model,
+                tuple(self._kind(value) for value in values),
+            )
 
     def list(self):
-        return [self.load(path.name) for path in sorted(self.root.iterdir()) if path.is_dir() and not path.name.startswith(".")] if self.root.exists() else []
+        return (
+            [
+                self.load(path.name)
+                for path in sorted(self.root.iterdir())
+                if path.is_dir() and not path.name.startswith(".")
+            ]
+            if self.root.exists()
+            else []
+        )
 
     @staticmethod
     def _write(path, value):
-        path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
 
     def _replace(self, name, person, metadata):
         path = self.path(name)
@@ -120,12 +179,25 @@ class PresetStore:
         replacement = staging / "replacement"
         try:
             shutil.copytree(path, replacement)
-            (replacement / "person.txt").write_text(person.strip() + "\n", encoding="utf-8")
+            (replacement / "person.txt").write_text(
+                person.strip() + "\n", encoding="utf-8"
+            )
             self._write(replacement / "preset.json", metadata)
-            for obsolete in ("capabilities.json", "disabled_capabilities.json", "disabled_actions.json", "disabled_handlers.json", "disabled_modules.json"):
+            for obsolete in (
+                "capabilities.json",
+                "disabled_capabilities.json",
+                "disabled_actions.json",
+                "disabled_handlers.json",
+                "disabled_modules.json",
+            ):
                 (replacement / obsolete).unlink(missing_ok=True)
             libc = ctypes.CDLL(None, use_errno=True)
-            if libc.renameat2(-100, os.fsencode(path), -100, os.fsencode(replacement), 2) != 0:
+            if (
+                libc.renameat2(
+                    -100, os.fsencode(path), -100, os.fsencode(replacement), 2
+                )
+                != 0
+            ):
                 error = ctypes.get_errno()
                 raise OSError(error, os.strerror(error))
         finally:
@@ -144,19 +216,39 @@ class PresetStore:
             self.root.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=self.root))
             try:
-                (staging / "person.txt").write_text(person_prompt.strip() + "\n", encoding="utf-8")
-                self._write(staging / "preset.json", {"model": model, "capabilities": values})
+                (staging / "person.txt").write_text(
+                    person_prompt.strip() + "\n", encoding="utf-8"
+                )
+                self._write(
+                    staging / "preset.json", {"model": model, "capabilities": values}
+                )
                 staging.rename(path)
             finally:
                 if staging.exists():
                     shutil.rmtree(staging)
         return self.load(name)
 
-    def edit(self, name, person_prompt=None, capabilities=None, model=None, *, changes=None):
+    def edit(
+        self, name, person_prompt=None, capabilities=None, model=None, *, changes=None
+    ):
         with self._lock:
             current = self.load(name)
-            update = changes if changes is not None else {"person": person_prompt, "capabilities": capabilities, "model": model}
-            if set(update) - {"person", "model", "capabilities", "capabilities_add", "capabilities_remove"}:
+            update = (
+                changes
+                if changes is not None
+                else {
+                    "person": person_prompt,
+                    "capabilities": capabilities,
+                    "model": model,
+                }
+            )
+            if set(update) - {
+                "person",
+                "model",
+                "capabilities",
+                "capabilities_add",
+                "capabilities_remove",
+            }:
                 raise ValueError("Unknown preset changes")
             person = update.get("person", current.person_prompt)
             selected_model = update.get("model", current.model)
@@ -168,9 +260,13 @@ class PresetStore:
             values = [value for value in values if value not in removed]
             if not isinstance(person, str) or not person.strip():
                 raise ValueError("person must not be empty")
-            if selected_model is not None and (not isinstance(selected_model, str) or not selected_model.strip()):
+            if selected_model is not None and (
+                not isinstance(selected_model, str) or not selected_model.strip()
+            ):
                 raise ValueError("model must be a nonempty ID or null")
-            self._replace(name, person, {"model": selected_model, "capabilities": values})
+            self._replace(
+                name, person, {"model": selected_model, "capabilities": values}
+            )
             return self.load(name)
 
     def add_capability(self, name, kind, capability_id):
