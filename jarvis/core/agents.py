@@ -61,6 +61,7 @@ class AgentManager(InstanceConfiguration):
         self.services = services if services is not None else {}
         self.model_capabilities = model_capabilities
         self._model_capability_cache = {}
+        self._result_delivery = threading.local()
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
         self.semantic_memory = SemanticMemory(
@@ -109,8 +110,33 @@ class AgentManager(InstanceConfiguration):
                 reason="unknown_agent",
             )
             return False
-        agent.enqueue_result(result)
+        batch = getattr(self._result_delivery, "batch", None)
+        if batch is not None:
+            batch.append((agent, result))
+        else:
+            agent.enqueue_result(result)
         return True
+
+    def deliver_speech_with_interruptions(self, event: Event, completions) -> bool:
+        """Finalize speech calls and enqueue the whole input atomically."""
+        self.events.validate(event.event_id, event.data)
+        agent = self.require_agent(event.target)
+        collected = []
+        self._result_delivery.batch = collected
+        try:
+            for complete in completions:
+                complete({"status": "interrupted"})
+        finally:
+            del self._result_delivery.batch
+            for recipient in dict.fromkeys(
+                item[0] for item in collected if item[0] is not agent
+            ):
+                recipient.enqueue_batch(
+                    [result for owner, result in collected if owner is recipient]
+                )
+        return agent.enqueue_batch(
+            [result for owner, result in collected if owner is agent] + [event]
+        )
 
     def spawn_root(self, *, preset: str) -> Agent:
         """Создать корневой экземпляр с постоянным agent_id main."""

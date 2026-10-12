@@ -590,7 +590,7 @@
         "result_schema": {
           "properties": {
             "status": {
-              "description": "Playback result; successful means the utterance finished, interrupted means new user speech stopped it early."
+              "description": "Playback result; successful means the utterance finished. interrupted means the user stopped it by speaking; this result arrives together with the recognized user utterance, before its speech_detected event."
             }
           }
         }

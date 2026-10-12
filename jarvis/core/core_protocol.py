@@ -130,7 +130,7 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
 def _speech_action_run(data, context):
     from ..speech import service
 
-    return service.speak_result(data["text"])
+    return service.speak_result(data["text"], interrupted_complete=context.complete)
 
 
 def _capability_identity(action_id: str) -> tuple[str, str]:

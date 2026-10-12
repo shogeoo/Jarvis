@@ -446,6 +446,15 @@ class Agent(AgentGeneration):
         if not self._stop.is_set():
             self._events.put(result)
 
+    def enqueue_batch(self, items) -> bool:
+        with self._events.mutex:
+            if self._stop.is_set():
+                return False
+            self._events.queue.extend(items)
+            self._events.unfinished_tasks += len(items)
+            self._events.not_empty.notify_all()
+        return True
+
     def interrupt(self) -> None:
         with self._generation_lock:
             self._generation += 1
