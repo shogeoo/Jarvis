@@ -51,7 +51,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.manager.enable_module("main", "echo")
         value = catalog(self.agent)
         self.assertEqual(list(value), ["actions", "events", "modules"])
-        module = value["modules"][0]
+        module = next(item for item in value["modules"] if item["module_id"] == "echo")
         self.assertEqual(set(module), {"module_id", "description", "actions", "events"})
         self.assertEqual(module["actions"][0]["action_id"], "echo.repeat")
         self.assertEqual(module["events"][0]["event_id"], "echo.echoed")
@@ -108,7 +108,7 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_module_members_follow_current_module_definition(self):
         fixtures.write_echo_module(self.root)
         self.manager.enable_module("main", "echo")
-        before = catalog(self.agent)["modules"][0]["actions"]
+        before = next(item for item in catalog(self.agent)["modules"] if item["module_id"] == "echo")["actions"]
         self.manager.toggle_capability("module", "echo")
         fixtures.write_action(
             self.root / "capabilities/modules/echo/actions", "aaa", fixtures.ECHO_ACTION
@@ -124,7 +124,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         )
         path.write_text(source)
         self.manager.toggle_capability("module", "echo")
-        actual = catalog(self.agent)["modules"][0]["actions"]
+        actual = next(item for item in catalog(self.agent)["modules"] if item["module_id"] == "echo")["actions"]
         self.assertEqual(
             [item["action_id"] for item in actual], ["echo.aaa", "echo.repeat"]
         )
@@ -433,7 +433,7 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
         self.assertIn("event_id имеет значение call_result", prompt)
-        for concrete in ("main", "capability_manager", "system_started", "telegram", "speech", "spawn_agent"):
+        for concrete in ("main", "capability_manager", "system_started", "telegram", "speech", "agents.spawn"):
             self.assertNotIn(concrete, prompt)
 
 if __name__ == "__main__":

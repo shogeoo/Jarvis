@@ -42,9 +42,9 @@ def _ensure_preset(root: Path, name: str) -> None:
               if name in {"main", "capability_manager"} else f"Ты — агент preset {name}.\n")
     prompt_path = preset / "person.txt"
     _write_if_missing(prompt_path, prompt)
-    default = ["capability_development", "list_capabilities", "capability_info", "toggle_capability"] if name == "capability_manager" else []
+    default = []
     # Existing legacy metadata is migrated by PresetStore without overwriting PERSON.
-    metadata = {} if (preset / "capabilities.json").exists() else {"model": None, "capabilities": default}
+    metadata = {} if (preset / "capabilities.json").exists() else {"description": {"main": "The central JARVIS personality and human interlocutor.", "capability_manager": "Develops and maintains the capabilities of JARVIS."}.get(name, ""), "model": None, "capabilities": default}
     _write_if_missing(preset / "preset.json", json.dumps(metadata, indent=2) + "\n")
 
 

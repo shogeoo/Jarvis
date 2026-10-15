@@ -56,6 +56,7 @@ class AgentManager(InstanceConfiguration):
         self.capabilities = capabilities
         self.presets = presets
         self.presets.resolve_kind = capabilities.resolve_kind
+        self.presets.is_system = capabilities.is_system
         self.environment = environment
         self.config = config
         self.services = services if services is not None else {}
@@ -247,6 +248,7 @@ class AgentManager(InstanceConfiguration):
             additional_instructions=instructions,
             model=record.get("model"),
             capabilities_add=additions,
+            description=record.get("description"),
             persist_initial=legacy
             or bool(
                 record.get("restore_from_preset")
@@ -254,11 +256,13 @@ class AgentManager(InstanceConfiguration):
             ),
         )
 
-    def spawn(self, *, parent_id: str, preset_id: str) -> dict[str, Any]:
+    def spawn(self, *, parent_id: str, preset_id: str, description: str | None = None) -> dict[str, Any]:
         if parent_id not in self.agents:
             raise ValueError(f"Родительский агент не найден: {parent_id}")
         self.presets.load(preset_id)
-        agent = self._spawn(preset=preset_id, parent_id=parent_id)
+        if description is not None and not isinstance(description, str):
+            raise ValueError("description must be a string or null")
+        agent = self._spawn(preset=preset_id, parent_id=parent_id, description=description)
         return self.describe(agent)
 
     def _spawn(self, **kwargs) -> Agent:
@@ -277,6 +281,7 @@ class AgentManager(InstanceConfiguration):
         additional_instructions: str = "",
         model: str | None = None,
         capabilities_add: list[str] | None = None,
+        description: str | None = None,
     ) -> Agent:
         if self.stopping.is_set():
             raise RuntimeError("runtime_stopping")
@@ -290,9 +295,7 @@ class AgentManager(InstanceConfiguration):
             additions = self.capabilities.partition(capabilities_add)
             for key in initial:
                 initial[key].update(additions[key])
-        from .system_actions import SYSTEM_ALL, SYSTEM_MAIN
-
-        system_ids = SYSTEM_ALL | (SYSTEM_MAIN | {"speech"} if primary else set())
+        system_ids = {name for name, spec in self.actions.all().items() if spec.owner.startswith("core")}
         initial["actions"].difference_update(system_ids)
         self.capabilities.load_snapshot(
             self.capabilities.runnable_snapshot(initial), start_handlers=False
@@ -319,6 +322,7 @@ class AgentManager(InstanceConfiguration):
                 additional_instructions=additional_instructions,
                 model=model,
                 capabilities_add=capabilities_add,
+                description=description,
             )
             self.agents[resolved_id] = agent
             self.bus.bind(agent)
@@ -561,8 +565,7 @@ class AgentManager(InstanceConfiguration):
         target = agent_id
         event_id = "capability_error"
         data = {
-            "kind": kind,
-            "id": capability_id,
+            "capability_id": capability_id,
             "error": str(error),
             "call_id": call_id,
         }

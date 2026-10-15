@@ -7,33 +7,29 @@ from .agent_actions import register_agent_actions, require_main
 from .preset_actions import register_preset_actions
 from .capability_actions import register_capability_actions
 
-SYSTEM_ALL = frozenset({"send_message_to_agent"})
-SYSTEM_MAIN = frozenset(
-    {
-        "spawn_agent",
-        "interrupt_agent",
-        "delete_agent",
-        "list_agents",
-        "get_agent",
-        "edit_agent",
-        "list_agent_presets",
-        "get_preset",
-        "create_preset",
-        "edit_preset",
-        "remove_preset",
-        "enable_capability",
-        "disable_capability",
-        "list_active_capabilities",
-        "list_available_capabilities",
-        "list_capabilities",
-        "capability_info",
-        "toggle_capability",
-        "reply",
-        "memory_write",
-        "memory_edit",
-        "memory_delete",
-    }
-)
+
+def system_capabilities(*, primary=False, preset=""):
+    """Intrinsic assignments; never persisted as editable preset capabilities."""
+    values = ["no_action", "send_message_to_agent"]
+    if primary:
+        values += [
+            "agents",
+            "semantic_memory",
+            "speech_detected",
+            "list_assigned_capabilities",
+            "list_available_capabilities",
+            "capability_info",
+            "enable_capability",
+            "disable_capability",
+        ]
+    if preset == "capability_manager":
+        values += [
+            "capability_development",
+            "list_capabilities",
+            "capability_info",
+            "toggle_capability",
+        ]
+    return values
 
 
 def register_memory_actions(registry):
@@ -55,7 +51,7 @@ def register_memory_actions(registry):
 
     definitions = (
         (
-            "memory_write",
+            "write",
             "Save a confirmed, stable fact in Jarvis semantic memory. Returns its generated ID.",
             object_schema(
                 {
@@ -76,7 +72,7 @@ def register_memory_actions(registry):
             write,
         ),
         (
-            "memory_edit",
+            "edit",
             "Replace one semantic memory entry by its ID.",
             object_schema(
                 {
@@ -94,7 +90,7 @@ def register_memory_actions(registry):
             edit,
         ),
         (
-            "memory_delete",
+            "delete",
             "Delete one semantic memory entry by its ID.",
             object_schema(
                 {
@@ -112,8 +108,8 @@ def register_memory_actions(registry):
         registry.register(
             replace(
                 action_definition(description, arguments, result, handler),
-                id=identifier,
-                owner="core:primary",
+                id="semantic_memory." + identifier,
+                owner="core:module:semantic_memory",
             )
         )
 

@@ -281,6 +281,8 @@ class EventRegistry:
         if primary:
             owners.add("core:speech")
             owners.add("core:primary")
+        if "speech_detected" in handlers:
+            owners.add("core:speech")
         with self._lock:
             return {
                 event_id: definition

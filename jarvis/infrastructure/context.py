@@ -283,6 +283,7 @@ class MemoryStore:
             "agent_id": agent_id, "preset_id": preset,
             "parent_id": record.get("parent_id"), "model": record.get("model"),
             "additional_instructions": record.get("additional_instructions", ""),
+            "description": record.get("description"),
             "capabilities_add": _clean_capabilities(record.get("capabilities_add", []), _CAPABILITY),
         }
         messages = record.get("messages", [])
@@ -423,6 +424,7 @@ class MemoryStore:
             "agent_id": agent_id, "preset_id": preset,
             "parent_id": parent_id, "model": instance.get("model"),
             "additional_instructions": instance.get("additional_instructions", ""),
+            "description": instance.get("description"),
             "messages": messages,
         }
         if "capabilities_add" in instance:

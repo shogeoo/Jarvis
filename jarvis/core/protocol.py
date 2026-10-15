@@ -152,6 +152,10 @@ def validate_catalog_text(value: Any) -> None:
     """Validate description values without restricting their language."""
     if isinstance(value, dict):
         for key, child in value.items():
+            if key == "properties" and isinstance(child, dict):
+                for field in child.values():
+                    validate_catalog_text(field)
+                continue
             if key == "description" and (not isinstance(child, str) or not child.strip()):
                 raise ValueError("CAPABILITY descriptions must be non-empty text")
             validate_catalog_text(child)

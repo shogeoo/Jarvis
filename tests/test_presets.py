@@ -55,7 +55,7 @@ class PresetStoreTests(unittest.TestCase):
         self.store.add_capability("main", "action", "say")
         self.store.add_capability("main", "handler", "tick")
         preset = self.store.load("main")
-        self.assertIn("agents", preset.capabilities)
+        self.assertNotIn("agents", preset.capabilities)
         self.assertEqual(preset.actions, ("say",))
         self.assertIn("tick", preset.capabilities)
 

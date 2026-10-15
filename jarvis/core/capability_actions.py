@@ -11,13 +11,35 @@ def run(data, context):
     capabilities = context.capabilities
     name = context.action_id
     if name == "list_capabilities":
-        return capabilities.list_existing()
-    if name == "list_active_capabilities":
-        return manager.require_agent(context.agent_id).capabilities_snapshot_lists()
+        if manager.require_agent(context.agent_id).preset != "capability_manager":
+            raise ValueError("Only capability_manager may list all capabilities")
+        return {
+            "capabilities": [
+                item
+                for items in capabilities.list_existing().values()
+                for item in items
+            ]
+        }
+    if name == "list_assigned_capabilities":
+        agent = manager.require_agent(context.agent_id)
+        return {
+            "capabilities": [
+                {
+                    "id": identifier,
+                    "description": capabilities.capability_info(identifier)[
+                        "description"
+                    ],
+                }
+                for identifier in dict.fromkeys(manager.assigned_ids(agent))
+            ]
+        }
     if name == "list_available_capabilities":
-        return capabilities.list_available(
+        available = capabilities.list_available(
             manager.require_agent(context.agent_id).capabilities_snapshot()
         )
+        return {
+            "capabilities": [item for items in available.values() for item in items]
+        }
     capability_id = data["capability_id"]
     kind = capabilities.resolve_kind(capability_id)
     if name == "capability_info":
@@ -26,27 +48,23 @@ def run(data, context):
             "info": capabilities.capability_info(capability_id),
         }
     if name == "toggle_capability":
-        spec = capabilities.actions.get(capability_id)
-        if capability_id in capabilities.builtin_modules() or (
-            spec is not None and spec.owner.startswith("core")
-        ):
-            raise ValueError("Built-in capabilities cannot be globally paused")
+        if manager.require_agent(context.agent_id).preset != "capability_manager":
+            raise ValueError("Only capability_manager may globally pause capabilities")
+        if capabilities.is_system(capability_id):
+            raise ValueError("Cannot pause a system capability")
         return {
             "capability_id": capability_id,
             **capabilities.toggle_global_state(kind, capability_id),
         }
     enabled = name == "enable_capability"
     if not enabled:
+        if capabilities.is_system(capability_id):
+            raise ValueError("Cannot disable a system capability")
         agent = manager.require_agent(context.agent_id)
         if capability_id in manager.presets.load(agent.preset).capabilities:
             raise ValueError(
                 "Cannot remove a mandatory preset capability; edit the preset instead"
             )
-        spec = capabilities.actions.get(capability_id)
-        if capability_id in capabilities.builtin_modules() or (
-            spec is not None and spec.owner.startswith("core")
-        ):
-            raise ValueError("Built-in capabilities cannot be disabled")
     operation = getattr(manager, ("enable_" if enabled else "disable_") + kind)
     operation(context.agent_id, capability_id)
     return {"capability_id": capability_id, "enabled": enabled}
@@ -55,14 +73,14 @@ def run(data, context):
 def register_capability_actions(registry):
     for name in (
         "list_capabilities",
-        "list_active_capabilities",
+        "list_assigned_capabilities",
         "list_available_capabilities",
         "capability_info",
         "toggle_capability",
         "enable_capability",
         "disable_capability",
     ):
-        lists = {key: {} for key in ("actions", "handlers", "modules")}
+        lists = {"capabilities": {}}
         if name.startswith("list_"):
             arguments, result = {}, lists
         elif name == "capability_info":
@@ -80,16 +98,15 @@ def register_capability_actions(registry):
                 {"capability_id": STRING},
                 {"capability_id": {}, "enabled": {}},
             )
-        description = (
-            name
-            + ": inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch."
-        )
+        from .descriptions import read_descriptions
+
+        description = read_descriptions()["actions"][name]["description"]
         registry.register(
             replace(
                 action_definition(
                     description, object_schema(arguments), object_schema(result), run
                 ),
                 id=name,
-                owner="core:primary",
+                owner="core:assigned",
             )
         )

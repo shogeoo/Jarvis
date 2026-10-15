@@ -572,12 +572,18 @@ class CapabilityManager(
         self, snapshot: dict[str, set[str]], *, agents: list[Any]
     ) -> None:
         for module_id in sorted(snapshot.get("modules", ())):
+            if self.is_system(module_id):
+                continue
             if not any(module_id in agent.modules() for agent in agents):
                 self.unload_module(module_id)
         for action_id in sorted(snapshot.get("actions", ())):
+            if self.is_system(action_id):
+                continue
             if not any(action_id in agent.standalone_actions() for agent in agents):
                 self.unload_action(action_id)
         for handler_id in sorted(snapshot.get("handlers", ())):
+            if self.is_system(handler_id):
+                continue
             if not any(handler_id in agent.standalone_handlers() for agent in agents):
                 self.unload_handler(handler_id)
 
@@ -803,6 +809,8 @@ class CapabilityManager(
 
     # --- выгрузка -----------------------------------------------------
     def unload_action(self, action_id: str) -> None:
+        if self.is_system(action_id):
+            raise ValueError("Cannot unload a system capability")
         with self._lock:
             runtime = self._actions.pop(action_id, None)
         if runtime is None or runtime.module_id is not None:
@@ -810,6 +818,8 @@ class CapabilityManager(
         self._stop_host(runtime.host)
 
     def unload_handler(self, handler_id: str) -> None:
+        if self.is_system(handler_id):
+            raise ValueError("Cannot unload a system capability")
         with self._lock:
             runtime = self._handlers.pop(handler_id, None)
         if runtime is None or runtime.module_id is not None:
@@ -817,6 +827,8 @@ class CapabilityManager(
         self._stop_host(runtime.host)
 
     def unload_module(self, module_id: str) -> None:
+        if self.is_system(module_id):
+            raise ValueError("Cannot unload a system capability")
         with self._lock:
             runtime = self._modules.pop(module_id, None)
             if runtime is not None:
@@ -861,5 +873,5 @@ class CapabilityManager(
             runtime = self._handlers.get(handler_id)
             if runtime is not None and runtime.module_id is None:
                 self.unload_handler(handler_id)
-        for module_id in list(self.loaded_modules()):
+        for module_id in list(self.loaded_modules() - self.builtin_modules()):
             self.unload_module(module_id)

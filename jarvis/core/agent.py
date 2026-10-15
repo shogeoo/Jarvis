@@ -42,12 +42,16 @@ class Agent(AgentGeneration):
         additional_instructions: str = "",
         model: str | None = None,
         capabilities_add: list[str] | None = None,
+        description: str | None = None,
     ):
         self.agent_id = agent_id
         self.preset = preset
         self.parent_id = parent_id
         self.manager = manager
         self.primary = primary
+        if description is not None and not isinstance(description, str):
+            raise ValueError("description must be a string or null")
+        self.description = description
         selected = manager.presets.load(preset)
         self.additional_instructions = additional_instructions
         self.model_override = model
@@ -158,9 +162,11 @@ class Agent(AgentGeneration):
     def _refresh_configuration(self):
         preset = self.manager.presets.load(self.preset)
         ordered = list(
-            dict.fromkeys([*preset.capabilities, *self._additional_capabilities])
+            dict.fromkeys([*self.intrinsic_capabilities(), *preset.capabilities, *self._additional_capabilities])
         )
         partition = self.manager.capabilities.partition(ordered)
+        if self.preset != "capability_manager":
+            partition["actions"] = [value for value in partition["actions"] if value not in {"list_capabilities", "toggle_capability"}]
         previous = self.capabilities_snapshot()
         current = {key: set(values) for key, values in partition.items()}
         runnable = self.manager.capabilities.runnable_snapshot(current)
@@ -177,10 +183,25 @@ class Agent(AgentGeneration):
                 removed, agents=self.manager.agents_snapshot()
             )
 
+    def intrinsic_capabilities(self):
+        from .system_actions import system_capabilities
+
+        return system_capabilities(primary=self.primary, preset=self.preset)
+
     @property
     def state(self) -> str:
         with self._state_lock:
             return self._state
+
+    def assigned_capability_ids(self):
+        """Represent each indivisible module once, including paused assignments."""
+        actions, _ = self._contract()
+        return list(dict.fromkeys([
+            *self._assignment_order["modules"],
+            *self._assignment_order["handlers"],
+            *self._assignment_order["actions"],
+            *[name for name in actions if "." not in name],
+        ]))
 
     def _set_state(self, state: str, **extra: Any) -> None:
         if self._stop.is_set() and state != "stopped":
@@ -230,6 +251,7 @@ class Agent(AgentGeneration):
     def enable_module(self, module_id: str) -> None:
         if (
             module_id not in self.manager.presets.load(self.preset).capabilities
+            and module_id not in self.intrinsic_capabilities()
             and module_id not in self._additional_capabilities
         ):
             self._additional_capabilities.append(module_id)
@@ -237,6 +259,8 @@ class Agent(AgentGeneration):
         self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
+        if self.manager.capabilities.is_system(module_id):
+            raise ValueError("Cannot disable a system capability")
         if module_id in self.manager.presets.load(self.preset).capabilities:
             raise ValueError("Cannot remove a mandatory preset capability")
         self._additional_capabilities = [
@@ -248,6 +272,7 @@ class Agent(AgentGeneration):
     def enable_action(self, action_id: str) -> None:
         if (
             action_id not in self.manager.presets.load(self.preset).capabilities
+            and action_id not in self.intrinsic_capabilities()
             and action_id not in self._additional_capabilities
         ):
             self._additional_capabilities.append(action_id)
@@ -255,6 +280,8 @@ class Agent(AgentGeneration):
         self._persist_context()
 
     def disable_action(self, action_id: str) -> None:
+        if self.manager.capabilities.is_system(action_id):
+            raise ValueError("Cannot disable a system capability")
         if action_id in self.manager.presets.load(self.preset).capabilities:
             raise ValueError("Cannot remove a mandatory preset capability")
         self._additional_capabilities = [
@@ -266,6 +293,7 @@ class Agent(AgentGeneration):
     def enable_handler(self, handler_id: str) -> None:
         if (
             handler_id not in self.manager.presets.load(self.preset).capabilities
+            and handler_id not in self.intrinsic_capabilities()
             and handler_id not in self._additional_capabilities
         ):
             self._additional_capabilities.append(handler_id)
@@ -273,6 +301,8 @@ class Agent(AgentGeneration):
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
+        if self.manager.capabilities.is_system(handler_id):
+            raise ValueError("Cannot disable a system capability")
         if handler_id in self.manager.presets.load(self.preset).capabilities:
             raise ValueError("Cannot remove a mandatory preset capability")
         self._additional_capabilities = [
@@ -283,7 +313,7 @@ class Agent(AgentGeneration):
 
     def accepts_event(self, event: Event) -> bool:
         if event.handler_id == "core:speech":
-            return self.primary
+            return self.primary or "speech_detected" in self.standalone_handlers()
         if (
             event.handler_id is not None
             and self.manager.capabilities.is_globally_paused(
@@ -307,6 +337,7 @@ class Agent(AgentGeneration):
             "agent_id": self.agent_id,
             "preset_id": self.preset,
             "parent_id": self.parent_id,
+            "description": self.description,
             "model": self.model_override,
             "additional_instructions": self.additional_instructions,
             "capabilities_add": list(self._additional_capabilities),

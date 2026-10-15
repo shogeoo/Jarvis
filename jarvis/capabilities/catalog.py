@@ -46,6 +46,9 @@ class CapabilityCatalog:
             handlers = []
             events = []
             for handler_id in sorted(snapshot.get("handlers", ())):
+                if handler_id in self.builtin_handlers():
+                    events.append(self.capability_info(handler_id))
+                    continue
                 runtime = self._handlers.get(handler_id)
                 if runtime is None and describe_unloaded:
                     item = self._describe("handler", handler_id)["handlers"][0]

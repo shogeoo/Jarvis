@@ -128,19 +128,19 @@ def file_action(action_id, base_directory, *, process_manager=None):
     line = {"type": ["integer", "null"], "minimum": 1}
     specs = {
         "read_file": (
-            "Read numbered UTF-8 text or native image/audio/video/file attachments. Optional lines are inclusive and 1-based. Relative paths use this tool's base directory.",
+            "Perceive information stored in a file: read numbered UTF-8 text or receive native image, audio, video and file attachments. Use the returned line numbers for precise edits. Optional lines are inclusive and 1-based. Relative paths use this capability's base directory.",
             {"path": string, "start_line": line, "end_line": line},
             ["path"],
             {"path": string, "start_line": line, "end_line": line, "content": string},
         ),
         "write_file": (
-            "Create or fully replace a UTF-8 file, creating parent directories. Relative paths use this tool's base directory.",
+            "Materialize your work as a UTF-8 file, creating its parent directories when needed. This replaces the complete existing content, not an append or partial edit. Relative paths use this capability's base directory.",
             {"path": string, "content": string},
             ["path", "content"],
             {"path": string, "written": {"type": "boolean"}},
         ),
         "edit_file": (
-            "Replace an inclusive 1-based line range; invalid ranges fail without editing. Relative paths use this tool's base directory.",
+            "Revise a precise part of an existing text file using the line numbers obtained from read_file. Replace the inclusive 1-based range with content; invalid ranges fail without changing the file. Relative paths use this capability's base directory.",
             {
                 "path": string,
                 "start_line": {"type": "integer", "minimum": 1},
@@ -151,7 +151,7 @@ def file_action(action_id, base_directory, *, process_manager=None):
             {"path": string, "edited": {"type": "boolean"}},
         ),
         "execute_command": (
-            "Run one non-interactive bash command without a result timeout. Every invocation starts a fresh shell; cwd, exports and shell state never carry between calls. Omitted cwd uses this tool's base directory. Return full exit_code, stdout and stderr.",
+            "Act on the computer through one non-interactive bash command and inspect its full exit_code, stdout and stderr. The result arrives after completion without a result timeout. Every invocation starts a fresh shell; cwd, exports and shell state never carry between calls. Omitted cwd uses this capability's base directory.",
             {"command": string, "cwd": {"type": ["string", "null"]}},
             ["command"],
             {"exit_code": {"type": "integer"}, "stdout": string, "stderr": string},

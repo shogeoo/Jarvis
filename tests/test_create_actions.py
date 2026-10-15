@@ -36,10 +36,12 @@ class CreateActionsTests(unittest.TestCase):
             presets=PresetStore(self.root / "presets"),
             capabilities=self.manager,
             refresh_presets=lambda preset_id: None,
+            require_agent=lambda agent_id: SimpleNamespace(modules=lambda: {"agents"} if agent_id == "main" else set()),
         )
 
     def load_action(self, action_id):
         def run(data, context):
+            data = {"description": "Test specialization.", **data}
             context.action_id = action_id
             context.agent_manager = SimpleNamespace(_manager=self.state_manager)
             context.capabilities = self.manager
@@ -55,8 +57,8 @@ class CreateActionsTests(unittest.TestCase):
         )
 
     def test_create_preset_refuses_other_agents(self):
-        module = self.load_action("create_preset")
-        with self.assertRaisesRegex(ValueError, "main"):
+        module = self.load_action("agents.create_preset")
+        with self.assertRaisesRegex(ValueError, "agents"):
             module.run(
             {
                 "preset_id": "intruder",
@@ -68,7 +70,7 @@ class CreateActionsTests(unittest.TestCase):
         self.assertFalse((self.root / "presets" / "intruder").exists())
 
     def test_create_preset_rejects_unknown_capability_ids(self):
-        module = self.load_action("create_preset")
+        module = self.load_action("agents.create_preset")
         result = module.run(
             {
                 "preset_id": "broken",
@@ -82,7 +84,7 @@ class CreateActionsTests(unittest.TestCase):
         self.assertFalse((self.root / "presets" / "broken").exists())
 
     def test_create_preset_accepts_existing_capability_ids(self):
-        module = self.load_action("create_preset")
+        module = self.load_action("agents.create_preset")
         result = module.run(
             {
                 "preset_id": "listener",
@@ -103,7 +105,7 @@ class CreateActionsTests(unittest.TestCase):
         self.assertEqual(capabilities["capabilities"], ["say", "tick"])
 
     def test_create_preset_refuses_overwrite(self):
-        module = self.load_action("create_preset")
+        module = self.load_action("agents.create_preset")
         context = self.preset_context("main")
         payload = {
             "preset_id": "listener",

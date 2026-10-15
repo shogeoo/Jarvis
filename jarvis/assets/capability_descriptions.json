@@ -1,39 +1,8 @@
 {
   "actions": [
     {
-      "spawn_agent": {
-        "description": "Create an independent agent from a preset. Send its task separately after the creation result. Delegate complex work; capability_manager may only develop capabilities.",
-        "data_schema": {
-          "properties": {
-            "preset_id": {
-              "description": "Identifier of the preset."
-            }
-          },
-          "required": [
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "spawned": {
-              "description": "Whether the new agent instance was created."
-            },
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            },
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "parent_id": {
-              "description": "Identifier of the parent agent, or null for the root."
-            }
-          }
-        }
-      }
-    },
-    {
       "send_message_to_agent": {
-        "description": "Send a message or task to another agent; every agent can communicate. The recipient receives message_from_agent.",
+        "description": "Communicate with another agent as part of the same JARVIS system: assign work, request information or report findings. Address its exact agent ID. The recipient receives your text through message_from_agent; delivered reports actual queue delivery, not task completion.",
         "data_schema": {
           "properties": {
             "agent_id": {
@@ -42,11 +11,7 @@
             "text": {
               "description": "Text content to process; see the action or event description."
             }
-          },
-          "required": [
-            {},
-            {}
-          ]
+          }
         },
         "result_schema": {
           "properties": {
@@ -61,312 +26,24 @@
       }
     },
     {
-      "list_agents": {
-        "description": "Inspect live agent instances before addressing or managing them.",
-        "result_schema": {
-          "properties": {
-            "agents": {
-              "description": "Current live agent instances."
-            }
-          }
-        }
-      }
-    },
-    {
-      "get_agent": {
-        "description": "Inspect the current preset base, individual additions and computed effective configuration separately.",
-        "data_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            }
-          },
-          "required": [
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            },
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "parent_id": {
-              "description": "Identifier of the parent agent, or null for the root."
-            },
-            "state": {
-              "description": "Current runtime state."
-            },
-            "preset": {
-              "description": "Name of the agent preset."
-            },
-            "additions": {
-              "description": "Additions."
-            },
-            "effective": {
-              "description": "Effective."
-            }
-          }
-        }
-      }
-    },
-    {
-      "edit_agent": {
-        "description": "Change individual additions only: additional_instructions, capabilities_add, capabilities_remove and model (null clears the override). Mandatory preset capabilities cannot be removed. History is preserved.",
-        "data_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            },
-            "changes": {
-              "description": "Partial update: additional_instructions string, capabilities_add/remove arrays of IDs, model string or null. Omitted fields remain unchanged."
-            }
-          },
-          "required": [
-            {},
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            },
-            "updated": {
-              "description": "Updated."
-            }
-          }
-        }
-      }
-    },
-    {
-      "interrupt_agent": {
-        "description": "Cancel the current generation; keep history, queued events and already running actions.",
-        "data_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            }
-          },
-          "required": [
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            },
-            "state": {
-              "description": "Current runtime state."
-            }
-          }
-        }
-      }
-    },
-    {
-      "delete_agent": {
-        "description": "Delete an agent and all descendants, stop their executions and erase all instance data without late saves recreating it.",
-        "data_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            }
-          },
-          "required": [
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "agent_id": {
-              "description": "Identifier of the agent instance."
-            },
-            "deleted": {
-              "description": "Whether the agent and its descendants were deleted."
-            }
-          }
-        }
-      }
-    },
-    {
-      "list_agent_presets": {
-        "description": "list_agent_presets: manage the live mandatory preset base. Updates apply to existing instances without clearing history; removal recursively deletes all instances and descendants. Only main may perform this operation.",
-        "result_schema": {
-          "properties": {
-            "presets": {
-              "description": "Saved presets and their initial assignments."
-            }
-          }
-        }
-      }
-    },
-    {
-      "get_preset": {
-        "description": "get_preset: manage the live mandatory preset base. Updates apply to existing instances without clearing history; removal recursively deletes all instances and descendants. Only main may perform this operation.",
-        "data_schema": {
-          "properties": {
-            "preset_id": {
-              "description": "Identifier of the preset."
-            }
-          },
-          "required": [
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "person": {
-              "description": "Person."
-            },
-            "model": {
-              "description": "Model."
-            },
-            "capabilities": {
-              "description": "Capabilities."
-            }
-          }
-        }
-      }
-    },
-    {
-      "create_preset": {
-        "description": "create_preset: manage the live mandatory preset base. Updates apply to existing instances without clearing history; removal recursively deletes all instances and descendants. Only main may perform this operation.",
-        "data_schema": {
-          "properties": {
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "person": {
-              "description": "Person."
-            },
-            "model": {
-              "type": [
-                {},
-                {}
-              ],
-              "description": "Model."
-            },
-            "capabilities": {
-              "description": "Capabilities."
-            }
-          },
-          "required": [
-            {},
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "status": {
-              "description": "Outcome of the operation."
-            },
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "error": {
-              "description": "Failure details if the operation did not succeed."
-            }
-          }
-        }
-      }
-    },
-    {
-      "edit_preset": {
-        "description": "edit_preset: manage the live mandatory preset base. Updates apply to existing instances without clearing history; removal recursively deletes all instances and descendants. Only main may perform this operation.",
-        "data_schema": {
-          "properties": {
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "changes": {
-              "description": "Partial update: person, model (null inherits Jarvis default), capabilities or capabilities_add/remove. Omitted fields remain unchanged."
-            }
-          },
-          "required": [
-            {},
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "status": {
-              "description": "Outcome of the operation."
-            },
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "error": {
-              "description": "Failure details if the operation did not succeed."
-            }
-          }
-        }
-      }
-    },
-    {
-      "remove_preset": {
-        "description": "remove_preset: manage the live mandatory preset base. Updates apply to existing instances without clearing history; removal recursively deletes all instances and descendants. Only main may perform this operation.",
-        "data_schema": {
-          "properties": {
-            "preset_id": {
-              "description": "Identifier of the preset."
-            }
-          },
-          "required": [
-            {}
-          ]
-        },
-        "result_schema": {
-          "properties": {
-            "status": {
-              "description": "Outcome of the operation."
-            },
-            "preset_id": {
-              "description": "Identifier of the preset."
-            },
-            "error": {
-              "description": "Failure details if the operation did not succeed."
-            }
-          }
-        }
-      }
-    },
-    {
       "list_capabilities": {
-        "description": "list_capabilities: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+        "description": "Survey all capabilities that exist in the system, including built-in system capabilities, before developing or maintaining them. Read compact descriptions and runtime/global pause state; use capability_info for a complete contract. This development overview is reserved for capability_manager.",
         "result_schema": {
           "properties": {
-            "actions": {
-              "description": "Standalone action identifiers assigned to the agent."
-            },
-            "handlers": {
-              "description": "Standalone observer identifiers assigned to the agent."
-            },
-            "modules": {
-              "description": "Module identifiers assigned to the agent."
+            "capabilities": {
+              "description": "Existing capabilities, each with its global id, description, loaded state and global pause state. Each module appears once as a whole capability."
             }
           }
         }
       }
     },
     {
-      "list_active_capabilities": {
-        "description": "list_active_capabilities: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+      "list_assigned_capabilities": {
+        "description": "Review all capabilities currently assigned to you, including intrinsic system capabilities and assigned capabilities that are globally paused. Assignment does not guarantee current execution availability. Use capability_info for a complete contract.",
         "result_schema": {
           "properties": {
-            "actions": {
-              "description": "Standalone action identifiers assigned to the agent."
-            },
-            "handlers": {
-              "description": "Standalone observer identifiers assigned to the agent."
-            },
-            "modules": {
-              "description": "Module identifiers assigned to the agent."
+            "capabilities": {
+              "description": "Your assigned capabilities, each with its global id and description. Includes system capabilities and globally paused assignments; each module appears once as a whole capability."
             }
           }
         }
@@ -374,17 +51,11 @@
     },
     {
       "list_available_capabilities": {
-        "description": "list_available_capabilities: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+        "description": "Discover existing user capabilities not yet assigned to you. Choose an appropriate ability by its description, inspect its contract with capability_info and assign it through enable_capability when needed. No module members are separately assignable.",
         "result_schema": {
           "properties": {
-            "actions": {
-              "description": "Standalone action identifiers assigned to the agent."
-            },
-            "handlers": {
-              "description": "Standalone observer identifiers assigned to the agent."
-            },
-            "modules": {
-              "description": "Module identifiers assigned to the agent."
+            "capabilities": {
+              "description": "Existing user capabilities not assigned to you, each with its global id and description. Each module appears once as a whole capability."
             }
           }
         }
@@ -392,16 +63,13 @@
     },
     {
       "capability_info": {
-        "description": "capability_info: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+        "description": "Understand one capability through its complete current model-facing contract. Supply its globally unique capability_id. A module returns all its actions and events together; an action returns its arguments and result contract; a handler returns its event contract. No source code or process internals are returned.",
         "data_schema": {
           "properties": {
             "capability_id": {
               "description": "Capability id."
             }
-          },
-          "required": [
-            {}
-          ]
+          }
         },
         "result_schema": {
           "properties": {
@@ -417,16 +85,13 @@
     },
     {
       "toggle_capability": {
-        "description": "toggle_capability: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+        "description": "Pause or resume a user capability globally while maintaining it. A pause stops its running executions and unloads its runtime; a resume loads current code for its assigned agents. Wait for the pause call_result before editing or resuming. Never pause and resume the same capability in one batch. System capabilities cannot be paused.",
         "data_schema": {
           "properties": {
             "capability_id": {
               "description": "Capability id."
             }
-          },
-          "required": [
-            {}
-          ]
+          }
         },
         "result_schema": {
           "properties": {
@@ -445,16 +110,13 @@
     },
     {
       "enable_capability": {
-        "description": "enable_capability: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+        "description": "Add an existing user capability to your own abilities by its global ID. A module is assigned whole. Global pause remains independent of assignment, so assigning a paused capability does not resume it for everyone.",
         "data_schema": {
           "properties": {
             "capability_id": {
               "description": "Capability id."
             }
-          },
-          "required": [
-            {}
-          ]
+          }
         },
         "result_schema": {
           "properties": {
@@ -470,16 +132,13 @@
     },
     {
       "disable_capability": {
-        "description": "disable_capability: inspect or manage capabilities by their globally unique ID. Modules are assigned whole. Preset capabilities are mandatory; only individual additions may be removed. Global pause affects user capabilities, not built-ins. Wait for pause result before resuming, never toggle the same ID twice in one batch.",
+        "description": "Remove an individually added user capability from your own abilities when no longer needed. This does not globally pause it or remove its files. System capabilities cannot be disabled; preset assignments must be changed through the preset.",
         "data_schema": {
           "properties": {
             "capability_id": {
               "description": "Capability id."
             }
-          },
-          "required": [
-            {}
-          ]
+          }
         },
         "result_schema": {
           "properties": {
@@ -494,68 +153,8 @@
       }
     },
     {
-      "memory_write": {
-        "description": "Write a message from your past self to your future self in semantic memory. Record one confirmed, self-contained fact likely to remain true in the near future: a person's stable habits, character, preferences, interests, biography or relationships, or persistent information about devices and surroundings. State the established fact directly, with enough context to understand it later. Do not record uncertain inferences, hypothetical possibilities, plans as completed events, current tasks, temporary projects or short-lived states. Do not infer a habit from one observation or duplicate an existing entry, PERSON or ENVIRONMENT. The core generates the entry ID.",
-        "data_schema": {
-          "properties": {
-            "content": {
-              "description": "One short, self-contained message to your future self stating a confirmed fact expected to remain stable in the near future. Include whom or what the fact concerns; exclude uncertainty, hypothetical plans, current tasks and temporary states."
-            }
-          }
-        },
-        "result_schema": {
-          "properties": {
-            "id": {
-              "description": "Generated ID of the saved semantic memory entry; use the ID currently shown in MEMORY for later editing or deletion."
-            }
-          }
-        }
-      }
-    },
-    {
-      "memory_edit": {
-        "description": "Replace the complete text of an existing semantic memory entry by its ID. Write a clear message to your future self containing the corrected, confirmed and sufficiently stable fact. Preserve relevant established information; do not turn possibilities, intentions or uncertain conclusions into facts.",
-        "data_schema": {
-          "properties": {
-            "id": {
-              "description": "Exact ID of the existing MEMORY entry to replace."
-            },
-            "content": {
-              "description": "Complete replacement message to your future self, stating the corrected confirmed and stable information clearly enough to understand without the current conversation."
-            }
-          }
-        },
-        "result_schema": {
-          "properties": {
-            "status": {
-              "description": "Operation result; updated means the identified memory entry was replaced."
-            }
-          }
-        }
-      }
-    },
-    {
-      "memory_delete": {
-        "description": "Delete a semantic memory entry by its ID when its information is false, obsolete, duplicated or no longer suitable as a confirmed stable message to your future self.",
-        "data_schema": {
-          "properties": {
-            "id": {
-              "description": "Exact ID of the MEMORY entry that should be removed permanently."
-            }
-          }
-        },
-        "result_schema": {
-          "properties": {
-            "status": {
-              "description": "Operation result; deleted means the identified memory entry was removed."
-            }
-          }
-        }
-      }
-    },
-    {
       "reply": {
-        "description": "Send the exact text to the human interlocutor through the console response channel. This capability is offered when voice output is unavailable because the configured speech executable is absent. The text appears inside the protocol trace.",
+        "description": "Express your exact words to the human interlocutor through the console when voice output is unavailable. Write the actual message, not a description of what you would say. The message remains inside the JSON protocol trace.",
         "data_schema": {
           "properties": {
             "text": {
@@ -574,7 +173,7 @@
     },
     {
       "no_action": {
-        "description": "End the current reasoning cycle and wait for new events when no available action is appropriate. This invocation uses a unique call_id like other actions, must be the only action in the response, and does not produce a call_result."
+        "description": "Remain attentive without taking further action now. End this reasoning cycle and wait for an incoming event. Use this as the only action in your response, with a fresh call_id; it produces no call_result."
       }
     },
     {
@@ -618,7 +217,7 @@
     },
     {
       "message_from_agent": {
-        "description": "A direct message from another agent. from_agent_id and from_name identify the sender; text contains their message or task.",
+        "description": "Another agent in the JARVIS system is communicating with you. from_agent_id identifies the sender; interpret text as its message, task or report in the context of your own purpose.",
         "data_schema": {
           "properties": {
             "from_agent_id": {
@@ -627,11 +226,7 @@
             "text": {
               "description": "Text content to process; see the action or event description."
             }
-          },
-          "required": [
-            {},
-            {}
-          ]
+          }
         }
       }
     },
@@ -649,20 +244,17 @@
     },
     {
       "capability_error": {
-        "description": "A capability has failed. The kind, ID and error describe the failure; call_id identifies an affected invocation when available. Determine the actual outcome from these details before retrying, choosing another capability or reporting the issue.",
+        "description": "One of your capabilities failed. Inspect capability_id, error and the optional call_id to understand what happened before choosing how to continue. This event is not a successful result.",
         "data_schema": {
           "properties": {
-            "kind": {
-              "description": "Kind of capability that failed: module, standalone action, or standalone handler."
-            },
-            "id": {
-              "description": "Identifier of the capability in which the unhandled failure occurred."
-            },
             "error": {
               "description": "Failure details to inspect when deciding how to recover or what to report."
             },
             "call_id": {
               "description": "Invocation ID associated with the failure when one specific action call was affected; use it to correlate the error with your prior request."
+            },
+            "capability_id": {
+              "description": "Globally unique ID of the capability that failed."
             }
           }
         }
@@ -684,34 +276,23 @@
   "modules": [
     {
       "capability_development": {
-        "description": "Develop capabilities using file and bash tools. Relative paths and default cwd are bound to the capability storage directory. All four tools are assigned together.",
+        "description": "Develop and maintain the abilities through which the JARVIS system perceives and acts. These four file and shell tools share the capability-storage base directory and are assigned together.",
         "actions": [
           {
             "capability_development.read_file": {
-              "description": "Read numbered UTF-8 text or native image/audio/video/file attachments. Optional lines are inclusive and 1-based. Relative paths use this tool's base directory.",
+              "description": "Perceive information stored in a file: read numbered UTF-8 text or receive native image, audio, video and file attachments. Use the returned line numbers for precise edits. Optional lines are inclusive and 1-based. Relative paths use the capability-storage directory.",
               "data_schema": {
                 "properties": {
                   "path": {
                     "description": "Path to the file."
                   },
                   "start_line": {
-                    "type": [
-                      {},
-                      {}
-                    ],
                     "description": "First included line, numbered from 1; null selects the file beginning."
                   },
                   "end_line": {
-                    "type": [
-                      {},
-                      {}
-                    ],
                     "description": "Last included line, numbered from 1; null selects the file end."
                   }
-                },
-                "required": [
-                  {}
-                ]
+                }
               },
               "result_schema": {
                 "properties": {
@@ -733,7 +314,7 @@
           },
           {
             "capability_development.write_file": {
-              "description": "Create or fully replace a UTF-8 file, creating parent directories. Relative paths use this tool's base directory.",
+              "description": "Materialize your work as a UTF-8 file, creating its parent directories when needed. This replaces the complete existing content, not an append or partial edit. Relative paths use the capability-storage directory.",
               "data_schema": {
                 "properties": {
                   "path": {
@@ -742,11 +323,7 @@
                   "content": {
                     "description": "Text content of the file or replacement range."
                   }
-                },
-                "required": [
-                  {},
-                  {}
-                ]
+                }
               },
               "result_schema": {
                 "properties": {
@@ -762,7 +339,7 @@
           },
           {
             "capability_development.edit_file": {
-              "description": "Replace an inclusive 1-based line range; invalid ranges fail without editing. Relative paths use this tool's base directory.",
+              "description": "Revise a precise part of an existing text file using the line numbers obtained from read_file. Replace the inclusive 1-based range with content; invalid ranges fail without changing the file. Relative paths use the capability-storage directory.",
               "data_schema": {
                 "properties": {
                   "path": {
@@ -777,13 +354,7 @@
                   "content": {
                     "description": "Text content of the file or replacement range."
                   }
-                },
-                "required": [
-                  {},
-                  {},
-                  {},
-                  {}
-                ]
+                }
               },
               "result_schema": {
                 "properties": {
@@ -799,23 +370,16 @@
           },
           {
             "capability_development.execute_command": {
-              "description": "Run one non-interactive bash command without a result timeout. Every invocation starts a fresh shell; cwd, exports and shell state never carry between calls. Omitted cwd uses this tool's base directory. Return full exit_code, stdout and stderr.",
+              "description": "Act on the computer through one non-interactive bash command and inspect its full exit_code, stdout and stderr. The result arrives after completion without a result timeout. Every invocation starts a fresh shell; cwd, exports and shell state never carry between calls. Omitted cwd uses the capability-storage directory.",
               "data_schema": {
                 "properties": {
                   "command": {
                     "description": "One non-interactive bash command to execute."
                   },
                   "cwd": {
-                    "type": [
-                      {},
-                      {}
-                    ],
-                    "description": "Working directory; omitted or null uses the project root."
+                    "description": "Working directory for this invocation; omitted or null uses the capability-storage directory. Shell state never carries between invocations."
                   }
-                },
-                "required": [
-                  {}
-                ]
+                }
               },
               "result_schema": {
                 "properties": {
@@ -827,6 +391,368 @@
                   },
                   "stderr": {
                     "description": "Captured standard error of the command."
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "agents": {
+        "description": "Coordinate your independent agents and shape their reusable specializations. Create, inspect, instruct, interrupt or recursively remove instances, and manage presets without losing the distinction between a specialization and an individual.",
+        "actions": [
+          {
+            "agents.spawn": {
+              "description": "Extend your ability to act by creating an independent agent from a suitable preset. Delegate most substantial or complex tasks rather than doing all work in one context. Use capability_manager exclusively for developing and maintaining capabilities, never for unrelated tasks. After creation, send the new agent its task through send_message_to_agent. An optional description records this instance's particular purpose, separately from its instructions.",
+              "data_schema": {
+                "properties": {
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "description": {
+                    "description": "Optional purpose of this particular instance, separate from its instructions; null by default."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "spawned": {
+                    "description": "Whether the new agent instance was created."
+                  },
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  },
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "parent_id": {
+                    "description": "Identifier of the parent agent, or null for the root."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.list": {
+              "description": "See which agent instances currently exist and what each is intended for before coordinating your work. This is a concise overview, not their full personalities or capability contracts; use agents.get for one instance.",
+              "result_schema": {
+                "properties": {
+                  "agents": {
+                    "description": "Current live agent instances."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.get": {
+              "description": "Inspect one specific agent instance: its current personality, optional individual description, additional instructions, selected model and complete assigned capability IDs. Use capability_info for a capability's full contract.",
+              "data_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Exact ID of the agent instance to inspect."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "ID of this specific agent."
+                  },
+                  "preset_id": {
+                    "description": "ID of its current preset."
+                  },
+                  "parent_id": {
+                    "description": "Parent agent ID, or null for the root."
+                  },
+                  "state": {
+                    "description": "Current execution state."
+                  },
+                  "description": {
+                    "description": "Optional description particular to this instance, or null."
+                  },
+                  "person": {
+                    "description": "Current personality inherited from the preset."
+                  },
+                  "additional_instructions": {
+                    "description": "Individual instructions extending the preset personality."
+                  },
+                  "model": {
+                    "description": "Exact currently selected model ID."
+                  },
+                  "capabilities": {
+                    "description": "All capability IDs assigned to this instance, including its system capabilities."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.edit": {
+              "description": "Adjust one agent instance without erasing its experience. Set its optional description, additional_instructions or model override; add or remove individual capability assignments. System capabilities cannot be disabled and preset assignments remain mandatory. Omitted fields stay unchanged.",
+              "data_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  },
+                  "changes": {
+                    "description": "Partial changes to description (string or null), additional_instructions, model (string or null), capabilities_add and capabilities_remove. Omitted fields retain their values."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  },
+                  "updated": {
+                    "description": "Updated."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.interrupt": {
+              "description": "Interrupt an agent's current thinking by closing its model stream. The agent remains available, retaining its context, queued events and actions already in progress. Use this when the current generation should no longer continue.",
+              "data_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  },
+                  "state": {
+                    "description": "Current runtime state."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.delete": {
+              "description": "End an agent instance and recursively remove all its descendants, running executions, context, files and saved instance information. This permanently removes the instances, not their reusable presets.",
+              "data_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "agent_id": {
+                    "description": "Identifier of the agent instance."
+                  },
+                  "deleted": {
+                    "description": "Whether the agent and its descendants were deleted."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.list_presets": {
+              "description": "Discover every existing agent preset through its ID and description, then choose a suitable specialization for delegation. This overview does not expose personalities or capability assignments; inspect a chosen preset with agents.get_preset.",
+              "result_schema": {
+                "properties": {
+                  "presets": {
+                    "description": "All existing presets, each containing only id and description."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.get_preset": {
+              "description": "Read a complete current preset before creating or changing agents of that specialization: its ID, description, personality, model setting and assigned capability IDs. A null model inherits the Jarvis default.",
+              "data_schema": {
+                "properties": {
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "id": {
+                    "description": "Unique preset ID."
+                  },
+                  "description": {
+                    "description": "Purpose of this reusable agent specialization."
+                  },
+                  "person": {
+                    "description": "Current complete preset personality."
+                  },
+                  "model": {
+                    "description": "Preset model ID, or null to inherit the Jarvis default."
+                  },
+                  "capabilities": {
+                    "description": "User capability IDs assigned by this preset; intrinsic system abilities are supplied by the core."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.create_preset": {
+              "description": "Define a reusable specialization for future agents with a clear description, personality, optional model and existing capability IDs. Describe who this agent is and its purpose in person; pass particular tasks to instances separately.",
+              "data_schema": {
+                "properties": {
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "person": {
+                    "description": "Person."
+                  },
+                  "model": {
+                    "description": "Model."
+                  },
+                  "capabilities": {
+                    "description": "Capabilities."
+                  },
+                  "description": {
+                    "description": "Concise purpose of this reusable agent specialization."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "status": {
+                    "description": "Outcome of the operation."
+                  },
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "error": {
+                    "description": "Failure details if the operation did not succeed."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.edit_preset": {
+              "description": "Change a reusable agent specialization. Update description, person, model or capability assignments; omitted fields remain unchanged. Existing instances immediately inherit the revised preset while retaining individual additions and history.",
+              "data_schema": {
+                "properties": {
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "changes": {
+                    "description": "Partial changes to description, person, model (string or null), capabilities or capabilities_add/remove. Omitted fields retain their values."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "status": {
+                    "description": "Outcome of the operation."
+                  },
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "error": {
+                    "description": "Failure details if the operation did not succeed."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "agents.delete_preset": {
+              "description": "Permanently remove a preset and recursively delete every instance created from it, including individually modified instances and all their descendants. Their running work and all saved instance information are removed.",
+              "data_schema": {
+                "properties": {
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "status": {
+                    "description": "Outcome of the operation."
+                  },
+                  "preset_id": {
+                    "description": "Identifier of the preset."
+                  },
+                  "error": {
+                    "description": "Failure details if the operation did not succeed."
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "semantic_memory": {
+        "description": "Carry confirmed semantic knowledge from your past self to your future self. Maintain concise, independent messages about established facts expected to remain stable; the next inference immediately sees the revised MEMORY.",
+        "actions": [
+          {
+            "semantic_memory.write": {
+              "description": "Write a message from your past self to your future self in semantic memory. Record one confirmed, self-contained fact likely to remain true in the near future: a person's stable habits, character, preferences, interests, biography or relationships, or persistent information about devices and surroundings. State the established fact directly, with enough context to understand it later. Do not record uncertain inferences, hypothetical possibilities, plans as completed events, current tasks, temporary projects or short-lived states. Do not infer a habit from one observation or duplicate an existing entry, PERSON or ENVIRONMENT. The core generates the entry ID.",
+              "data_schema": {
+                "properties": {
+                  "content": {
+                    "description": "One short, self-contained message to your future self stating a confirmed fact expected to remain stable in the near future. Include whom or what the fact concerns; exclude uncertainty, hypothetical plans, current tasks and temporary states."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "id": {
+                    "description": "Generated ID of the saved semantic memory entry; use the ID currently shown in MEMORY for later editing or deletion."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "semantic_memory.edit": {
+              "description": "Replace the complete text of an existing semantic memory entry by its ID. Write a clear message to your future self containing the corrected, confirmed and sufficiently stable fact. Preserve relevant established information; do not turn possibilities, intentions or uncertain conclusions into facts.",
+              "data_schema": {
+                "properties": {
+                  "id": {
+                    "description": "Exact ID of the existing MEMORY entry to replace."
+                  },
+                  "content": {
+                    "description": "Complete replacement message to your future self, stating the corrected confirmed and stable information clearly enough to understand without the current conversation."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "status": {
+                    "description": "Operation result; updated means the identified memory entry was replaced."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "semantic_memory.delete": {
+              "description": "Delete a semantic memory entry by its ID when its information is false, obsolete, duplicated or no longer suitable as a confirmed stable message to your future self.",
+              "data_schema": {
+                "properties": {
+                  "id": {
+                    "description": "Exact ID of the MEMORY entry that should be removed permanently."
+                  }
+                }
+              },
+              "result_schema": {
+                "properties": {
+                  "status": {
+                    "description": "Operation result; deleted means the identified memory entry was removed."
                   }
                 }
               }

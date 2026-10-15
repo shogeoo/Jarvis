@@ -65,7 +65,7 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
             "send_message_to_agent",
         }
         self.assertTrue(expected.issubset(specs))
-        self.assertEqual(self.presets.load("capability_manager").modules, ("capability_development",))
+        self.assertEqual(self.presets.load("capability_manager").capabilities, ())
         main = self.actions.for_capabilities(modules=set(), actions=set(), primary=True)
         self.assertTrue(
             {name for name in expected if name.startswith("capability_development.")}.isdisjoint(main)

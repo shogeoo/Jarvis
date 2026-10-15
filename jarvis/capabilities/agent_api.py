@@ -23,8 +23,8 @@ class _AgentApi:
             raise RuntimeError("Менеджер агентов не запущен")
         return manager
 
-    def spawn(self, parent_id: str, preset_id: str) -> dict[str, Any]:
-        return self._manager.spawn(parent_id=parent_id, preset_id=preset_id)
+    def spawn(self, parent_id: str, preset_id: str, description: str | None = None) -> dict[str, Any]:
+        return self._manager.spawn(parent_id=parent_id, preset_id=preset_id, description=description)
 
     def delete(self, agent_id: str) -> dict[str, Any]:
         return self._manager.delete(agent_id=agent_id)
@@ -92,6 +92,4 @@ class _AgentApi:
         return self._manager.edit_agent(agent_id, changes)
 
     def presets_list(self):
-        from ..core.preset_actions import get_preset
-
-        return [get_preset(preset) for preset in self._manager.presets.list()]
+        return [{"id": preset.name, "description": preset.description} for preset in self._manager.presets.list()]

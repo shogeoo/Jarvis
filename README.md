@@ -36,26 +36,30 @@ System не сохраняется в истории.
 
 Пресет — живая обязательная основа всех своих экземпляров:
 `presets/<preset_id>/person.txt` и `preset.json` с полями
-`model` (null наследует дефолт из .env) и `capabilities` (единый массив ID).
+`description`, `model` (null наследует дефолт из .env) и `capabilities` (единый массив ID).
 Изменения PERSON, модели и назначений видны существующим экземплярам при
 следующем inference без очистки истории. Assets восстанавливают только
 отсутствующие файлы и не заменяют пользовательский PERSON.
 
 Экземпляр сохраняет `agent_id`, `preset_id`, `parent_id`, `model` override,
-`additional_instructions`, `capabilities_add`. Эффективные capabilities —
+необязательное `description`, `additional_instructions`, `capabilities_add`. Назначенные capabilities —
 объединение текущего пресета и индивидуальных дополнений. Нельзя локально
 снять обязательную capability пресета; собственные дополнения независимы.
 При создании ядро выдаёт agent_id; имя не является аргументом или техническим
 полем. Задача передаётся отдельным сообщением, не через постоянные инструкции.
 
-Main управляет агентами и пресетами; проверки выполняются в ядре даже если
-другому агенту назначили управленческий action. `get_agent` различает основу,
-дополнения и эффективную конфигурацию. `edit_agent` меняет дополнения;
-`get_preset` читает пресет, `edit_preset` применяет частичный `changes`.
+Main по умолчанию имеет неделимый системный модуль `agents`. Его можно назначить
+другому агенту для полного цикла делегирования. `agents.get` возвращает конкретный
+экземпляр: person, description, additional_instructions, model и один массив
+capabilities, без вложенного effective. `agents.edit` меняет дополнения;
+`agents.get_preset` читает полный пресет, `agents.edit_preset` применяет частичный
+changes. `agents.list_presets` возвращает только id и description каждого пресета,
+без личности и назначений. Описание экземпляра независимо от описания пресета,
+не является инструкцией и по умолчанию равно null.
 Удаление экземпляра рекурсивно останавливает и удаляет его дерево и все данные;
 удаление пресета делает то же для всех его экземпляров и потомков.
 Каждый агент, даже без назначений, имеет `send_message_to_agent`, событие
-`message_from_agent` и `no_action`. Специального модуля управления агентами нет.
+`message_from_agent` и `no_action`.
 
 Пользовательские capabilities находятся в
 `.jarvis/capabilities/{actions,handlers,modules}/<capability_id>/`.
@@ -68,7 +72,15 @@ Main управляет агентами и пресетами; проверки
 
 Встроенный пресет `capability_manager` предназначен только для разработки
 capabilities. Его API-документация находится в PERSON, а не ENVIRONMENT.
-Четыре инструмента входят в назначенный модуль `capability_development`:
+Его фиксированные системные инструменты не записываются в назначения пресета.
+Только ему доступны `list_capabilities` (все существующие capabilities) и
+`toggle_capability` (глобальная пауза). Main их не получает; его
+`list_assigned_capabilities` включает системные и приостановленные назначения,
+а `list_available_capabilities` показывает неназначенные пользовательские возможности.
+Эти списки возвращают один массив capabilities с id и description, без kind;
+полные контракты доступны через capability_info. Системные capabilities входят
+в общий каталог и механизм вызовов, но отключить, приостановить или удалить их нельзя.
+Четыре инструмента входят в системный модуль `capability_development`:
 `capability_development.read_file`, `.write_file`, `.edit_file`,
 `.execute_command`. Относительные пути и bash без cwd используют
 `.jarvis/capabilities/`, без sandbox и без усечения вывода.
@@ -92,7 +104,7 @@ JARVIS из .env. Недоступная модель вызывает пере�
 
 Семантическая память Main хранится в `.jarvis/memory/main/semantic.json`:
 `{"entries":[{"id":"mem_000001","content":"..."}]}`.
-Действия `memory_write`, `memory_edit`, `memory_delete` обновляют её независимо
+Системный модуль `semantic_memory` с действиями `.write`, `.edit`, `.delete` обновляет её независимо
 от сырых контекстов; следующий inference получает актуальную память.
 Новый ID определяется по последней записи, отдельного semantic index нет.
 

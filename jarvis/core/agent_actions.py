@@ -1,4 +1,4 @@
-"""Main-only instance management and universal agent messaging."""
+"""Indivisible agent management and universal agent messaging."""
 
 from dataclasses import replace
 from ..capabilities.api import action_definition
@@ -10,8 +10,15 @@ OPEN = {"type": "object", "additionalProperties": True, "x-jarvis-open-object": 
 
 def require_main(context):
     if context.agent_id != "main":
-        raise ValueError("Only main may manage agents and presets")
+        raise ValueError("Semantic memory belongs to main only")
     return context.agent_manager._manager
+
+
+def require_agent_management(context):
+    manager = context.agent_manager._manager
+    if "agents" not in manager.require_agent(context.agent_id).modules():
+        raise ValueError("The agents capability is not assigned to this agent")
+    return manager
 
 
 def run(data, context):
@@ -24,22 +31,27 @@ def run(data, context):
             action_id=name,
             module_id=context.module_id,
         )
-    manager = require_main(context)
-    if name == "spawn_agent":
-        created = manager.spawn(parent_id=context.agent_id, preset_id=data["preset_id"])
+    manager = require_agent_management(context)
+    name = name.removeprefix("agents.")
+    if name == "spawn":
+        created = manager.spawn(
+            parent_id=context.agent_id,
+            preset_id=data["preset_id"],
+            description=data.get("description"),
+        )
         return {
             "spawned": True,
             "agent_id": created["agent_id"],
             "preset_id": data["preset_id"],
             "parent_id": context.agent_id,
         }
-    if name == "list_agents":
+    if name == "list":
         return {"agents": manager.list_agents()}
-    if name == "get_agent":
+    if name == "get":
         return manager.get_agent(data["agent_id"])
-    if name == "edit_agent":
+    if name == "edit":
         return manager.edit_agent(data["agent_id"], data["changes"])
-    if name == "interrupt_agent":
+    if name == "interrupt":
         return manager.interrupt(
             agent_id=data["agent_id"], requester_id=context.agent_id
         )
@@ -47,26 +59,31 @@ def run(data, context):
 
 
 def register_agent_actions(registry):
+    from .descriptions import read_descriptions
+
+    catalog = read_descriptions()
     descriptions = {
-        "spawn_agent": "Create an independent agent from a preset. Send its task separately after the creation result. Delegate complex work; capability_manager may only develop capabilities.",
-        "send_message_to_agent": "Send a message or task to another agent; every agent can communicate. The recipient receives message_from_agent.",
-        "list_agents": "Inspect live agent instances before addressing or managing them.",
-        "get_agent": "Inspect the current preset base, individual additions and computed effective configuration separately.",
-        "edit_agent": "Change individual additions only: additional_instructions, capabilities_add, capabilities_remove and model (null clears the override). Mandatory preset capabilities cannot be removed. History is preserved.",
-        "interrupt_agent": "Cancel the current generation; keep history, queued events and already running actions.",
-        "delete_agent": "Delete an agent and all descendants, stop their executions and erase all instance data without late saves recreating it.",
+        key.removeprefix("agents."): value["description"]
+        for entry in catalog["modules"]["agents"]["actions"]
+        for key, value in entry.items()
     }
+    descriptions["send_message_to_agent"] = catalog["actions"]["send_message_to_agent"][
+        "description"
+    ]
     schemas = {
-        "spawn_agent": (
-            {"preset_id": STRING},
+        "spawn": (
+            {
+                "preset_id": STRING,
+                "description": {"type": ["string", "null"], "default": None},
+            },
             {"spawned": {}, "agent_id": {}, "preset_id": {}, "parent_id": {}},
         ),
         "send_message_to_agent": (
             {"agent_id": STRING, "text": STRING},
             {"delivered": {}, "agent_id": {}},
         ),
-        "list_agents": ({}, {"agents": {}}),
-        "get_agent": (
+        "list": ({}, {"agents": {}}),
+        "get": (
             {"agent_id": STRING},
             {
                 key: {}
@@ -75,35 +92,41 @@ def register_agent_actions(registry):
                     "preset_id",
                     "parent_id",
                     "state",
-                    "preset",
-                    "additions",
-                    "effective",
+                    "description",
+                    "person",
+                    "additional_instructions",
+                    "model",
+                    "capabilities",
                 )
             },
         ),
-        "edit_agent": (
+        "edit": (
             {
                 "agent_id": STRING,
                 "changes": {
                     **OPEN,
-                    "description": "Partial update: additional_instructions string, capabilities_add/remove arrays of IDs, model string or null. Omitted fields remain unchanged.",
+                    "description": "Partial update: description string or null, additional_instructions string, capabilities_add/remove arrays of IDs, model string or null. Omitted fields remain unchanged.",
                 },
             },
             {"agent_id": {}, "updated": {}},
         ),
-        "interrupt_agent": ({"agent_id": STRING}, {"agent_id": {}, "state": {}}),
-        "delete_agent": ({"agent_id": STRING}, {"agent_id": {}, "deleted": {}}),
+        "interrupt": ({"agent_id": STRING}, {"agent_id": {}, "state": {}}),
+        "delete": ({"agent_id": STRING}, {"agent_id": {}, "deleted": {}}),
     }
     for name, (arguments, result) in schemas.items():
         registry.register(
             replace(
                 action_definition(
                     descriptions[name],
-                    object_schema(arguments),
+                    object_schema(
+                        arguments, required=["preset_id"] if name == "spawn" else None
+                    ),
                     object_schema(result),
                     run,
                 ),
-                id=name,
-                owner="core" if name == "send_message_to_agent" else "core:primary",
+                id=name if name == "send_message_to_agent" else "agents." + name,
+                owner="core"
+                if name == "send_message_to_agent"
+                else "core:module:agents",
             )
         )

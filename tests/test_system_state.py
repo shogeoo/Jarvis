@@ -37,8 +37,8 @@ class SystemStateTests(unittest.TestCase):
         return self.actions.require(name).run(data, context)
 
     def test_main_preset_is_available_without_protected_policy(self):
-        listed = self.invoke("list_agent_presets", {})["presets"]
-        names = {item["preset_id"] for item in listed}
+        listed = self.invoke("agents.list_presets", {})["presets"]
+        names = {item["id"] for item in listed}
         self.assertIn("main", names)
         self.assertIn("worker", names)
         self.assertFalse(hasattr(self.main, "protected"))
@@ -62,7 +62,7 @@ class SystemStateTests(unittest.TestCase):
         self.manager.edit_agent(child_id, {"additional_instructions": "Keep this addition."})
         child.history.append({"role": "user", "content": "Preserved history."})
         child._persist_context()
-        result = self.invoke("edit_preset", {"preset_id": "worker", "changes": {"person": "New personality.", "capabilities": []}})
+        result = self.invoke("agents.edit_preset", {"preset_id": "worker", "changes": {"person": "New personality.", "capabilities": []}})
         self.assertEqual(result["status"], "edited")
         self.assertEqual(child.person_prompt, "New personality.")
         self.assertNotIn("say", child.standalone_actions())
@@ -81,8 +81,8 @@ class SystemStateTests(unittest.TestCase):
         self.manager.presets.create("descendant", "Descendant", {"actions": [], "handlers": [], "modules": []})
         child_id = self.manager.spawn(parent_id=parent_id, preset_id="descendant")["agent_id"]
         parent = self.manager.require_agent(parent_id)
-        result = self.invoke("remove_preset", {"preset_id": "worker"})
-        self.assertEqual(result["status"], "removed")
+        result = self.invoke("agents.delete_preset", {"preset_id": "worker"})
+        self.assertEqual(result["status"], "deleted")
         self.assertNotIn(parent_id, self.manager.agents)
         self.assertNotIn(child_id, self.manager.agents)
         self.assertEqual(parent.history, [])
@@ -95,7 +95,7 @@ class SystemStateTests(unittest.TestCase):
         child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         specs = self.manager.require_agent(child_id)._contract()[0]
         self.assertIn("send_message_to_agent", specs)
-        self.assertNotIn("delete_agent", specs)
+        self.assertNotIn("agents.delete", specs)
 
     def test_development_module_is_explicitly_assigned_to_capability_manager(self):
         self.manager.presets.create("capability_manager", "CapabilityManager", ["capability_development", "list_capabilities", "capability_info", "toggle_capability"])

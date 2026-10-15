@@ -1,30 +1,39 @@
-"""Main-only creation and live partial updates of preset bases."""
+"""Preset management within the agents system module."""
 
 from dataclasses import replace
 from ..capabilities.api import action_definition
-from .agent_actions import require_main, OPEN, STRING
+from .agent_actions import require_agent_management, OPEN, STRING
 from .protocol import object_schema
 
 
 def run(data, context):
-    manager = require_main(context)
-    name = context.action_id
-    if name == "list_agent_presets":
-        return {"presets": [get_preset(preset) for preset in manager.presets.list()]}
+    manager = require_agent_management(context)
+    name = context.action_id.removeprefix("agents.")
+    if name == "list_presets":
+        return {
+            "presets": [
+                {"id": preset.name, "description": preset.description}
+                for preset in manager.presets.list()
+            ]
+        }
     preset_id = data["preset_id"]
     if name == "get_preset":
         return get_preset(manager.presets.load(preset_id))
     operation = name.split("_", 1)[0]
-    success = {"create": "created", "edit": "edited", "remove": "removed"}[operation]
+    success = {"create": "created", "edit": "edited", "delete": "deleted"}[operation]
     try:
-        if operation == "remove":
+        if operation == "delete":
             manager.remove_preset(preset_id)
         else:
             if operation == "create":
                 capabilities = data.get("capabilities") or []
                 manager.capabilities.partition(capabilities)
                 manager.presets.create(
-                    preset_id, data["person"], capabilities, data.get("model")
+                    preset_id,
+                    data["person"],
+                    capabilities,
+                    data.get("model"),
+                    description=data["description"],
                 )
             else:
                 changes = data["changes"]
@@ -46,7 +55,8 @@ def run(data, context):
 
 def get_preset(preset):
     return {
-        "preset_id": preset.name,
+        "id": preset.name,
+        "description": preset.description,
         "person": preset.person_prompt,
         "model": preset.model,
         "capabilities": list(preset.capabilities),
@@ -56,21 +66,25 @@ def get_preset(preset):
 def register_preset_actions(registry):
     ids = {"type": "array", "items": STRING, "default": []}
     definitions = {
-        "list_agent_presets": ({}, {"presets": {}}, None),
+        "list_presets": ({}, {"presets": {}}, None),
         "get_preset": (
             {"preset_id": STRING},
-            {key: {} for key in ("preset_id", "person", "model", "capabilities")},
+            {
+                key: {}
+                for key in ("id", "description", "person", "model", "capabilities")
+            },
             None,
         ),
         "create_preset": (
             {
                 "preset_id": STRING,
                 "person": STRING,
+                "description": STRING,
                 "model": {"type": ["string", "null"]},
                 "capabilities": ids,
             },
             {"status": {}, "preset_id": {}, "error": {}},
-            ["preset_id", "person"],
+            ["preset_id", "person", "description"],
         ),
         "edit_preset": (
             {
@@ -83,16 +97,19 @@ def register_preset_actions(registry):
             {"status": {}, "preset_id": {}, "error": {}},
             None,
         ),
-        "remove_preset": (
+        "delete_preset": (
             {"preset_id": STRING},
             {"status": {}, "preset_id": {}, "error": {}},
             None,
         ),
     }
     for name, (arguments, result, required) in definitions.items():
-        description = (
-            name
-            + ": manage the live mandatory preset base. Updates apply to existing instances without clearing history; removal recursively deletes all instances and descendants. Only main may perform this operation."
+        from .descriptions import read_descriptions
+
+        description = next(
+            entry["agents." + name]["description"]
+            for entry in read_descriptions()["modules"]["agents"]["actions"]
+            if "agents." + name in entry
         )
         registry.register(
             replace(
@@ -102,7 +119,7 @@ def register_preset_actions(registry):
                     object_schema(result),
                     run,
                 ),
-                id=name,
-                owner="core:primary",
+                id="agents." + name,
+                owner="core:module:agents",
             )
         )

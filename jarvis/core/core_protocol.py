@@ -80,15 +80,11 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         EventDefinition(
             event_id="capability_error",
             description=(
-                "An unhandled capability failure. kind and id identify its source; error contains details and call_id identifies an affected invocation if any."
+                "An ability through which you act has failed. capability_id identifies its source; inspect error and call_id before deciding how to continue."
             ),
             data_schema=object_schema(
                 {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["module", "action", "handler"],
-                    },
-                    "id": {"type": "string"},
+                    "capability_id": {"type": "string"},
                     "error": {"type": "string"},
                     "call_id": {"type": ["string", "null"]},
                 }

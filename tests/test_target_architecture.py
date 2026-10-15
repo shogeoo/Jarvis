@@ -53,15 +53,15 @@ class TargetArchitectureTests(unittest.TestCase):
         self.manager.presets.edit("worker", changes={"person": "ChangedPerson", "capabilities_remove": ["say"], "model": "new_model"})
         self.manager.refresh_presets("worker")
         result = self.manager.get_agent(child_id)
-        self.assertNotIn("say", result["preset"]["capabilities"])
-        self.assertIn("say", result["additions"]["capabilities"])
-        self.assertIn("say", result["effective"]["capabilities"])
-        self.assertEqual(result["effective"]["model"], "new_model")
-        self.assertEqual(result["effective"]["additional_instructions"], "Individual rule.")
+        self.assertNotIn("say", self.manager.presets.load("worker").capabilities)
+        self.assertIn("say", self.manager.require_agent(child_id)._additional_capabilities)
+        self.assertIn("say", result["capabilities"])
+        self.assertEqual(result["model"], "new_model")
+        self.assertEqual(result["additional_instructions"], "Individual rule.")
         self.manager.edit_agent(child_id, {"capabilities_remove": ["say"], "model": "override"})
-        self.assertNotIn("say", self.manager.get_agent(child_id)["effective"]["capabilities"])
+        self.assertNotIn("say", self.manager.get_agent(child_id)["capabilities"])
         self.manager.edit_agent(child_id, {"model": None})
-        self.assertEqual(self.manager.get_agent(child_id)["effective"]["model"], "new_model")
+        self.assertEqual(self.manager.get_agent(child_id)["model"], "new_model")
 
     def test_unavailable_override_and_preset_fall_back_to_env_default(self):
         self.manager.presets.edit("worker", changes={"model": "missing_preset"})
@@ -94,14 +94,13 @@ class TargetArchitectureTests(unittest.TestCase):
         self.manager.persist_agent(main)
         self.assertFalse((self.root / "memory/main").exists())
 
-    def test_management_action_assignment_never_grants_subagent_authority(self):
+    def test_management_module_assignment_grants_subagent_authority(self):
         child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
-        self.manager.enable_action(child_id, "delete_agent")
+        self.manager.enable_module(child_id, "agents")
         child = self.manager.require_agent(child_id)
-        self.assertIn("delete_agent", child._contract()[0])
-        context = SimpleNamespace(agent_id=child_id, action_id="delete_agent", agent_manager=self.capabilities._agent_api)
-        with self.assertRaisesRegex(ValueError, "main"):
-            agent_action({"agent_id": "main"}, context)
+        self.assertIn("agents.delete", child._contract()[0])
+        context = SimpleNamespace(agent_id=child_id, action_id="agents.list", agent_manager=self.capabilities._agent_api)
+        self.assertTrue(agent_action({}, context)["agents"])
         self.assertIn("main", self.manager.agents)
 
     def test_messages_are_available_to_agents_with_no_assigned_capabilities(self):
@@ -111,8 +110,8 @@ class TargetArchitectureTests(unittest.TestCase):
         actions, events = child._contract()
         self.assertIn("send_message_to_agent", actions)
         self.assertIn("message_from_agent", events)
-        self.assertNotIn("spawn_agent", actions)
-        self.assertEqual(child.capabilities_snapshot(), {"actions": set(), "handlers": set(), "modules": set()})
+        self.assertNotIn("agents.spawn", actions)
+        self.assertEqual(child.capabilities_snapshot(), {"actions": {"no_action", "send_message_to_agent"}, "handlers": set(), "modules": set()})
 
     def test_id_collision_between_categories_is_rejected_without_host(self):
         fixtures.write_handler(self.root / "capabilities/handlers", "say", fixtures.TICK_HANDLER)
@@ -176,5 +175,5 @@ class SharedToolTests(unittest.TestCase):
             person.unlink()
             ensure_runtime_layout(root)
             self.assertNotEqual(person.read_text(), "UserPerson")
-            self.assertEqual(set(json.loads((root / "presets/main/preset.json").read_text())), {"model", "capabilities"})
+            self.assertEqual(set(json.loads((root / "presets/main/preset.json").read_text())), {"description", "model", "capabilities"})
             self.assertNotIn("protected", PresetStore(root / "presets").load("main").__slots__)

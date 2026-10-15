@@ -16,10 +16,7 @@ from typing import Any
 
 class CapabilityState:
     def is_globally_paused(self, kind: str, capability_id: str) -> bool:
-        spec = self.actions.get(capability_id)
-        if capability_id in self.builtin_modules() or (
-            spec is not None and spec.owner.startswith("core")
-        ):
+        if self.is_system(capability_id):
             return False
         key = {"module": "modules", "action": "actions", "handler": "handlers"}.get(
             kind
@@ -31,7 +28,7 @@ class CapabilityState:
 
     def global_paused(self) -> dict[str, set[str]]:
         with self._lock:
-            return {key: set(value) for key, value in self._global_paused.items()}
+            return {key: {identifier for identifier in value if not self.is_system(identifier)} for key, value in self._global_paused.items()}
 
     def runnable_snapshot(self, snapshot: dict[str, set[str]]) -> dict[str, set[str]]:
         paused = self.global_paused()
@@ -45,7 +42,7 @@ class CapabilityState:
             "actions": set(snapshot.get("actions", ()))
             - paused["actions"]
             - system_actions,
-            "handlers": set(snapshot.get("handlers", ())) - paused["handlers"],
+            "handlers": set(snapshot.get("handlers", ())) - paused["handlers"] - self.builtin_handlers(),
         }
 
     def _save_global_state(self) -> None:
@@ -66,11 +63,8 @@ class CapabilityState:
     def _toggle_global_state_locked(
         self, kind: str, capability_id: str
     ) -> dict[str, Any]:
-        spec = self.actions.get(capability_id)
-        if capability_id in self.builtin_modules() or (
-            spec is not None and spec.owner.startswith("core")
-        ):
-            raise ValueError("Built-in capabilities cannot be globally paused")
+        if self.is_system(capability_id):
+            raise ValueError("Cannot pause a system capability (Built-in)")
         if self._global_state_error is not None:
             raise ValueError(
                 "Cannot update unreadable capability state: " + self._global_state_error

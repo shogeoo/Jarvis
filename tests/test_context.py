@@ -386,7 +386,7 @@ class MemoryStoreTests(unittest.TestCase):
     def test_instance_contains_only_individual_additions(self):
         self.store.save(self.record(capabilities_add=["telegram"], additional_instructions="Use tests.", model="provider/model"))
         instance = self.store._read_json(self.root / "main/instance.json")
-        self.assertEqual(set(instance), {"agent_id", "preset_id", "parent_id", "model", "additional_instructions", "capabilities_add"})
+        self.assertEqual(set(instance), {"agent_id", "preset_id", "parent_id", "description", "model", "additional_instructions", "capabilities_add"})
         self.assertEqual(instance["capabilities_add"], ["telegram"])
         self.assertEqual(self.store.load("main", "main")["model"], "provider/model")
 

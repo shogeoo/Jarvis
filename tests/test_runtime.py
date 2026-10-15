@@ -98,7 +98,7 @@ class RuntimeTests(unittest.TestCase):
         self.actions.require(action_id)
 
     def enable_for_main(self, *action_ids):
-        self.presets.edit("main", changes={"capabilities_add": list(action_ids)})
+        self.presets.edit("main", changes={"capabilities_add": list(dict.fromkeys(value.split(".", 1)[0] if "." in value else value for value in action_ids))})
 
     def load_installed_action(self, action_id):
         if self.actions.get(action_id) is not None:
@@ -210,35 +210,37 @@ class RuntimeTests(unittest.TestCase):
 
     def test_management_actions_return_their_declared_result_shapes(self):
         client = _Client([_no_action("after-management")])
-        self.install_project_action("create_preset")
-        self.enable_for_main("create_preset")
+        self.install_project_action("agents.create_preset")
+        self.enable_for_main("agents.create_preset")
         manager = self.manager(client)
         agent = manager.spawn_root(preset="main")
         contract = agent._contract()[0]
         manager.capabilities.dispatch(
             action=ActionRequest(
-                "create_preset",
+                "agents.create_preset",
                 {
                     "preset_id": "empty_preset",
                     "person": "An empty preset.",
+                    "description": "Test specialization.",
                     "capabilities": ["missing_action"],
                 },
                 "create-preset-call",
             ),
-            spec=contract["create_preset"],
+            spec=contract["agents.create_preset"],
             agent=agent,
         )
         manager.capabilities.dispatch(
             action=ActionRequest(
-                "create_preset",
+                "agents.create_preset",
                 {
                     "preset_id": "empty_preset",
                     "person": "An empty preset.",
+                    "description": "Test specialization.",
                     "capabilities": [],
                 },
                 "create-preset-success-call",
             ),
-            spec=contract["create_preset"],
+            spec=contract["agents.create_preset"],
             agent=agent,
         )
         self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
@@ -253,25 +255,25 @@ class RuntimeTests(unittest.TestCase):
 
     def test_primary_only_management_actions_are_not_in_subagent_prompt(self):
         client = _Client([_no_action("main-ready"), _no_action("worker-ready")])
-        self.install_project_action("create_preset")
-        self.enable_for_main("create_preset")
+        self.install_project_action("agents.create_preset")
+        self.enable_for_main("agents.create_preset")
         manager = self.manager(client)
         main = manager.spawn_root(preset="main")
         worker = manager.spawn(parent_id=main.agent_id, preset_id="worker")
         main_prompt = main.history[0]["content"]
         worker_prompt = manager.require_agent(worker["agent_id"]).history[0]["content"]
-        for action_id in ("create_preset",):
+        for action_id in ("agents.create_preset",):
             self.assertIn(f'"action_id": "{action_id}"', main_prompt)
             self.assertNotIn(f'"action_id": "{action_id}"', worker_prompt)
 
     def test_create_preset_uses_existing_capability_ids_and_refuses_overwrite(self):
-        self.install_project_action("create_preset")
+        self.install_project_action("agents.create_preset")
         manager = self.manager(_Client([]))
         manager.spawn_root(preset="main")
-        module = self.load_installed_action("create_preset")
+        module = self.load_installed_action("agents.create_preset")
         context = SimpleNamespace(
             agent_id="main",
-            action_id="create_preset",
+            action_id="agents.create_preset",
             agent_manager=manager.capabilities._agent_api,
             metadata={"preset": "main"},
             capabilities=manager.capabilities,
@@ -281,6 +283,7 @@ class RuntimeTests(unittest.TestCase):
             {
                 "preset_id": "researcher",
                 "person": "Research carefully.",
+                "description": "Research specialization.",
                 "capabilities": ["say"],
             },
             context,
@@ -296,6 +299,7 @@ class RuntimeTests(unittest.TestCase):
             {
                 "preset_id": "researcher",
                 "person": "Do not replace me.",
+                "description": "Replacement description.",
                 "capabilities": [],
             },
             context,
@@ -383,8 +387,8 @@ class RuntimeTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertIsNotNone(values)
         error = next(item for item in values if item["event_id"] == "capability_error")
-        self.assertEqual(error["data"]["kind"], "action")
-        self.assertEqual(error["data"]["id"], "fail")
+        self.assertNotIn("kind", error["data"])
+        self.assertEqual(error["data"]["capability_id"], "fail")
         results = [item for item in values if item["event_id"] == "call_result"]
         self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
@@ -702,7 +706,7 @@ class RuntimeTests(unittest.TestCase):
         first = manager.spawn(parent_id="main", preset_id="special")["agent_id"]
         second = manager.spawn(parent_id="main", preset_id="special")["agent_id"]
         self.assertNotEqual(first, second)
-        available = {item["preset_id"] for item in manager.capabilities._agent_api.presets_list()}
+        available = {item["id"] for item in manager.capabilities._agent_api.presets_list()}
         self.assertIn("main", available)
         self.assertIn("special", available)
         manager.delete(agent_id=first)
@@ -808,15 +812,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([item for item in available["actions"] if item["id"] == "extra"], [{"id": "extra", "description": "test"}])
 
     def test_interrupt_action_rpc_matches_agent_manager_signature(self):
-        self.install_project_action("interrupt_agent")
+        self.install_project_action("agents.interrupt")
         manager = self.manager(_Client([_no_action("done")]))
         main = manager.spawn_root(preset="main")
         child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
-        manager.enable_action("main", "interrupt_agent")
+        self.assertIn("agents.interrupt", manager.require_agent("main")._contract()[0])
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("interrupt_agent", {"agent_id": child_id}, "interrupt-1"),
-            spec=manager.actions.require("interrupt_agent"), agent=main,
+            action=ActionRequest("agents.interrupt", {"agent_id": child_id}, "interrupt-1"),
+            spec=manager.actions.require("agents.interrupt"), agent=main,
         )
         self.assertTrue(_wait(lambda: any(item["call_id"] == "interrupt-1" for item in self.call_results(main))))
         result = next(item for item in self.call_results(main) if item["call_id"] == "interrupt-1")
@@ -824,15 +828,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn(child_id, manager.agents)
 
     def test_delete_action_rpc_needs_only_agent_id(self):
-        self.install_project_action("delete_agent")
+        self.install_project_action("agents.delete")
         manager = self.manager(_Client([_no_action("done")]))
         main = manager.spawn_root(preset="main")
         child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
-        manager.enable_action("main", "delete_agent")
+        self.assertIn("agents.delete", manager.require_agent("main")._contract()[0])
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("delete_agent", {"agent_id": child_id}, "delete-1"),
-            spec=manager.actions.require("delete_agent"), agent=main,
+            action=ActionRequest("agents.delete", {"agent_id": child_id}, "delete-1"),
+            spec=manager.actions.require("agents.delete"), agent=main,
         )
         self.assertTrue(_wait(lambda: any(item["call_id"] == "delete-1" for item in self.call_results(main))))
         result = next(item for item in self.call_results(main) if item["call_id"] == "delete-1")
@@ -849,7 +853,8 @@ class RuntimeTests(unittest.TestCase):
         manager = self.manager(_Client([_no_action("done")]))
         main = manager.spawn_root(preset="main")
         child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
-        manager.enable_action("main", "toggle_capability")
+        self.presets.create("capability_manager", "CapabilityManager", ["say", "tick"])
+        controller = manager.require_agent(manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"])
         manager.enable_action("main", "reloadable")
         manager.enable_action(child_id, "reloadable")
         old_host = manager.capabilities._actions["reloadable"].host
@@ -857,9 +862,9 @@ class RuntimeTests(unittest.TestCase):
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
             action=ActionRequest("toggle_capability", {"capability_id": "reloadable"}, "pause-1"),
-            spec=manager.actions.require("toggle_capability"), agent=main,
+            spec=manager.actions.require("toggle_capability"), agent=controller,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.call_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.call_results(controller))))
         self.assertNotIn("reloadable", manager.capabilities.loaded_actions())
         self.assertNotIn(old_host.key, manager.capabilities._hosts)
         self.assertIsNotNone(old_process.poll())
@@ -870,9 +875,9 @@ class RuntimeTests(unittest.TestCase):
         self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'new'}\n")
         manager.capabilities.dispatch(
             action=ActionRequest("toggle_capability", {"capability_id": "reloadable"}, "resume-1"),
-            spec=manager.actions.require("toggle_capability"), agent=main,
+            spec=manager.actions.require("toggle_capability"), agent=controller,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.call_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.call_results(controller))))
         self.assertIn("reloadable", main.standalone_actions())
         self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
         self.assertNotIn("reloadable", manager.capabilities.global_paused()["actions"])
@@ -895,7 +900,8 @@ class RuntimeTests(unittest.TestCase):
         )
         manager = self.manager(_Client([_no_action("done")]))
         main = manager.spawn_root(preset="main")
-        manager.enable_action("main", "toggle_capability")
+        self.presets.create("capability_manager", "CapabilityManager", ["say", "tick"])
+        controller = manager.require_agent(manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"])
         manager.enable_action("main", "global_slow")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
@@ -906,9 +912,9 @@ class RuntimeTests(unittest.TestCase):
         pid = int(marker.read_text())
         manager.capabilities.dispatch(
             action=ActionRequest("toggle_capability", {"capability_id": "global_slow"}, "pause-running-1"),
-            spec=manager.actions.require("toggle_capability"), agent=main,
+            spec=manager.actions.require("toggle_capability"), agent=controller,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.call_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.call_results(controller))))
         results = [item for item in self.call_results(main) if item["call_id"] == "running-1"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["data"]["status"], "paused")
@@ -920,16 +926,17 @@ class RuntimeTests(unittest.TestCase):
         self.install_project_action("toggle_capability")
         client = _Client([
             '{"actions":['
-            '{"action_id":"toggle_capability","call_id":"toggle-1","data":{"kind":"action","id":"say"}},'
-            '{"action_id":"toggle_capability","call_id":"toggle-2","data":{"kind":"action","id":"say"}}]}',
+            '{"action_id":"toggle_capability","call_id":"toggle-1","data":{"capability_id":"say"}},'
+            '{"action_id":"toggle_capability","call_id":"toggle-2","data":{"capability_id":"say"}}]}',
             _no_action("done-1"),
         ])
         manager = self.manager(client)
         main = manager.spawn_root(preset="main")
-        manager.enable_action("main", "toggle_capability")
-        self.publish(main, "check")
+        self.presets.create("capability_manager", "CapabilityManager", ["say", "tick"])
+        controller = manager.require_agent(manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"])
+        self.publish(controller, "check")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        self.assertIn("structure_error", str(main.history))
+        self.assertIn("structure_error", str(controller.history))
         self.assertIn("say", main.standalone_actions())
         self.assertNotIn("say", manager.capabilities.global_paused()["actions"])
 

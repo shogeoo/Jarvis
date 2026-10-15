@@ -24,6 +24,13 @@ from .identifiers import ID_PATTERN as _NAME
 
 
 class CapabilityDiscovery:
+    def is_system(self, capability_id):
+        spec = self.actions.get(capability_id)
+        return capability_id in self.builtin_modules() or capability_id in self.builtin_handlers() or (spec is not None and spec.owner.startswith("core"))
+
+    def builtin_handlers(self):
+        return {"speech_detected"} if self.events.get("speech_detected") is not None else set()
+
     # --- пути и обнаружение ------------------------------------------
     @staticmethod
     def validate_module_id(module_id: str) -> None:
@@ -115,6 +122,8 @@ class CapabilityDiscovery:
         candidates = []
         if capability_id in self.builtin_modules():
             candidates.append("module")
+        if capability_id in self.builtin_handlers():
+            candidates.append("handler")
         spec = self.actions.get(capability_id)
         if spec is not None and spec.owner.startswith("core"):
             candidates.append("action")
@@ -146,11 +155,11 @@ class CapabilityDiscovery:
 
     def loaded_actions(self) -> set[str]:
         with self._lock:
-            return set(self._actions)
+            return set(self._actions) | {name for name, spec in self.actions.all().items() if spec.owner.startswith("core") and "." not in name}
 
     def loaded_handlers(self) -> set[str]:
         with self._lock:
-            return set(self._handlers)
+            return set(self._handlers) | self.builtin_handlers()
 
     def loaded_snapshot(self) -> dict[str, set[str]]:
         return {
@@ -210,10 +219,23 @@ class CapabilityDiscovery:
             }
             for path in self.discover_handlers()
         ]
+        for identifier in sorted(self.builtin_modules()):
+            modules.append({"id": identifier, "description": self.builtin_module_catalog(identifier)["description"], "loaded": True, "globally_running": True, "globally_paused": False})
+        for identifier, spec in self.actions.all().items():
+            if spec.owner.startswith("core") and "." not in identifier:
+                actions.append({"id": identifier, "description": self.capability_info(identifier)["description"], "loaded": True, "globally_running": True, "globally_paused": False})
+        for identifier in sorted(self.builtin_handlers()):
+            handlers.append({"id": identifier, "description": self.capability_info(identifier)["description"], "loaded": True, "globally_running": True, "globally_paused": False})
         return {"modules": modules, "actions": actions, "handlers": handlers}
 
     def capability_info(self, capability_id: str) -> dict[str, Any]:
         kind = self.resolve_kind(capability_id)
+        if capability_id in self.builtin_handlers():
+            from ..core.descriptions import apply_descriptions
+
+            _, events = apply_descriptions({}, {capability_id: self.events.get(capability_id)})
+            spec = events[capability_id]
+            return {"event_id": spec.event_id, "description": spec.description, "data_schema": spec.data_schema}
         if capability_id in self.builtin_modules():
             return self.builtin_module_catalog(capability_id)
         spec = self.actions.get(capability_id)
@@ -253,6 +275,8 @@ class CapabilityDiscovery:
 
     def event_id_for_handler(self, handler_id: str) -> str:
         """Resolve a saved legacy handler envelope using its own declaration."""
+        if handler_id in self.builtin_handlers():
+            return handler_id
         with self._lock:
             loaded = self._handlers.get(handler_id)
             if loaded is not None:

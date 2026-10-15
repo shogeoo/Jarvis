@@ -27,7 +27,7 @@ class DescriptionTests(unittest.TestCase):
         descriptions = {**catalog["actions"], **module_actions}
         self.assertEqual(set(descriptions), set(actions))
         self.assertEqual(set(catalog["handlers"]), set(events))
-        self.assertEqual(set(catalog["modules"]), {"capability_development"})
+        self.assertEqual(set(catalog["modules"]), {"capability_development", "agents", "semantic_memory"})
         actual_actions, actual_events = apply_descriptions(actions, events)
         def without_descriptions(value):
             if isinstance(value, dict):

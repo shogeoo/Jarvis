@@ -18,6 +18,10 @@ def read_descriptions(path: Path | None = None) -> dict:
     def validate_tree(node):
         if isinstance(node, dict):
             for key, child in node.items():
+                if key == "properties" and isinstance(child, dict):
+                    for field in child.values():
+                        validate_tree(field)
+                    continue
                 if key == "description":
                     if not isinstance(child, str):
                         raise ValueError("description must be a string")
@@ -54,7 +58,11 @@ def _overlay(original, descriptions):
     result = deepcopy(original)
     if isinstance(result, dict) and isinstance(descriptions, dict):
         for key, value in descriptions.items():
-            if key == "description":
+            if key == "properties" and isinstance(value, dict) and isinstance(result.get(key), dict):
+                for name, field in value.items():
+                    if name in result[key]:
+                        result[key][name] = _overlay(result[key][name], field)
+            elif key == "description":
                 result[key] = value
             elif key in result:
                 result[key] = _overlay(result[key], value)

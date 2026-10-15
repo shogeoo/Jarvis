@@ -36,9 +36,9 @@ class CapabilityRpc:
                         "edit_agent",
                         "presets_list",
                     }
-                    and message.get("caller_agent_id") != "main"
+                    and "agents" not in obj._manager.require_agent(message.get("caller_agent_id")).modules()
                 ):
-                    raise ValueError("Only main may manage agents and presets")
+                    raise ValueError("The agents capability is not assigned to the caller")
                 if method in {"enable", "disable"}:
                     kwargs = message.get("kwargs", {})
                     target_id = (

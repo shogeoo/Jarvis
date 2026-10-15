@@ -21,6 +21,7 @@ class AgentPreset:
     capabilities: tuple[str, ...]
     model: str | None = None
     _categories: tuple[str, ...] = ()
+    description: str = ""
 
     def _of_kind(self, kind):
         return tuple(
@@ -46,6 +47,7 @@ class PresetStore:
     def __init__(self, root: Path, *, resolve_kind=None):
         self.root = Path(root)
         self.resolve_kind = resolve_kind
+        self.is_system = lambda identifier: False
         self._lock = threading.RLock()
 
     @staticmethod
@@ -69,7 +71,7 @@ class PresetStore:
     def _kind(self, capability_id):
         if self.resolve_kind is not None:
             return self.resolve_kind(capability_id)
-        if capability_id == "capability_development":
+        if capability_id in {"capability_development", "agents", "semantic_memory"}:
             return "module"
         for kind, category in (("module", "modules"), ("handler", "handlers")):
             if (self.root.parent / "capabilities" / category / capability_id).is_dir():
@@ -104,6 +106,8 @@ class PresetStore:
             )
             if not isinstance(metadata, dict):
                 raise ValueError(f"Invalid preset.json: {name}")
+            if not isinstance(metadata.get("description", ""), str):
+                raise ValueError("description must be a string")
             if "capabilities" not in metadata:
                 # Only the migration path reads the obsolete split files.
                 legacy = json.loads(
@@ -143,17 +147,29 @@ class PresetStore:
                 )
                 metadata = {"model": metadata.get("model"), "capabilities": values}
             values = self._normalize(metadata["capabilities"])
+            from ..core.system_actions import system_capabilities
+
+            intrinsic = set(system_capabilities(primary=name == "main", preset=name))
+            if name == "main":
+                intrinsic.update({"toggle_capability", "list_capabilities"})
+            cleaned = [value for value in values if value not in intrinsic]
+            description = metadata.get("description", name)
             model = metadata.get("model")
             if model is not None and (not isinstance(model, str) or not model.strip()):
                 raise ValueError("model must be a nonempty ID or null")
             if not person:
                 raise ValueError("person.txt must not be empty")
+            categories = tuple(self._kind(value) for value in cleaned)
+            if cleaned != values or "description" not in metadata:
+                self._replace(name, person, {**metadata, "description": description, "capabilities": cleaned})
+            values = cleaned
             return AgentPreset(
                 name,
                 person,
                 tuple(values),
                 model,
-                tuple(self._kind(value) for value in values),
+                categories,
+                description,
             )
 
     def list(self):
@@ -179,9 +195,9 @@ class PresetStore:
         replacement = staging / "replacement"
         try:
             shutil.copytree(path, replacement)
-            (replacement / "person.txt").write_text(
-                person.strip() + "\n", encoding="utf-8"
-            )
+            person_file = replacement / "person.txt"
+            if person_file.read_text(encoding="utf-8").strip() != person.strip():
+                person_file.write_text(person.strip() + "\n", encoding="utf-8")
             self._write(replacement / "preset.json", metadata)
             for obsolete in (
                 "capabilities.json",
@@ -203,7 +219,9 @@ class PresetStore:
         finally:
             shutil.rmtree(staging)
 
-    def create(self, name, person_prompt, capabilities=None, model=None):
+    def create(self, name, person_prompt, capabilities=None, model=None, *, description=""):
+        if not isinstance(description, str):
+            raise ValueError("description must be a string")
         path = self.path(name)
         values = self._normalize(capabilities or [])
         if not isinstance(person_prompt, str) or not person_prompt.strip():
@@ -220,7 +238,7 @@ class PresetStore:
                     person_prompt.strip() + "\n", encoding="utf-8"
                 )
                 self._write(
-                    staging / "preset.json", {"model": model, "capabilities": values}
+                    staging / "preset.json", {"description": description, "model": model, "capabilities": values}
                 )
                 staging.rename(path)
             finally:
@@ -243,6 +261,7 @@ class PresetStore:
                 }
             )
             if set(update) - {
+                "description",
                 "person",
                 "model",
                 "capabilities",
@@ -251,6 +270,8 @@ class PresetStore:
             }:
                 raise ValueError("Unknown preset changes")
             person = update.get("person", current.person_prompt)
+            if not isinstance(update.get("description", current.description), str):
+                raise ValueError("description must be a string")
             selected_model = update.get("model", current.model)
             values = self._normalize(update.get("capabilities", current.capabilities))
             for value in self._normalize(update.get("capabilities_add", [])):
@@ -258,6 +279,8 @@ class PresetStore:
                     values.append(value)
             removed = self._normalize(update.get("capabilities_remove", []))
             values = [value for value in values if value not in removed]
+            if any(self.is_system(value) for value in set(current.capabilities) - set(values)):
+                raise ValueError("Cannot disable a system capability through a preset")
             if not isinstance(person, str) or not person.strip():
                 raise ValueError("person must not be empty")
             if selected_model is not None and (
@@ -265,7 +288,7 @@ class PresetStore:
             ):
                 raise ValueError("model must be a nonempty ID or null")
             self._replace(
-                name, person, {"model": selected_model, "capabilities": values}
+                name, person, {"description": update.get("description", current.description), "model": selected_model, "capabilities": values}
             )
             return self.load(name)
 
