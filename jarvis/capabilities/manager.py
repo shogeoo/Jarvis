@@ -11,96 +11,44 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import select
 import subprocess
 import sys
 import threading
-import venv
-from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from ..core.lifecycle import terminate_process
 from ..core.protocol import (
-    ActionRequest,
-    CallResult,
     Event,
     InputPart,
-    validate_json,
-    arguments_with_defaults,
 )
 from ..core.registry import ActionRegistry, EventRegistry
 from ..infrastructure.config import DEFAULT_JARVIS_DIR
 from ..infrastructure.debug import Debugger
+from ..infrastructure.storage_migration import migrate_capability_directories
+from .agent_api import _AgentApi
 from .api import (
-    PENDING,
-    ActionContext,
     ActionDefinition,
     EventDefinition,
     HandlerDefinition,
     ModuleDefinition,
 )
-
+from .hosts import LoadedAction, LoadedHandler, LoadedModule, UnitHost
 
 DEFAULT_ROOT = DEFAULT_JARVIS_DIR
-_ENTRYPOINTS = {"action": "action.py", "handler": "handler.py", "module": "module.py"}
-_DIRS = {"action": "actions", "handler": "handlers", "module": "modules"}
-# Точка в ID корневой единицы запрещена: она означает единицу модуля.
-_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
-@dataclass(slots=True)
-class UnitHost:
-    """Живой процесс одной единицы (действие, handler или модуль)."""
-
-    key: str
-    kind: str
-    unit_id: str
-    module_id: str | None
-    path: Path
-    catalog: dict[str, Any]
-    action_ids: list[str] = field(default_factory=list)
-    handler_ids: list[str] = field(default_factory=list)
-    process: subprocess.Popen | None = None
-    reader_thread: threading.Thread | None = None
-    writer_lock: threading.Lock = field(default_factory=threading.Lock)
-    start_lock: threading.Lock = field(default_factory=threading.Lock)
-    stderr_stream: Any = None
-    stop_event: threading.Event = field(default_factory=threading.Event)
-    started: bool = False
-    closing: bool = False
+from .catalog import CapabilityCatalog
+from .discovery import CapabilityDiscovery
+from .dispatch import CapabilityDispatch
+from .rpc import CapabilityRpc
+from .state import CapabilityState
 
 
-@dataclass(slots=True)
-class LoadedAction:
-    id: str
-    definition: ActionDefinition
-    path: Path
-    host: UnitHost
-    module_id: str | None
-
-
-@dataclass(slots=True)
-class LoadedHandler:
-    id: str
-    definition: HandlerDefinition
-    path: Path
-    host: UnitHost
-    module_id: str | None
-
-
-@dataclass(slots=True)
-class LoadedModule:
-    module_id: str
-    definition: ModuleDefinition
-    path: Path
-    host: UnitHost
-    action_ids: list[str] = field(default_factory=list)
-    handler_ids: list[str] = field(default_factory=list)
-
-
-class CapabilityManager:
+class CapabilityManager(
+    CapabilityDiscovery, CapabilityCatalog, CapabilityState, CapabilityRpc, CapabilityDispatch
+):
     """Каталоги единиц на диске существуют независимо от runtime в памяти."""
 
     def __init__(
@@ -118,9 +66,11 @@ class CapabilityManager:
         self.actions = actions
         self.events = events
         self.root = Path(root)
-        self.actions_dir = self.root / "actions"
-        self.handlers_dir = self.root / "handlers"
-        self.modules_dir = self.root / "modules"
+        migrate_capability_directories(self.root)
+        self.storage_root = self.root / "capabilities"
+        self.actions_dir = self.storage_root / "actions"
+        self.handlers_dir = self.storage_root / "handlers"
+        self.modules_dir = self.storage_root / "modules"
         self.config = config
         self.debug = debug or Debugger(enabled=False)
         self.services = services if services is not None else {}
@@ -134,16 +84,22 @@ class CapabilityManager:
         self._global_state_error = None
         try:
             raw_state = json.loads(self._global_state_path.read_text(encoding="utf-8"))
-            if not isinstance(raw_state, dict) or not isinstance(raw_state.get("paused"), dict):
+            if not isinstance(raw_state, dict) or not isinstance(
+                raw_state.get("paused"), dict
+            ):
                 raise ValueError("Invalid global capability state")
             for key in ("modules", "actions", "handlers"):
-                if not isinstance(raw_state["paused"].get(key), list) or not all(isinstance(item, str) for item in raw_state["paused"][key]):
+                if not isinstance(raw_state["paused"].get(key), list) or not all(
+                    isinstance(item, str) for item in raw_state["paused"][key]
+                ):
                     raise ValueError("Invalid global capability state: " + key)
         except FileNotFoundError:
             raw_state = {}
         except Exception as exc:
             self._global_state_error = str(exc)
-            self.debug.error("Cannot read capability_state.json; file preserved: " + str(exc))
+            self.debug.error(
+                "Cannot read capability_state.json; file preserved: " + str(exc)
+            )
             raw_state = {}
         old_paused = raw_state.get("paused", {})
         self._global_paused = {
@@ -156,198 +112,9 @@ class CapabilityManager:
         self._closing = threading.Event()
         self._cancel_waiters: dict[tuple[str, str], threading.Event] = {}
 
-    # --- пути и обнаружение ------------------------------------------
-    @staticmethod
-    def validate_module_id(module_id: str) -> None:
-        if not isinstance(module_id, str) or not _NAME.fullmatch(module_id):
-            raise ValueError(f"Некорректный module_id: {module_id!r}")
-
-    @staticmethod
-    def validate_unit_id(unit_id: str, *, kind: str) -> None:
-        if not isinstance(unit_id, str) or not _NAME.fullmatch(unit_id):
-            raise ValueError(f"Некорректный {kind}: {unit_id!r}")
-
-    def _unit_path(self, kind: str, unit_id: str) -> Path:
-        if kind == "module":
-            self.validate_module_id(unit_id)
-            return self.modules_dir / unit_id
-        self.validate_unit_id(unit_id, kind=kind)
-        return (self.actions_dir if kind == "action" else self.handlers_dir) / unit_id
-
-    def action_path(self, action_id: str) -> Path:
-        return self._unit_path("action", action_id)
-
-    def handler_path(self, handler_id: str) -> Path:
-        return self._unit_path("handler", handler_id)
-
-    def module_path(self, module_id: str) -> Path:
-        return self._unit_path("module", module_id)
-
-    @staticmethod
-    def _rel(kind: str, unit_id: str) -> str:
-        return f"{_DIRS[kind]}/{unit_id}"
-
-    def discover_modules(self) -> list[Path]:
-        return self._discover_units(self.modules_dir, "module")
-
-    def discover_actions(self) -> list[Path]:
-        return self._discover_units(self.actions_dir, "action")
-
-    def discover_handlers(self) -> list[Path]:
-        return self._discover_units(self.handlers_dir, "handler")
-
-    @staticmethod
-    def _discover_units(directory: Path, kind: str) -> list[Path]:
-        if not directory.exists():
-            return []
-        entry = _ENTRYPOINTS[kind]
-        return sorted(
-            path
-            for path in directory.iterdir()
-            if path.is_dir()
-            and not path.name.startswith(".")
-            and (path / entry).is_file()
-        )
-
-    def existing_modules(self) -> set[str]:
-        return {path.name for path in self.discover_modules()}
-
-    def existing_actions(self) -> set[str]:
-        return {path.name for path in self.discover_actions()}
-
-    def existing_handlers(self) -> set[str]:
-        return {path.name for path in self.discover_handlers()}
-
-    def loaded_modules(self) -> set[str]:
-        with self._lock:
-            return set(self._modules)
-
-    def loaded_actions(self) -> set[str]:
-        with self._lock:
-            return set(self._actions)
-
-    def loaded_handlers(self) -> set[str]:
-        with self._lock:
-            return set(self._handlers)
-
-    def loaded_snapshot(self) -> dict[str, set[str]]:
-        return {
-            "modules": self.loaded_modules(),
-            "actions": self.loaded_actions(),
-            "handlers": self.loaded_handlers(),
-        }
-
-    def missing(self, snapshot: dict[str, set[str]]) -> set[str]:
-        loaded = self.loaded_snapshot()
-        missing: set[str] = set()
-        for module_id in snapshot.get("modules", ()):
-            if module_id not in loaded["modules"]:
-                missing.add(f"module:{module_id}")
-        for action_id in snapshot.get("actions", ()):
-            if action_id not in loaded["actions"]:
-                missing.add(f"action:{action_id}")
-        for handler_id in snapshot.get("handlers", ()):
-            if handler_id not in loaded["handlers"]:
-                missing.add(f"handler:{handler_id}")
-        return missing
-
-    def list_existing(self) -> dict[str, Any]:
-        loaded = self.loaded_snapshot()
-        global_paused = self.global_paused()
-        modules = [
-            {
-                "id": path.name,
-                "description": self._describe("module", path.name)["description"],
-                "loaded": path.name in loaded["modules"],
-                "globally_running": path.name not in global_paused["modules"],
-                "globally_paused": path.name in global_paused["modules"],
-            }
-            for path in self.discover_modules()
-        ]
-        actions = [
-            {
-                "id": path.name,
-                "description": self._describe("action", path.name)["actions"][0]["description"],
-                "loaded": path.name in loaded["actions"],
-                "globally_running": path.name not in global_paused["actions"],
-                "globally_paused": path.name in global_paused["actions"],
-            }
-            for path in self.discover_actions()
-        ]
-        handlers = [
-            {
-                "id": path.name,
-                "description": self._describe("handler", path.name)["handlers"][0]["description"],
-                "loaded": path.name in loaded["handlers"],
-                "globally_running": path.name not in global_paused["handlers"],
-                "globally_paused": path.name in global_paused["handlers"],
-            }
-            for path in self.discover_handlers()
-        ]
-        return {"modules": modules, "actions": actions, "handlers": handlers}
-
-    def capability_info(self, *, kind: str, capability_id: str) -> dict[str, Any]:
-        if kind == "module":
-            catalog = self._describe("module", capability_id)
-            return self._module_summary(LoadedModule(capability_id, ModuleDefinition(catalog["description"], (), ()), self.module_path(capability_id), UnitHost(f"module:{capability_id}", "module", capability_id, capability_id, self.module_path(capability_id), catalog)))
-        if kind == "action":
-            item = self._describe("action", capability_id)["actions"][0]
-            return self._action_summary(self._proxy_action(item, f"action:{capability_id}", self.action_path(capability_id)), self.action_path(capability_id))
-        if kind == "handler":
-            return self._describe("handler", capability_id)["handlers"][0]["event"]
-        raise ValueError(f"Неизвестный вид capability: {kind!r}")
-
-    def event_id_for_handler(self, handler_id: str) -> str:
-        """Resolve a saved legacy handler envelope using its own declaration."""
-        with self._lock:
-            loaded = self._handlers.get(handler_id)
-            if loaded is not None:
-                return loaded.definition.event.event_id
-        if handler_id == "core:speech":
-            return "speech_detected"
-        if "." in handler_id:
-            catalog = self._describe("module", handler_id.split(".", 1)[0])
-        else:
-            catalog = self._describe("handler", handler_id)
-        return next(item["event"]["event_id"] for item in catalog["handlers"] if item["id"] == handler_id)
-
-    def list_available(self, known: dict[str, set[str]]) -> dict[str, Any]:
-        result = {"modules": [], "actions": [], "handlers": []}
-        for kind, paths, key in (
-            ("module", self.discover_modules(), "modules"),
-            ("action", self.discover_actions(), "actions"),
-            ("handler", self.discover_handlers(), "handlers"),
-        ):
-            for path in paths:
-                if path.name in known[key]:
-                    continue
-                catalog = self._describe(kind, path.name)
-                result[key].append({"id": path.name, "description": catalog["description"]})
-        return result
-
-    def module_action_ids(self, module_id: str) -> set[str]:
-        with self._lock:
-            runtime = self._modules.get(module_id)
-        if runtime is not None:
-            return set(runtime.action_ids)
-        return {item["id"] for item in self._describe("module", module_id)["actions"]}
-
-    def _loaded_description(self, kind: str, unit_id: str) -> str:
-        with self._lock:
-            if kind == "module":
-                runtime = self._modules.get(unit_id)
-                return runtime.host.catalog.get("description", "") if runtime else ""
-            table = self._actions if kind == "action" else self._handlers
-            loaded = table.get(unit_id)
-            return loaded.definition.description if loaded else ""
-
     # --- процесс единицы ---------------------------------------------
     def _python(self, path: Path) -> Path:
-        """Окружение единицы; без собственного .venv используется ядро."""
-
-        python = path / ".venv" / "bin" / "python"
-        if python.is_file():
-            return python
+        """Dependencies and custom environments belong to capability code."""
         return Path(sys.executable)
 
     def _worker_command(self, kind: str, unit_id: str) -> list[str]:
@@ -521,20 +288,32 @@ class CapabilityManager:
                         daemon=True,
                     ).start()
                 elif kind == "capability_error":
-                    self._fail_call(host, message.get("agent_id"), message.get("call_id"), message.get("error", ""))
+                    self._fail_call(
+                        host,
+                        message.get("agent_id"),
+                        message.get("call_id"),
+                        message.get("error", ""),
+                    )
                 elif kind == "call_result":
                     self._complete_action(
                         message.get("agent_id"),
                         message.get("call_id"),
                         message.get("data"),
                         tuple(
-                            InputPart(item["type"], item["mime_type"], item["data"], item.get("name", ""))
+                            InputPart(
+                                item["type"],
+                                item["mime_type"],
+                                item["data"],
+                                item.get("name", ""),
+                            )
                             for item in message.get("parts", [])
                         ),
                     )
                 elif kind == "cancelled":
                     with self._lock:
-                        waiter = self._cancel_waiters.get((message.get("agent_id"), message.get("call_id")))
+                        waiter = self._cancel_waiters.get(
+                            (message.get("agent_id"), message.get("call_id"))
+                        )
                     if waiter is not None:
                         waiter.set()
                 elif kind == "event":
@@ -547,7 +326,12 @@ class CapabilityManager:
                             target=raw.get("target"),
                             reply_to=raw.get("reply_to"),
                             parts=tuple(
-                                InputPart(item["type"], item["mime_type"], item["data"], item.get("name", ""))
+                                InputPart(
+                                    item["type"],
+                                    item["mime_type"],
+                                    item["data"],
+                                    item.get("name", ""),
+                                )
                                 for item in raw.get("parts", [])
                             ),
                             module_id=host.module_id,
@@ -562,7 +346,9 @@ class CapabilityManager:
         if not host.closing and not host.stop_event.is_set():
             self._host_failed(host, "Процесс единицы неожиданно завершился")
 
-    def _fail_call(self, host: UnitHost, agent_id: str | None, call_id: str | None, error: str) -> None:
+    def _fail_call(
+        self, host: UnitHost, agent_id: str | None, call_id: str | None, error: str
+    ) -> None:
         manager = self._manager()
         if agent_id is not None and call_id is not None and manager is not None:
             manager.fail_call(agent_id, call_id, error)
@@ -571,10 +357,14 @@ class CapabilityManager:
 
     def _host_failed(self, host: UnitHost, error: str) -> None:
         manager = self._manager()
-        action_ids = set(host.action_ids) or ({host.unit_id} if host.kind == "action" else set())
+        action_ids = set(host.action_ids) or (
+            {host.unit_id} if host.kind == "action" else set()
+        )
         if manager is not None:
             for agent in manager.agents_snapshot():
-                for pending in manager.results.for_capability(action_ids, {agent.agent_id}):
+                for pending in manager.results.for_capability(
+                    action_ids, {agent.agent_id}
+                ):
                     manager.fail_call(agent.agent_id, pending.call_id, error)
         if host.kind == "module":
             self.unload_module(host.unit_id)
@@ -588,7 +378,14 @@ class CapabilityManager:
         manager = self._manager()
         if manager is None:
             return
-        pending = next((item for item in manager.results.for_agent(agent_id) if item.call_id == call_id), None)
+        pending = next(
+            (
+                item
+                for item in manager.results.for_agent(agent_id)
+                if item.call_id == call_id
+            ),
+            None,
+        )
         if pending is None:
             return
         self.cancel_execution(agent_id, call_id, pending.action_id)
@@ -605,59 +402,17 @@ class CapabilityManager:
             with self._lock:
                 self._cancel_waiters[key] = waiter
             try:
-                self._send_host(runtime.host, {"kind": "cancel_action", "agent_id": agent_id, "call_id": call_id})
+                self._send_host(
+                    runtime.host,
+                    {"kind": "cancel_action", "agent_id": agent_id, "call_id": call_id},
+                )
                 if not waiter.wait(3):
-                    self._host_failed(runtime.host, "Не удалось остановить выполнение действия")
+                    self._host_failed(
+                        runtime.host, "Не удалось остановить выполнение действия"
+                    )
             finally:
                 with self._lock:
                     self._cancel_waiters.pop(key, None)
-
-    # --- RPC от единиц ------------------------------------------------
-    def _handle_rpc(self, host: UnitHost, message: dict[str, Any]) -> None:
-        rpc_id = message.get("rpc_id")
-        try:
-            target = message.get("target")
-            if target == "capabilities":
-                obj: Any = self
-            elif target == "agent_manager":
-                obj = self._agent_api
-                method = str(message.get("method", ""))
-                if method in {"enable", "disable", "delete", "interrupt"}:
-                    kwargs = message.get("kwargs", {})
-                    args = message.get("args", [])
-                    target_id = kwargs.get("agent_id") or (args[0] if args else None)
-                    if target_id is not None:
-                        agent = self._manager().require_agent(target_id)
-                        if self._manager().presets.load(agent.preset).protected and message.get("caller_agent_id") != target_id:
-                            raise ValueError("Защищённый агент не может быть изменён извне")
-            else:
-                raise ValueError(f"Неизвестная цель RPC: {target!r}")
-            func = obj
-            for part in str(message.get("method", "")).split("."):
-                func = getattr(func, part)
-            value = func(
-                *message.get("args", []),
-                **message.get("kwargs", {}),
-            )
-            response = {
-                "kind": "rpc_result",
-                "rpc_id": rpc_id,
-                "ok": True,
-                "value": value,
-                "error": None,
-            }
-        except Exception as exc:  # noqa: BLE001
-            response = {
-                "kind": "rpc_result",
-                "rpc_id": rpc_id,
-                "ok": False,
-                "value": None,
-                "error": str(exc),
-            }
-        try:
-            self._send_host(host, response)
-        except Exception:  # noqa: BLE001
-            pass
 
     # --- загрузка -----------------------------------------------------
     def _proxy_action(
@@ -736,7 +491,13 @@ class CapabilityManager:
             ],
         }
 
-    def validate(self, *, kind: str, capability_id: str) -> dict[str, Any]:
+    def validate(self, capability_id: str) -> dict[str, Any]:
+        kind = self.resolve_kind(capability_id)
+        if capability_id in self.builtin_modules() or (
+            self.actions.get(capability_id) is not None
+            and self.actions.get(capability_id).owner.startswith("core")
+        ):
+            return self.capability_info(capability_id)
         if kind == "module":
             return self.validate_module(capability_id)
         if kind == "action":
@@ -761,7 +522,9 @@ class CapabilityManager:
             raise ValueError(f"Handler не найден: {capability_id}")
         raise ValueError(f"Неизвестный вид capability: {kind!r}")
 
-    def load_snapshot(self, snapshot: dict[str, set[str]], *, start_handlers: bool) -> None:
+    def load_snapshot(
+        self, snapshot: dict[str, set[str]], *, start_handlers: bool
+    ) -> None:
         loaded: list[tuple[str, str]] = []
         try:
             for module_id in sorted(snapshot.get("modules", ())):
@@ -809,16 +572,26 @@ class CapabilityManager:
         self, snapshot: dict[str, set[str]], *, agents: list[Any]
     ) -> None:
         for module_id in sorted(snapshot.get("modules", ())):
+            if self.is_system(module_id):
+                continue
             if not any(module_id in agent.modules() for agent in agents):
                 self.unload_module(module_id)
         for action_id in sorted(snapshot.get("actions", ())):
+            if self.is_system(action_id):
+                continue
             if not any(action_id in agent.standalone_actions() for agent in agents):
                 self.unload_action(action_id)
         for handler_id in sorted(snapshot.get("handlers", ())):
+            if self.is_system(handler_id):
+                continue
             if not any(handler_id in agent.standalone_handlers() for agent in agents):
                 self.unload_handler(handler_id)
 
-    def load_action(self, action_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
+    def load_action(
+        self, action_id: str, *, start_handlers: bool = True
+    ) -> dict[str, Any]:
+        if "." not in action_id and self.resolve_kind(action_id) != "action":
+            raise ValueError("Expected standalone action capability")
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
@@ -862,7 +635,11 @@ class CapabilityManager:
                 raise
         return self._action_summary(runtime.definition, path)
 
-    def load_handler(self, handler_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
+    def load_handler(
+        self, handler_id: str, *, start_handlers: bool = True
+    ) -> dict[str, Any]:
+        if "." not in handler_id and self.resolve_kind(handler_id) != "handler":
+            raise ValueError("Expected standalone handler capability")
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
@@ -906,7 +683,13 @@ class CapabilityManager:
                 raise
         return self._handler_summary(runtime.definition, path)
 
-    def load_module(self, module_id: str, *, start_handlers: bool = True) -> dict[str, Any]:
+    def load_module(
+        self, module_id: str, *, start_handlers: bool = True
+    ) -> dict[str, Any]:
+        if self.resolve_kind(module_id) != "module":
+            raise ValueError("Expected module capability")
+        if module_id in self.builtin_modules():
+            return self.builtin_module_catalog(module_id)
         if self._closing.is_set():
             raise RuntimeError("runtime_stopping")
         with self._lock:
@@ -922,11 +705,15 @@ class CapabilityManager:
         host = self._new_host("module", module_id, path, catalog)
         owner = host.key
         actions = [
-            self._proxy_action(item, owner, path / "actions" / item["id"].split(".", 1)[1])
+            self._proxy_action(
+                item, owner, path / "actions" / item["id"].split(".", 1)[1]
+            )
             for item in catalog["actions"]
         ]
         handlers = [
-            self._proxy_handler(item, owner, path / "handlers" / item["id"].split(".", 1)[1])
+            self._proxy_handler(
+                item, owner, path / "handlers" / item["id"].split(".", 1)[1]
+            )
             for item in catalog["handlers"]
         ]
         try:
@@ -998,6 +785,8 @@ class CapabilityManager:
             self._hosts.pop(host.key, None)
 
     def start_module(self, module_id: str) -> None:
+        if module_id in self.builtin_modules():
+            return
         with self._lock:
             runtime = self._modules.get(module_id)
         if runtime is None:
@@ -1018,165 +807,10 @@ class CapabilityManager:
             raise RuntimeError(f"Handler {handler_id} не загружен")
         self._start_host(runtime.host)
 
-    # --- dispatch -----------------------------------------------------
-    def dispatch(self, *, action: ActionRequest, spec: ActionDefinition, agent: Any) -> None:
-        action = replace(action, data=arguments_with_defaults(action.data, spec.data_schema))
-        if not spec.owner.startswith("core") and not agent.is_enabled_action(action.action_id):
-            self._manager().deliver_result(CallResult(
-                call_id=action.call_id, agent_id=agent.agent_id,
-                data={"status": "disabled", "info": "Action is currently disabled."},
-            ))
-            return
-        agent_modules = agent.modules() if hasattr(agent, "modules") else set()
-        if self.is_globally_paused("action", action.action_id) or any(
-            self.is_globally_paused("module", module_id)
-            and action.action_id in self.module_action_ids(module_id)
-            for module_id in agent_modules
-        ):
-            self._manager().deliver_result(CallResult(
-                call_id=action.call_id, agent_id=agent.agent_id,
-                data={"status": "paused", "info": "Capability is globally paused."},
-            ))
-            return
-        with self._lock:
-            runtime = self._actions.get(action.action_id)
-            core = False
-            if runtime is None:
-                if not spec.owner.startswith("core"):
-                    raise RuntimeError(f"Действие {action.action_id} выключено")
-                core = True
-            elif not runtime.host.started:
-                raise RuntimeError(f"Действие {action.action_id} выключено")
-            manager = self._manager()
-            if manager is None:
-                raise RuntimeError("Менеджер агентов не запущен")
-            manager.results.begin(
-                agent_id=agent.agent_id,
-                call_id=action.call_id,
-                action_id=action.action_id,
-                result_schema=spec.result_schema,
-            )
-        if core:
-            processes = getattr(manager, "processes", None)
-            owner = processes.reserve_call(agent.agent_id, action.call_id) if processes is not None else None
-            threading.Thread(
-                target=self._run_core_action,
-                args=(spec, action, agent, owner),
-                name=f"jarvis-core-{action.action_id}",
-                daemon=True,
-            ).start()
-            return
-        with self._lock:
-            host = runtime.host
-            message = {
-                "kind": "action",
-                "agent_id": agent.agent_id,
-                "action_id": action.action_id,
-                "call_id": action.call_id,
-                "data": dict(action.data),
-                "metadata": {"preset": agent.preset, "agent_name": agent.name},
-            }
-        try:
-            self._send_host(host, message)
-        except Exception:
-            manager.results.discard(agent.agent_id, action.call_id)
-            raise
-
-    def _run_core_action(
-        self, spec: ActionDefinition, action: ActionRequest, agent: Any, owner=None
-    ) -> None:
-        """Исполнить захардкоженное действие ядра в собственном потоке."""
-
-        manager = self._manager()
-        def current_caller():
-            return not hasattr(manager, "agents") or manager.agents.get(agent.agent_id) is agent
-        def complete(data, parts=()):
-            if current_caller():
-                return self._complete_action(agent.agent_id, action.call_id, data, parts)
-            return False
-        context = ActionContext(
-            agent_id=agent.agent_id,
-            call_id=action.call_id,
-            action_id=action.action_id,
-            capability_id=action.action_id,
-            module_id=None,
-            complete=complete,
-            config=self.config,
-            agent_manager=self._agent_api,
-            capabilities=self,
-            services=self.services,
-            metadata={"preset": agent.preset, "agent_name": agent.name, "execution_owner": owner},
-        )
-        if not current_caller():
-            return
-        try:
-            result = spec.run(dict(action.data), context)
-        except Exception as exc:  # noqa: BLE001
-            if current_caller():
-                manager.fail_call(agent.agent_id, action.call_id, exc)
-            return
-        if result is PENDING:
-            return
-        complete(result)
-
-    def _manager(self) -> Any:
-        return getattr(self.event_bus, "manager", None)
-
-    def model_input_modalities(self) -> list[str]:
-        """Read the configured model's input modalities through capability RPC."""
-        manager = self._manager()
-        if manager is None or manager.model_capabilities is None:
-            raise RuntimeError("Model input modalities are unavailable")
-        return list(manager.model_capabilities.input_modalities)
-
-    def _complete_action(
-        self,
-        agent_id: str | None,
-        call_id: str | None,
-        data: Any,
-        parts: Any = (),
-    ) -> bool:
-        manager = self._manager()
-        if manager is None or agent_id is None or call_id is None:
-            self.debug.log(
-                "call_result_dropped",
-                agent_id=agent_id,
-                call_id=call_id,
-                reason="no_manager",
-            )
-            return False
-        if not isinstance(data, dict):
-            self.debug.log(
-                "call_result_rejected",
-                agent_id=agent_id,
-                call_id=call_id,
-                reason="invalid_data",
-            )
-            manager.fail_call(agent_id, call_id, "Некорректная структура результата")
-            return False
-        return manager.results.complete(
-            manager,
-            agent_id=agent_id,
-            call_id=call_id,
-            data=data,
-            parts=tuple(parts),
-        )
-
-    def _discard_pending(self, agent_id: str | None, call_id: str | None) -> None:
-        manager = self._manager()
-        if manager is None or agent_id is None or call_id is None:
-            return
-        manager.results.discard(agent_id, call_id)
-
-    def _report_error(self, kind: str, capability_id: str, exc: Exception | str) -> None:
-        manager = self._manager()
-        if manager is not None:
-            manager.report_capability_error(kind, capability_id, exc)
-        else:
-            self.debug.log("capability_error", kind=kind, id=capability_id, error=str(exc))
-
     # --- выгрузка -----------------------------------------------------
     def unload_action(self, action_id: str) -> None:
+        if self.is_system(action_id):
+            raise ValueError("Cannot unload a system capability")
         with self._lock:
             runtime = self._actions.pop(action_id, None)
         if runtime is None or runtime.module_id is not None:
@@ -1184,6 +818,8 @@ class CapabilityManager:
         self._stop_host(runtime.host)
 
     def unload_handler(self, handler_id: str) -> None:
+        if self.is_system(handler_id):
+            raise ValueError("Cannot unload a system capability")
         with self._lock:
             runtime = self._handlers.pop(handler_id, None)
         if runtime is None or runtime.module_id is not None:
@@ -1191,6 +827,8 @@ class CapabilityManager:
         self._stop_host(runtime.host)
 
     def unload_module(self, module_id: str) -> None:
+        if self.is_system(module_id):
+            raise ValueError("Cannot unload a system capability")
         with self._lock:
             runtime = self._modules.pop(module_id, None)
             if runtime is not None:
@@ -1201,91 +839,6 @@ class CapabilityManager:
         if runtime is None:
             return
         self._stop_host(runtime.host)
-
-    def is_globally_paused(self, kind: str, capability_id: str) -> bool:
-        key = {"module": "modules", "action": "actions", "handler": "handlers"}.get(kind)
-        if key is None:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        with self._lock:
-            return capability_id in self._global_paused[key]
-
-    def global_paused(self) -> dict[str, set[str]]:
-        with self._lock:
-            return {key: set(value) for key, value in self._global_paused.items()}
-
-    def runnable_snapshot(self, snapshot: dict[str, set[str]]) -> dict[str, set[str]]:
-        paused = self.global_paused()
-        system_actions = {name for name, spec in self.actions.all().items() if spec.owner.startswith("core")}
-        return {
-            "modules": set(snapshot.get("modules", ())) - paused["modules"],
-            "actions": set(snapshot.get("actions", ())) - paused["actions"] - system_actions,
-            "handlers": set(snapshot.get("handlers", ())) - paused["handlers"],
-        }
-
-    def _save_global_state(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        temporary = self._global_state_path.with_suffix(".tmp")
-        state = {"paused": {key: sorted(value) for key, value in self._global_paused.items()}}
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self._global_state_path)
-
-    def toggle_global_state(self, kind: str, capability_id: str) -> dict[str, Any]:
-        with self._global_toggle_lock:
-            return self._toggle_global_state_locked(kind, capability_id)
-
-    def _toggle_global_state_locked(self, kind: str, capability_id: str) -> dict[str, Any]:
-        if self._global_state_error is not None:
-            raise ValueError("Cannot update unreadable capability state: " + self._global_state_error)
-        kind_to_key = {"module": "modules", "action": "actions", "handler": "handlers"}
-        key = kind_to_key.get(kind)
-        if key is None:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        self.validate(kind=kind, capability_id=capability_id)
-        manager = self._manager()
-        if manager is None:
-            raise RuntimeError("Менеджер агентов не запущен")
-        affected = manager.agents_assigned_and_enabled(kind, capability_id)
-        agent_ids = [agent.agent_id for agent in affected]
-        if not self.is_globally_paused(kind, capability_id):
-            with self._lock:
-                self._global_paused[key].add(capability_id)
-                self._save_global_state()
-            if kind == "module":
-                action_ids = self.module_action_ids(capability_id)
-            elif kind == "action":
-                action_ids = {capability_id}
-            else:
-                action_ids = set()
-            if action_ids:
-                for agent in manager.agents_snapshot():
-                    for pending in manager.results.for_capability(action_ids, {agent.agent_id}):
-                        manager.pause_call(agent.agent_id, pending.call_id)
-            if kind == "module":
-                self.unload_module(capability_id)
-            elif kind == "action":
-                self.unload_action(capability_id)
-            else:
-                self.unload_handler(capability_id)
-            return {"state": "paused", "affected_agent_ids": agent_ids}
-
-        active_snapshots = [agent.capabilities_snapshot() for agent in affected]
-        combined = {
-            key_name: set().union(*(snapshot[key_name] for snapshot in active_snapshots))
-            if active_snapshots else set()
-            for key_name in ("modules", "actions", "handlers")
-        }
-        with self._lock:
-            self._global_paused[key].discard(capability_id)
-            self._save_global_state()
-        try:
-            runnable = self.runnable_snapshot(combined)
-            self.load_snapshot(runnable, start_handlers=True)
-        except Exception:
-            with self._lock:
-                self._global_paused[key].add(capability_id)
-                self._save_global_state()
-            raise
-        return {"state": "running", "affected_agent_ids": agent_ids}
 
     def signal(
         self, kind: str, unit_id: str, name: str, data: dict[str, Any] | None = None
@@ -1310,42 +863,6 @@ class CapabilityManager:
         )
         return True
 
-    def create_environment(self, kind: str, unit_id: str) -> dict[str, Any]:
-        path = self._unit_path(kind, unit_id)
-        if not path.is_dir():
-            raise ValueError(f"Единица не найдена: {kind} {unit_id!r}")
-        requirements = path / "requirements.txt"
-        requirements_name = "requirements.txt" if requirements.is_file() else None
-        if requirements_name:
-            unpinned = [
-                line.strip()
-                for line in requirements.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-                and not line.lstrip().startswith(("#", "-"))
-                and "==" not in line
-            ]
-            if unpinned:
-                raise ValueError(
-                    "Зависимости должны быть закреплены через ==: "
-                    + ", ".join(unpinned)
-                )
-        environment = path / ".venv"
-        if not environment.exists():
-            venv.EnvBuilder(with_pip=True).create(environment)
-        if requirements_name is not None:
-            python = environment / "bin" / "python"
-            subprocess.run(
-                [str(python), "-m", "pip", "install", "-r", str(requirements)],
-                cwd=path,
-                check=True,
-            )
-        return {
-            "kind": kind,
-            "id": unit_id,
-            "environment": str(environment),
-            "requirements": requirements_name,
-        }
-
     def shutdown(self) -> None:
         self._closing.set()
         for action_id in list(self.loaded_actions()):
@@ -1356,244 +873,5 @@ class CapabilityManager:
             runtime = self._handlers.get(handler_id)
             if runtime is not None and runtime.module_id is None:
                 self.unload_handler(handler_id)
-        for module_id in list(self.loaded_modules()):
+        for module_id in list(self.loaded_modules() - self.builtin_modules()):
             self.unload_module(module_id)
-
-    # --- сводки и каталог --------------------------------------------
-    def catalog(self, snapshot: dict[str, set[str]], *, describe_unloaded: bool = False) -> dict[str, Any]:
-        with self._lock:
-            actions = []
-            for action_id in sorted(snapshot.get("actions", ())):
-                runtime = self._actions.get(action_id)
-                if runtime is None and describe_unloaded:
-                    item = self._describe("action", action_id)["actions"][0]
-                    actions.append(self._action_summary(self._proxy_action(item, f"action:{action_id}", self.action_path(action_id)), self.action_path(action_id)))
-                    continue
-                if runtime is None or runtime.module_id is not None:
-                    continue
-                actions.append(self._action_summary(runtime.definition, runtime.path))
-            handlers = []
-            events = []
-            for handler_id in sorted(snapshot.get("handlers", ())):
-                runtime = self._handlers.get(handler_id)
-                if runtime is None and describe_unloaded:
-                    item = self._describe("handler", handler_id)["handlers"][0]
-                    definition = self._proxy_handler(item, f"handler:{handler_id}", self.handler_path(handler_id))
-                    handlers.append(self._handler_summary(definition, self.handler_path(handler_id)))
-                    event = definition.event
-                    events.append({"event_id": event.event_id, "description": event.description, "data_schema": event.data_schema})
-                    continue
-                if runtime is None or runtime.module_id is not None:
-                    continue
-                handlers.append(self._handler_summary(runtime.definition, runtime.path))
-                event = runtime.definition.event
-                events.append(
-                    {
-                        "event_id": event.event_id,
-                        "description": event.description,
-                        "data_schema": event.data_schema,
-                    }
-                )
-            modules = []
-            for module_id in snapshot.get("modules", ()):
-                runtime = self._modules.get(module_id)
-                if runtime is None:
-                    if not describe_unloaded:
-                        continue
-                    catalog = self._describe("module", module_id)
-                    modules.append(self._module_summary(LoadedModule(
-                        module_id=module_id,
-                        definition=ModuleDefinition(catalog["description"], (), ()),
-                        path=self.module_path(module_id),
-                        host=UnitHost(f"module:{module_id}", "module", module_id, module_id, self.module_path(module_id), catalog),
-                    )))
-                    continue
-                modules.append(self._module_summary(runtime))
-            return {
-                "storage_root": str(self.root.resolve()),
-                "actions": actions,
-                "handlers": handlers,
-                "events": events,
-                "modules": modules,
-            }
-
-    @staticmethod
-    def _action_summary(definition: ActionDefinition, path: Path) -> dict[str, Any]:
-        return {
-            "action_id": definition.id,
-            "description": definition.description,
-            "data_schema": definition.data_schema,
-            "result_schema": definition.result_schema,
-        }
-
-    @staticmethod
-    def _handler_summary(definition: HandlerDefinition, path: Path) -> dict[str, Any]:
-        return {
-            "id": definition.id,
-            "description": definition.description,
-            "path": str(path),
-            "events": [
-                {
-                    "event_id": definition.event.event_id,
-                    "description": definition.event.description,
-                    "data_schema": definition.event.data_schema,
-                }
-            ],
-        }
-
-    def _module_summary(self, runtime: LoadedModule) -> dict[str, Any]:
-        catalog = runtime.host.catalog
-        return {
-            "module_id": runtime.module_id,
-            "description": runtime.definition.description,
-            "actions": [
-                {
-                    "action_id": item["id"],
-                    "description": item["description"],
-                    "data_schema": item["data_schema"],
-                    "result_schema": item["result_schema"],
-                }
-                for item in catalog["actions"]
-            ],
-            "events": [
-                {
-                    "event_id": item["event"]["event_id"],
-                    "description": item["event"]["description"],
-                    "data_schema": item["event"]["data_schema"],
-                }
-                for item in catalog["handlers"]
-            ],
-        }
-
-
-class _AgentApi:
-    """JSON-совместимый фасад над AgentManager для RPC из единиц."""
-
-    def __init__(self, capabilities: CapabilityManager):
-        self._capabilities = capabilities
-
-    @property
-    def _manager(self):
-        manager = self._capabilities._manager()
-        if manager is None:
-            raise RuntimeError("Менеджер агентов не запущен")
-        return manager
-
-    def spawn(self, parent_id: str, name: str, preset: str) -> dict[str, Any]:
-        return self._manager.spawn(parent_id=parent_id, name=name, preset=preset)
-
-    def delete(self, agent_id: str) -> dict[str, Any]:
-        return self._manager.delete(agent_id=agent_id)
-
-    def interrupt(
-        self, agent_id: str, requester_id: str | None = None
-    ) -> dict[str, Any]:
-        return self._manager.interrupt(
-            agent_id=agent_id, requester_id=requester_id
-        )
-
-    def list_agents(self) -> list[dict[str, Any]]:
-        return self._manager.list_agents()
-
-    def agent_snapshot(self, agent_id: str) -> dict[str, list[str]]:
-        snapshot = self._manager.require_agent(agent_id).capabilities_snapshot()
-        return {key: sorted(value) for key, value in snapshot.items()}
-
-    def known_snapshot(self, agent_id: str) -> dict[str, list[str]]:
-        snapshot = self._manager.require_agent(agent_id).known_snapshot()
-        return {key: sorted(value) for key, value in snapshot.items()}
-
-    def toggle_capability(self, kind: str, capability_id: str) -> dict[str, Any]:
-        return self._capabilities.toggle_global_state(kind, capability_id)
-
-    def deliver_message(
-        self,
-        sender_id: str,
-        target_id: str,
-        text: str,
-        action_id: str,
-        module_id: str | None,
-    ) -> dict[str, Any]:
-        manager = self._manager
-        sender = manager.require_agent(sender_id)
-        target = manager.require_agent(target_id)
-        delivered = manager.bus.publish(
-            Event(
-                event_id="message_from_agent",
-                data={
-                    "from_agent_id": sender.agent_id,
-                    "from_name": sender.name,
-                    "text": text,
-                },
-                source=f"action:{action_id}",
-                target=target.agent_id,
-                module_id=module_id,
-            )
-        )
-        return {"delivered": delivered, "agent_id": target.agent_id}
-
-    @staticmethod
-    def _reject_module_part(kind: str, capability_id: str) -> None:
-        if kind != "module" and "." in capability_id:
-            module_id = capability_id.split(".", 1)[0]
-            raise ValueError(
-                f"Часть модуля отдельно не переключается: {capability_id!r} "
-                f"принадлежит модулю {module_id!r} — укажите kind='module', "
-                f"id={module_id!r}"
-            )
-
-    def enable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
-        self._reject_module_part(kind, capability_id)
-        manager = self._manager
-        agent = manager.require_agent(agent_id)
-        if kind == "module":
-            manager.enable_module(agent_id, capability_id)
-        elif kind == "action":
-            manager.enable_action(agent_id, capability_id)
-        elif kind == "handler":
-            manager.enable_handler(agent_id, capability_id)
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        persistent = False
-        if agent_id == "main" or agent.protected:
-            manager.presets.add_capability(agent.preset, kind, capability_id)
-            manager.presets.set_disabled(agent.preset, kind, capability_id, False)
-            persistent = True
-        return {
-            "enabled": True,
-            "kind": kind,
-            "id": capability_id,
-            "persistent": persistent,
-        }
-
-    def disable(self, agent_id: str, kind: str, capability_id: str) -> dict[str, Any]:
-        self._reject_module_part(kind, capability_id)
-        manager = self._manager
-        agent = manager.require_agent(agent_id)
-        if kind == "module":
-            manager.disable_module(agent_id, capability_id)
-        elif kind == "action":
-            manager.disable_action(agent_id, capability_id)
-        elif kind == "handler":
-            manager.disable_handler(agent_id, capability_id)
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        if agent_id == "main" or agent.protected:
-            manager.presets.set_disabled(agent.preset, kind, capability_id, True)
-        return {"enabled": False, "kind": kind, "id": capability_id}
-
-    def presets_list(self) -> list[dict[str, Any]]:
-        active_singletons = {
-            agent.preset for agent in self._manager.agents_snapshot() if agent.protected
-        }
-        return [
-            {
-                "name": preset.name,
-                "modules": list(preset.modules),
-                "actions": list(preset.actions),
-                "handlers": list(preset.handlers),
-                "protected": preset.protected,
-            }
-            for preset in self._manager.presets.list()
-            if not preset.protected or preset.name not in active_singletons
-        ]

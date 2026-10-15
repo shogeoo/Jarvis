@@ -40,8 +40,8 @@ from ..core.protocol import validate_data_schema, validate_result_schema, valida
 
 _protocol = sys.stdout
 _write_lock = threading.Lock()
-_SIMPLE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-_UNIT_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*$")
+from .identifiers import ID_PATTERN as _SIMPLE
+_UNIT_NAME = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*(?:\.[a-z][a-z0-9]*(?:_[a-z0-9]+)*)?$")
 _ENTRYPOINTS = {"action": "action.py", "handler": "handler.py", "module": "module.py"}
 RPC_TIMEOUT = 120.0
 
@@ -354,6 +354,9 @@ def _load_module(root: Path, rel: Path, module_id: str) -> _Unit:
 
 
 def load_unit(root: Path, rel: Path) -> _Unit:
+    if len(rel.parts) == 3 and rel.parts[0] == "capabilities":
+        root = root / "capabilities"
+        rel = Path(*rel.parts[1:])
     parts = rel.parts
     if len(parts) == 2 and parts[0] in {"actions", "handlers"}:
         kind = "action" if parts[0] == "actions" else "handler"

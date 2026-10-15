@@ -74,18 +74,13 @@ class ApplicationTests(unittest.TestCase):
                 app.start()
                 self.assertEqual(startup_order, ["discover", "speech"])
                 try:
-                    self.assertEqual(
-                        json.loads((root / "automations.json").read_text(encoding="utf-8")),
-                        [],
-                    )
-                    self.assertEqual(app.main_agent.name, "Jarvis")
                     self.assertEqual(app.main_agent.preset, "main")
                     system_prompt = app.main_agent.history[0]["content"]
-                    ordered_blocks = ["ENVIRONMENT:\n", "PERSON:\n", "MEMORY:\n", "MODEL INFO:\n", "AGENT_INFO:\n", "CAPABILITIES:\n"]
+                    ordered_blocks = ["<ENVIRONMENT>\n", "<PERSON>\n", "<MEMORY>\n", "<MODEL_INFO>\n", "<AGENT_INFO>\n", "<CAPABILITIES>\n"]
                     positions = [system_prompt.index(block) for block in ordered_blocks]
                     self.assertEqual(positions, sorted(positions))
-                    info = system_prompt.split("AGENT_INFO:\n", 1)[1].split("\n\nCAPABILITIES:", 1)[0]
-                    self.assertEqual(info, "Тебя зовут Jarvis. Твой идентификатор main.")
+                    info = system_prompt.split("<AGENT_INFO>\n", 1)[1].split("\n</AGENT_INFO>", 1)[0]
+                    self.assertEqual(info, "Твой идентификатор: main. Твой пресет: main.")
                     self.assertIn("Текущая модель: test", system_prompt)
                     self.assertIn('"entries": []', system_prompt)
                     self.assertIn("Jarvis — среда существования", system_prompt)
@@ -100,19 +95,18 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(
                         app.capabilities.loaded_snapshot(),
                         {
-                            "modules": set(),
-                            "actions": {"say"},
-                            "handlers": {"tick"},
+                            "modules": {"capability_development", "agents", "semantic_memory"},
+                            "actions": {"say"} | {identifier for identifier, spec in app.actions.all().items() if spec.owner.startswith("core") and "." not in identifier},
+                            "handlers": {"tick", "speech_detected"},
                         },
                     )
                     other = app.agents.spawn(
                         parent_id=app.main_agent.agent_id,
-                        name="other",
-                        preset="worker",
+                        preset_id="worker",
                     )
                     other_agent = app.agents.require_agent(other["agent_id"])
-                    info = other_agent.history[0]["content"].split("AGENT_INFO:\n", 1)[1].split("\n\nCAPABILITIES:", 1)[0]
-                    self.assertEqual(info, f"Тебя зовут other. Твой идентификатор {other_agent.agent_id}.")
+                    info = other_agent.history[0]["content"].split("<AGENT_INFO>\n", 1)[1].split("\n</AGENT_INFO>", 1)[0]
+                    self.assertEqual(info, f"Твой идентификатор: {other_agent.agent_id}. Твой пресет: worker.")
                     paused = app.capabilities.toggle_global_state("action", "say")
                     self.assertEqual(paused["state"], "paused")
                     self.assertEqual(

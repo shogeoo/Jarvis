@@ -1,4 +1,4 @@
-"""Create runtime structure and synchronize built-in preset personalities."""
+"""Create missing runtime files and migrate paths without replacing PERSON."""
 from __future__ import annotations
 
 from .console import logger
@@ -6,6 +6,7 @@ import json
 import traceback
 from pathlib import Path
 from importlib.resources import files
+from .storage_migration import migrate_capability_directories
 
 _EMPTY = {"modules": [], "actions": [], "handlers": []}
 
@@ -34,38 +35,42 @@ def _state_if_missing(path: Path, default: dict) -> None:
         logger.error(f"Jarvis cannot read {path}; original file preserved:\n{traceback.format_exc()}")
 
 
-def _ensure_preset(root: Path, name: str, *, protected: bool = False) -> None:
+def _ensure_preset(root: Path, name: str) -> None:
     preset = root / "presets" / name
     preset.mkdir(parents=True, exist_ok=True)
     prompt = (files("jarvis").joinpath("assets", name + "_person.txt").read_text(encoding="utf-8")
-              if name in {"main", "module_manager"} else f"Ты — агент preset {name}.\n")
+              if name in {"main", "capability_manager"} else f"Ты — агент preset {name}.\n")
     prompt_path = preset / "person.txt"
-    if name in {"main", "module_manager"}:
-        if not prompt_path.exists() or prompt_path.read_text(encoding="utf-8") != prompt:
-            temporary = preset / "person.txt.tmp"
-            temporary.write_text(prompt, encoding="utf-8")
-            temporary.replace(prompt_path)
-    else:
-        _write_if_missing(prompt_path, prompt)
-    _write_if_missing(preset / "capabilities.json", json.dumps(_EMPTY, indent=2) + "\n")
-    _write_if_missing(preset / "preset.json", json.dumps({"protected": protected}, indent=2) + "\n")
-    _state_if_missing(preset / "disabled_capabilities.json", _EMPTY)
+    _write_if_missing(prompt_path, prompt)
+    default = []
+    # Existing legacy metadata is migrated by PresetStore without overwriting PERSON.
+    metadata = {} if (preset / "capabilities.json").exists() else {"description": {"main": "The central JARVIS personality and human interlocutor.", "capability_manager": "Develops and maintains the capabilities of JARVIS."}.get(name, ""), "model": None, "capabilities": default}
+    _write_if_missing(preset / "preset.json", json.dumps(metadata, indent=2) + "\n")
 
 
 def ensure_runtime_layout(root: Path) -> None:
     root = Path(root).expanduser()
+    migrate_capability_directories(root)
     for relative in (
-        "actions", "handlers", "modules", "presets", "runtime", "runtime/logs",
+        "capabilities/actions", "capabilities/handlers", "capabilities/modules", "presets", "runtime", "runtime/logs",
         "runtime/models", "runtime/segments", "runtime/voices", "memory",
-        "memory/main", "memory/main/files", "memory/main/long_term/sessions",
-        "memory/main/long_term/files",
+        "memory/main", "memory/main/files",
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
-    _write_if_missing(root / "automations.json", "[]\n")
     _write_if_missing(root / "memory" / "main" / "semantic.json", json.dumps({"entries": []}, indent=2) + "\n")
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
-    _ensure_preset(root, "main", protected=True)
-    _ensure_preset(root, "module_manager")
+    old_manager = root / "presets" / "capabilities_manager"
+    new_manager = root / "presets" / "capability_manager"
+    old_memory = root / "memory" / "capabilities_manager"
+    new_memory = root / "memory" / "capability_manager"
+    if (old_manager.exists() and new_manager.exists()) or (old_memory.exists() and new_memory.exists()):
+        raise ValueError("Cannot merge conflicting old and new capability_manager data")
+    if old_manager.exists() and not new_manager.exists():
+        old_manager.rename(new_manager)
+    if old_memory.exists():
+        old_memory.rename(new_memory)
+    _ensure_preset(root, "main")
+    _ensure_preset(root, "capability_manager")
     for preset in (root / "presets").iterdir():
         if preset.is_dir() and not preset.name.startswith("."):
-            _ensure_preset(root, preset.name, protected=preset.name == "main")
+            _ensure_preset(root, preset.name)

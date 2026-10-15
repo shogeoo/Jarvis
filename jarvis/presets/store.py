@@ -1,162 +1,233 @@
-"""Файловые пресеты агентов в ``.jarvis/presets``."""
+"""Live preset bases: person.txt plus model and global capability IDs."""
 
 from __future__ import annotations
 
-import json
 import ctypes
+import json
 import os
-import re
 import shutil
 import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-
-_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-# Точка в корневом действии/handler запрещена: она означает единицу модуля.
-_CAPABILITY = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+from ..capabilities.identifiers import ID_PATTERN as IDENTIFIER
 
 
 @dataclass(frozen=True, slots=True)
 class AgentPreset:
     name: str
     person_prompt: str
-    modules: tuple[str, ...]
-    actions: tuple[str, ...]
-    handlers: tuple[str, ...]
-    protected: bool = False
-    disabled_modules: tuple[str, ...] = ()
-    disabled_actions: tuple[str, ...] = ()
-    disabled_handlers: tuple[str, ...] = ()
+    capabilities: tuple[str, ...]
+    model: str | None = None
+    _categories: tuple[str, ...] = ()
+    description: str = ""
+
+    def _of_kind(self, kind):
+        return tuple(
+            value
+            for value, category in zip(self.capabilities, self._categories)
+            if category == kind
+        )
+
+    @property
+    def modules(self):
+        return self._of_kind("module")
+
+    @property
+    def actions(self):
+        return self._of_kind("action")
+
+    @property
+    def handlers(self):
+        return self._of_kind("handler")
 
 
 class PresetStore:
-    """Читает пресеты с диска при каждом обращении.
-
-    Каждый пресет: person.txt плюс capabilities.json с перечнями
-    modules, actions и handlers.
-    """
-
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, resolve_kind=None):
         self.root = Path(root)
+        self.resolve_kind = resolve_kind
+        self.is_system = lambda identifier: False
         self._lock = threading.RLock()
 
     @staticmethod
-    def validate_name(name: str) -> None:
-        if not isinstance(name, str) or not _NAME.fullmatch(name):
-            raise ValueError(f"Некорректное имя пресета: {name!r}")
+    def validate_name(name):
+        if not isinstance(name, str) or not IDENTIFIER.fullmatch(name):
+            raise ValueError(f"Invalid snake_case preset_id: {name!r}")
 
     @staticmethod
-    def validate_capability(kind: str, capability_id: str) -> None:
-        if kind == "module":
-            pattern = _NAME
-        elif kind in {"action", "handler"}:
-            pattern = _CAPABILITY
-        else:
-            raise ValueError(f"Неизвестный вид capability: {kind!r}")
-        if not isinstance(capability_id, str) or not pattern.fullmatch(capability_id):
-            raise ValueError(f"Некорректный {kind}: {capability_id!r}")
+    def validate_capability(kind, capability_id):
+        if (
+            kind not in {"module", "action", "handler"}
+            or not isinstance(capability_id, str)
+            or not IDENTIFIER.fullmatch(capability_id)
+        ):
+            raise ValueError(f"Invalid capability_id: {capability_id!r}")
 
-    def path(self, name: str) -> Path:
+    def path(self, name):
         self.validate_name(name)
         return self.root / name
 
-    def load(self, name: str) -> AgentPreset:
-        with self._lock:
-            return self._load_locked(name)
+    def _kind(self, capability_id):
+        if self.resolve_kind is not None:
+            return self.resolve_kind(capability_id)
+        if capability_id in {"capability_development", "agents", "semantic_memory"}:
+            return "module"
+        for kind, category in (("module", "modules"), ("handler", "handlers")):
+            if (self.root.parent / "capabilities" / category / capability_id).is_dir():
+                return kind
+        return "action"
 
-    def _load_locked(self, name: str) -> AgentPreset:
-        path = self.path(name)
-        try:
-            person_prompt = (path / "person.txt").read_text(
-                encoding="utf-8"
-            ).strip()
-            capabilities = self._read_capabilities(path, name)
-        except FileNotFoundError as exc:
-            raise ValueError(f"Пресет не найден или неполон: {name}") from exc
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Не удалось прочитать пресет {name}: {exc}") from exc
-        metadata_path = path / "preset.json"
-        try:
+    @classmethod
+    def _normalize(cls, capabilities):
+        if isinstance(capabilities, dict):
+            capabilities = [
+                item
+                for key in ("modules", "actions", "handlers")
+                for item in capabilities.get(key, [])
+            ]
+        if not isinstance(capabilities, (list, tuple)):
+            raise ValueError("capabilities must be an array of global IDs")
+        for value in capabilities:
+            cls.validate_capability("action", value)
+        if len(capabilities) != len(set(capabilities)):
+            raise ValueError("Duplicate capability IDs")
+        return list(capabilities)
+
+    def load(self, name):
+        with self._lock:
+            path = self.path(name)
+            person = (path / "person.txt").read_text(encoding="utf-8").strip()
+            metadata_path = path / "preset.json"
             metadata = (
                 json.loads(metadata_path.read_text(encoding="utf-8"))
                 if metadata_path.exists()
                 else {}
             )
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Не удалось прочитать metadata пресета {name}: {exc}") from exc
-        if not isinstance(metadata, dict) or not isinstance(
-            metadata.get("protected", False), bool
-        ):
-            raise ValueError(f"preset.json пресета {name} имеет неверный формат")
-        return AgentPreset(
-            name,
-            person_prompt,
-            tuple(capabilities["modules"]),
-            tuple(capabilities["actions"]),
-            tuple(capabilities["handlers"]),
-            metadata.get("protected", False),
-            tuple(self._read_disabled(path, "modules", _NAME)),
-            tuple(self._read_disabled(path, "actions", _CAPABILITY)),
-            tuple(self._read_disabled(path, "handlers", _CAPABILITY)),
+            if not isinstance(metadata, dict):
+                raise ValueError(f"Invalid preset.json: {name}")
+            if not isinstance(metadata.get("description", ""), str):
+                raise ValueError("description must be a string")
+            if "capabilities" not in metadata:
+                # Only the migration path reads the obsolete split files.
+                legacy = json.loads(
+                    (path / "capabilities.json").read_text(encoding="utf-8")
+                )
+                disabled_file = path / "disabled_capabilities.json"
+                disabled = (
+                    json.loads(disabled_file.read_text(encoding="utf-8"))
+                    if disabled_file.exists()
+                    else {}
+                )
+                values = [
+                    item
+                    for key in ("modules", "actions", "handlers")
+                    for item in legacy.get(key, [])
+                    if item not in disabled.get(key, [])
+                ]
+                if name == "capability_manager":
+                    values = list(
+                        dict.fromkeys(
+                            [
+                                *values,
+                                "capability_development",
+                                "list_capabilities",
+                                "capability_info",
+                                "toggle_capability",
+                            ]
+                        )
+                    )
+                self._replace(
+                    name,
+                    person,
+                    {
+                        "model": metadata.get("model"),
+                        "capabilities": self._normalize(values),
+                    },
+                )
+                metadata = {"model": metadata.get("model"), "capabilities": values}
+            values = self._normalize(metadata["capabilities"])
+            from ..core.system_actions import system_capabilities
+
+            intrinsic = set(system_capabilities(primary=name == "main", preset=name))
+            if name == "main":
+                intrinsic.update({"toggle_capability", "list_capabilities"})
+            cleaned = [value for value in values if value not in intrinsic]
+            description = metadata.get("description", name)
+            model = metadata.get("model")
+            if model is not None and (not isinstance(model, str) or not model.strip()):
+                raise ValueError("model must be a nonempty ID or null")
+            if not person:
+                raise ValueError("person.txt must not be empty")
+            categories = tuple(self._kind(value) for value in cleaned)
+            if cleaned != values or "description" not in metadata:
+                self._replace(name, person, {**metadata, "description": description, "capabilities": cleaned})
+            values = cleaned
+            return AgentPreset(
+                name,
+                person,
+                tuple(values),
+                model,
+                categories,
+                description,
+            )
+
+    def list(self):
+        return (
+            [
+                self.load(path.name)
+                for path in sorted(self.root.iterdir())
+                if path.is_dir() and not path.name.startswith(".")
+            ]
+            if self.root.exists()
+            else []
         )
 
     @staticmethod
-    def _read_disabled(path: Path, name: str, pattern) -> list[str]:
-        unified = path / "disabled_capabilities.json"
-        if unified.is_file():
-            state = json.loads(unified.read_text(encoding="utf-8"))
-            values = state.get(name, []) if isinstance(state, dict) else []
-        else:
-            legacy = path / f"disabled_{name}.json"
-            values = json.loads(legacy.read_text(encoding="utf-8")) if legacy.is_file() else []
-        if not isinstance(values, list) or not all(isinstance(item, str) and pattern.fullmatch(item) for item in values):
-            raise ValueError(f"Некорректный список disabled {name} в preset {path.name}")
-        return values
+    def _write(path, value):
+        path.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
 
-    def set_disabled(self, name: str, kind: str, capability_id: str, disabled: bool) -> None:
-        self.validate_capability(kind, capability_id)
-        preset = self.load(name)
-        key = {"module": "modules", "action": "actions", "handler": "handlers"}[kind]
-        values = set(getattr(preset, {"modules": "disabled_modules", "actions": "disabled_actions", "handlers": "disabled_handlers"}[key]))
-        if disabled:
-            values.add(capability_id)
-        else:
-            values.discard(capability_id)
-        state = {
-            "modules": sorted(set(preset.disabled_modules)),
-            "actions": sorted(set(preset.disabled_actions)),
-            "handlers": sorted(set(preset.disabled_handlers)),
-        }
-        state[key] = sorted(values)
-        destination = self.path(name) / "disabled_capabilities.json"
-        temporary = destination.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, destination)
-        for legacy_key in ("modules", "actions", "handlers"):
-            (destination.parent / f"disabled_{legacy_key}.json").unlink(missing_ok=True)
-
-    def list(self) -> list[AgentPreset]:
-        if not self.root.exists():
-            return []
-        presets = []
-        for path in sorted(self.root.iterdir()):
-            if path.is_dir() and not path.name.startswith("."):
-                presets.append(self.load(path.name))
-        return presets
-
-    def create(
-        self,
-        name: str,
-        person_prompt: str,
-        capabilities: dict[str, list[str]] | None = None,
-    ) -> AgentPreset:
-        self.validate_name(name)
+    def _replace(self, name, person, metadata):
         path = self.path(name)
-        if not person_prompt.strip():
-            raise ValueError("person.txt не должен быть пустым")
-        normalized = self._normalize(capabilities or {})
+        staging = Path(tempfile.mkdtemp(prefix=".edit-", dir=self.root))
+        replacement = staging / "replacement"
+        try:
+            shutil.copytree(path, replacement)
+            person_file = replacement / "person.txt"
+            if person_file.read_text(encoding="utf-8").strip() != person.strip():
+                person_file.write_text(person.strip() + "\n", encoding="utf-8")
+            self._write(replacement / "preset.json", metadata)
+            for obsolete in (
+                "capabilities.json",
+                "disabled_capabilities.json",
+                "disabled_actions.json",
+                "disabled_handlers.json",
+                "disabled_modules.json",
+            ):
+                (replacement / obsolete).unlink(missing_ok=True)
+            libc = ctypes.CDLL(None, use_errno=True)
+            if (
+                libc.renameat2(
+                    -100, os.fsencode(path), -100, os.fsencode(replacement), 2
+                )
+                != 0
+            ):
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+        finally:
+            shutil.rmtree(staging)
+
+    def create(self, name, person_prompt, capabilities=None, model=None, *, description=""):
+        if not isinstance(description, str):
+            raise ValueError("description must be a string")
+        path = self.path(name)
+        values = self._normalize(capabilities or [])
+        if not isinstance(person_prompt, str) or not person_prompt.strip():
+            raise ValueError("person must not be empty")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ValueError("model must be a nonempty ID or null")
         with self._lock:
             if path.exists():
                 raise ValueError(f"Пресет уже существует: {name}")
@@ -166,138 +237,68 @@ class PresetStore:
                 (staging / "person.txt").write_text(
                     person_prompt.strip() + "\n", encoding="utf-8"
                 )
-                self._write_capabilities(staging, normalized)
-                (staging / "preset.json").write_text(
-                    json.dumps({"protected": False}, indent=2) + "\n",
-                    encoding="utf-8",
+                self._write(
+                    staging / "preset.json", {"description": description, "model": model, "capabilities": values}
                 )
-                os.rename(staging, path)
-            except Exception:
-                shutil.rmtree(staging, ignore_errors=True)
-                raise
+                staging.rename(path)
+            finally:
+                if staging.exists():
+                    shutil.rmtree(staging)
         return self.load(name)
 
-    def delete(self, name: str) -> None:
+    def edit(
+        self, name, person_prompt=None, capabilities=None, model=None, *, changes=None
+    ):
         with self._lock:
-            self._delete_locked(name)
-
-    def _delete_locked(self, name: str) -> None:
-        self.validate_name(name)
-        path = self.path(name)
-        if not path.is_dir():
-            raise ValueError(f"Пресет не найден: {name}")
-        if self.load(name).protected:
-            raise ValueError(f"Защищённый пресет {name} нельзя удалить")
-        for child in path.iterdir():
-            if child.is_file():
-                child.unlink()
-            else:
-                raise ValueError(f"В пресете есть неизвестный каталог: {child}")
-        path.rmdir()
-
-    def edit(self, name: str, person_prompt: str, capabilities: dict[str, list[str]]) -> AgentPreset:
-        if not isinstance(person_prompt, str) or not person_prompt.strip():
-            raise ValueError("person_prompt must not be empty")
-        normalized = self._normalize(capabilities)
-        with self._lock:
-            self.load(name)
-            path = self.path(name)
-            staging = Path(tempfile.mkdtemp(prefix=".edit-", dir=self.root))
-            replacement = staging / "replacement"
-            try:
-                shutil.copytree(path, replacement)
-                (replacement / "person.txt").write_text(person_prompt.strip() + "\n", encoding="utf-8")
-                self._write_capabilities(replacement, normalized)
-                (replacement / "disabled_capabilities.json").write_text(json.dumps({key: [] for key in normalized}, indent=2) + "\n", encoding="utf-8")
-                # Linux atomically exchanges the two complete directories:
-                # a crash never leaves the preset absent or half-written.
-                libc = ctypes.CDLL(None, use_errno=True)
-                if libc.renameat2(-100, os.fsencode(path), -100, os.fsencode(replacement), 2) != 0:
-                    error = ctypes.get_errno()
-                    raise OSError(error, os.strerror(error))
-            finally:
-                shutil.rmtree(staging)
+            current = self.load(name)
+            update = (
+                changes
+                if changes is not None
+                else {
+                    "person": person_prompt,
+                    "capabilities": capabilities,
+                    "model": model,
+                }
+            )
+            if set(update) - {
+                "description",
+                "person",
+                "model",
+                "capabilities",
+                "capabilities_add",
+                "capabilities_remove",
+            }:
+                raise ValueError("Unknown preset changes")
+            person = update.get("person", current.person_prompt)
+            if not isinstance(update.get("description", current.description), str):
+                raise ValueError("description must be a string")
+            selected_model = update.get("model", current.model)
+            values = self._normalize(update.get("capabilities", current.capabilities))
+            for value in self._normalize(update.get("capabilities_add", [])):
+                if value not in values:
+                    values.append(value)
+            removed = self._normalize(update.get("capabilities_remove", []))
+            values = [value for value in values if value not in removed]
+            if any(self.is_system(value) for value in set(current.capabilities) - set(values)):
+                raise ValueError("Cannot disable a system capability through a preset")
+            if not isinstance(person, str) or not person.strip():
+                raise ValueError("person must not be empty")
+            if selected_model is not None and (
+                not isinstance(selected_model, str) or not selected_model.strip()
+            ):
+                raise ValueError("model must be a nonempty ID or null")
+            self._replace(
+                name, person, {"description": update.get("description", current.description), "model": selected_model, "capabilities": values}
+            )
             return self.load(name)
 
-    @staticmethod
-    def _read_capabilities(path: Path, name: str) -> dict[str, list[str]]:
-        try:
-            values = json.loads(
-                (path / "capabilities.json").read_text(encoding="utf-8")
-            )
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                f"Не удалось прочитать capabilities.json пресета {name}: {exc}"
-            ) from exc
-        if not isinstance(values, dict) or set(values) != {
-            "modules",
-            "actions",
-            "handlers",
-        }:
-            raise ValueError(
-                f"capabilities.json пресета {name} должен содержать ровно "
-                "ключи modules, actions и handlers"
-            )
-        for key, pattern in (
-            ("modules", _NAME),
-            ("actions", _CAPABILITY),
-            ("handlers", _CAPABILITY),
-        ):
-            items = values[key]
-            if not isinstance(items, list) or not all(
-                isinstance(item, str) and pattern.fullmatch(item) for item in items
-            ):
-                raise ValueError(
-                    f"capabilities.json пресета {name}: "
-                    f"{key} должен быть массивом строк"
-                )
-            if len(items) != len(set(items)):
-                raise ValueError(f"Пресет {name} содержит повторяющиеся {key}")
-        return values
-
-    def add_capability(
-        self, name: str, kind: str, capability_id: str
-    ) -> AgentPreset:
+    def add_capability(self, name, kind, capability_id):
         self.validate_capability(kind, capability_id)
-        preset = self.load(name)
-        key = {"module": "modules", "action": "actions", "handler": "handlers"}[kind]
-        current = getattr(preset, key)
-        if capability_id in current:
-            return preset
-        normalized = {
-            "modules": list(preset.modules),
-            "actions": list(preset.actions),
-            "handlers": list(preset.handlers),
-        }
-        normalized[key].append(capability_id)
-        self._write_capabilities(self.path(name), self._normalize(normalized))
-        return self.load(name)
+        return self.edit(name, changes={"capabilities_add": [capability_id]})
 
-    @classmethod
-    def _normalize(
-        cls, capabilities: dict[str, list[str]]
-    ) -> dict[str, list[str]]:
-        normalized = {
-            "modules": list(capabilities.get("modules", [])),
-            "actions": list(capabilities.get("actions", [])),
-            "handlers": list(capabilities.get("handlers", [])),
-        }
-        for kind, values in (
-            ("module", normalized["modules"]),
-            ("action", normalized["actions"]),
-            ("handler", normalized["handlers"]),
-        ):
-            for item in values:
-                cls.validate_capability(kind, item)
-            if len(values) != len(set(values)):
-                raise ValueError("Список capabilities содержит повторы")
-        return normalized
-
-    @staticmethod
-    def _write_capabilities(
-        path: Path, capabilities: dict[str, list[str]]
-    ) -> None:
-        (path / "capabilities.json").write_text(
-            json.dumps(capabilities, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+    def delete(self, name):
+        with self._lock:
+            path = self.path(name)
+            if not path.is_dir():
+                raise ValueError(f"Пресет не найден: {name}")
+            shutil.rmtree(path)

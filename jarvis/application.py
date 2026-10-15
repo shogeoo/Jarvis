@@ -140,7 +140,7 @@ class JarvisApplication:
                 self.agents.model_capabilities = model_info.result()
             if not speech_service.can_speak:
                 self.actions.unregister_owner("core:speech")
-        self.main_agent = self.agents.restore(name="main", preset="main")
+        self.main_agent = self.agents.restore(preset="main")
         if self.main_agent is not None:
             self.debug.initialized()
             self.bus.publish(
@@ -158,14 +158,18 @@ class JarvisApplication:
         return self
 
     def _emit_speech(self, data: dict) -> None:
-        self.bus.publish(
-            Event(
-                event_id="speech_detected",
-                data=data,
-                source="core:speech",
-                handler_id="core:speech",
-            )
+        completions = data.get("_interrupted_completions", [])
+        event = Event(
+            event_id="speech_detected",
+            data={"text": data["text"]},
+            source="core:speech",
+            handler_id="core:speech",
+            target=self.agents.primary_agent_id,
         )
+        if completions:
+            self.agents.deliver_speech_with_interruptions(event, completions)
+        else:
+            self.bus.publish(event)
 
     def stop(self) -> None:
         self.agents.begin_shutdown()

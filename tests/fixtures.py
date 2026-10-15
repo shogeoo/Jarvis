@@ -140,8 +140,8 @@ def write_handler(
 
 def write_jarvis_root(root: Path, python: str | None = None) -> Path:
     root = Path(root)
-    actions = root / "actions"
-    handlers = root / "handlers"
+    actions = root / "capabilities" / "actions"
+    handlers = root / "capabilities" / "handlers"
     write_action(actions, "say", SAY_ACTION, python)
     write_handler(handlers, "tick", TICK_HANDLER, python)
     main = root / "presets" / "main"
@@ -163,7 +163,7 @@ def write_jarvis_root(root: Path, python: str | None = None) -> Path:
 
 
 def write_echo_module(root: Path, python: str | None = None) -> Path:
-    module = Path(root) / "modules" / "echo"
+    module = Path(root) / "capabilities" / "modules" / "echo"
     actions = module / "actions"
     handlers = module / "handlers"
     actions.mkdir(parents=True, exist_ok=True)
