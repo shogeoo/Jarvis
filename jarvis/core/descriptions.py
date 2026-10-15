@@ -18,6 +18,10 @@ def read_descriptions(path: Path | None = None) -> dict:
     def validate_tree(node):
         if isinstance(node, dict):
             for key, child in node.items():
+                if key == "properties" and isinstance(child, dict):
+                    for field in child.values():
+                        validate_tree(field)
+                    continue
                 if key == "description":
                     if not isinstance(child, str):
                         raise ValueError("description must be a string")
@@ -54,7 +58,11 @@ def _overlay(original, descriptions):
     result = deepcopy(original)
     if isinstance(result, dict) and isinstance(descriptions, dict):
         for key, value in descriptions.items():
-            if key == "description":
+            if key == "properties" and isinstance(value, dict) and isinstance(result.get(key), dict):
+                for name, field in value.items():
+                    if name in result[key]:
+                        result[key][name] = _overlay(result[key][name], field)
+            elif key == "description":
                 result[key] = value
             elif key in result:
                 result[key] = _overlay(result[key], value)
@@ -66,6 +74,10 @@ def _overlay(original, descriptions):
 
 def apply_descriptions(actions, events, *, path: Path | None = None):
     catalog = read_descriptions(path)
+    action_descriptions = dict(catalog["actions"])
+    for module in catalog["modules"].values():
+        for entry in module.get("actions", []):
+            action_descriptions.update(entry)
 
     def describe(spec, document, fields):
         changes = {"description": document.get("description", spec.description)}
@@ -74,8 +86,8 @@ def apply_descriptions(actions, events, *, path: Path | None = None):
         return replace(spec, **changes)
 
     return (
-        {identifier: describe(spec, catalog["actions"][identifier], ("data_schema", "result_schema"))
-         if spec.owner.startswith("core") and identifier in catalog["actions"] else spec
+        {identifier: describe(spec, action_descriptions[identifier], ("data_schema", "result_schema"))
+         if spec.owner.startswith("core") and identifier in action_descriptions else spec
          for identifier, spec in actions.items()},
         {identifier: describe(spec, catalog["handlers"][identifier], ("data_schema",))
          if identifier in catalog["handlers"] else spec

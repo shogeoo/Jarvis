@@ -22,13 +22,12 @@ from jarvis.core.protocol import (
     validate_data_schema,
     validate_result,
 )
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 
 
 def catalog(agent):
     agent._contract()
-    return json.loads(agent.history[0]["content"].split("CAPABILITIES:\n", 1)[1])
+    return json.loads(agent.history[0]["content"].split("<CAPABILITIES>\n", 1)[1].split("\n</CAPABILITIES>", 1)[0])
 
 
 class CatalogRuntimeTests(unittest.TestCase):
@@ -39,7 +38,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.addCleanup(self.fixture.tearDown)
         self.root = self.fixture.root
         self.manager = self.fixture.manager(runtime_tests._Client([]))
-        self.agent = self.manager.spawn_root(name="main", preset="main")
+        self.agent = self.manager.spawn_root(preset="main")
 
     def ids(self, kind):
         field = {"actions": "action_id", "events": "event_id", "modules": "module_id"}[
@@ -52,7 +51,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         self.manager.enable_module("main", "echo")
         value = catalog(self.agent)
         self.assertEqual(list(value), ["actions", "events", "modules"])
-        module = value["modules"][0]
+        module = next(item for item in value["modules"] if item["module_id"] == "echo")
         self.assertEqual(set(module), {"module_id", "description", "actions", "events"})
         self.assertEqual(module["actions"][0]["action_id"], "echo.repeat")
         self.assertEqual(module["events"][0]["event_id"], "echo.echoed")
@@ -67,6 +66,9 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_disabled_and_paused_capabilities_are_not_described(self):
         fixtures.write_echo_module(self.root)
         self.manager.enable_module("main", "echo")
+        self.manager.edit_agent("main", {"capabilities_add": ["say", "tick"]})
+        self.manager.presets.edit("main", changes={"capabilities_remove": ["say", "tick"]})
+        self.manager.refresh_presets("main")
         self.manager.disable_handler("main", "tick")
         self.assertNotIn("tick.event", self.ids("events"))
         self.manager.disable_action("main", "say")
@@ -77,7 +79,7 @@ class CatalogRuntimeTests(unittest.TestCase):
 
     def test_new_actions_append_in_enable_order_even_if_preloaded(self):
         for name in ("aaa", "zzz"):
-            fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
+            fixtures.write_action(self.root / "capabilities" / "actions", name, fixtures.SAY_ACTION)
             self.manager.capabilities.load_action(name)
         before = self.ids("actions")
         self.manager.enable_action("main", "zzz")
@@ -90,7 +92,7 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_new_events_append_in_enable_order_even_if_preloaded(self):
         for name in ("aaa", "zzz"):
             fixtures.write_handler(
-                self.root / "handlers",
+                self.root / "capabilities" / "handlers",
                 name,
                 fixtures.TICK_HANDLER.replace("tick.event", name),
             )
@@ -106,12 +108,12 @@ class CatalogRuntimeTests(unittest.TestCase):
     def test_module_members_follow_current_module_definition(self):
         fixtures.write_echo_module(self.root)
         self.manager.enable_module("main", "echo")
-        before = catalog(self.agent)["modules"][0]["actions"]
+        before = next(item for item in catalog(self.agent)["modules"] if item["module_id"] == "echo")["actions"]
         self.manager.toggle_capability("module", "echo")
         fixtures.write_action(
-            self.root / "modules/echo/actions", "aaa", fixtures.ECHO_ACTION
+            self.root / "capabilities/modules/echo/actions", "aaa", fixtures.ECHO_ACTION
         )
-        path = self.root / "modules/echo/module.py"
+        path = self.root / "capabilities/modules/echo/module.py"
         source = (
             path.read_text()
             .replace(
@@ -122,7 +124,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         )
         path.write_text(source)
         self.manager.toggle_capability("module", "echo")
-        actual = catalog(self.agent)["modules"][0]["actions"]
+        actual = next(item for item in catalog(self.agent)["modules"] if item["module_id"] == "echo")["actions"]
         self.assertEqual(
             [item["action_id"] for item in actual], ["echo.aaa", "echo.repeat"]
         )
@@ -130,7 +132,7 @@ class CatalogRuntimeTests(unittest.TestCase):
 
     def test_global_pause_and_resume_preserve_assignment_order(self):
         for name in ("aaa", "zzz"):
-            fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
+            fixtures.write_action(self.root / "capabilities" / "actions", name, fixtures.SAY_ACTION)
             self.manager.enable_action("main", name)
         before = self.ids("actions")
         self.manager.toggle_capability("action", "aaa")
@@ -141,7 +143,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         memory = MemoryStore(self.root / "memory")
         self.manager.memory = memory
         for name in ("zzz", "aaa"):
-            fixtures.write_action(self.root / "actions", name, fixtures.SAY_ACTION)
+            fixtures.write_action(self.root / "capabilities" / "actions", name, fixtures.SAY_ACTION)
             self.manager.enable_action("main", name)
         before = catalog(self.agent)
         self.manager.persist_agent(self.agent)
@@ -149,19 +151,19 @@ class CatalogRuntimeTests(unittest.TestCase):
         instance = json.loads((self.root / "memory/main/instance.json").read_text())
         self.assertNotIn("catalog_order", instance)
         self.assertEqual(
-            [item for item in instance["actions"] if item in {"zzz", "aaa"}],
+            [item for item in instance["capabilities_add"] if item in {"zzz", "aaa"}],
             ["zzz", "aaa"],
         )
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
         )
-        restored = restored_manager.restore(name="main", preset="main")
+        restored = restored_manager.restore(preset="main")
         self.assertEqual(catalog(restored), before)
 
     def test_restore_uses_current_capability_description(self):
         memory = MemoryStore(self.root / "memory")
         self.manager.memory = memory
-        fixtures.write_action(self.root / "actions", "dynamic", fixtures.SAY_ACTION)
+        fixtures.write_action(self.root / "capabilities" / "actions", "dynamic", fixtures.SAY_ACTION)
         self.manager.enable_action("main", "dynamic")
         before = next(
             item
@@ -170,7 +172,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         )
         self.manager.persist_agent(self.agent)
         self.manager.shutdown()
-        path = self.root / "actions/dynamic/action.py"
+        path = self.root / "capabilities/actions/dynamic/action.py"
         source = path.read_text()
         path.write_text(
             source.replace(before["description"], "Current dynamic description.")
@@ -178,7 +180,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         restored_manager = self.fixture.manager(
             runtime_tests._Client([]), memory=memory
         )
-        restored = restored_manager.restore(name="main", preset="main")
+        restored = restored_manager.restore(preset="main")
         after = next(
             item
             for item in catalog(restored)["actions"]
@@ -186,54 +188,19 @@ class CatalogRuntimeTests(unittest.TestCase):
         )
         self.assertEqual(after["description"], "Current dynamic description.")
 
-    def test_only_assigned_system_development_tool_is_visible_to_main(self):
-        self.assertNotIn("execute_command", self.ids("actions"))
-        self.manager.enable_action("main", "execute_command")
-        self.assertEqual(self.ids("actions")[-1], "execute_command")
-
-    def test_automation_description_does_not_copy_unassigned_capabilities(self):
-        fixtures.write_action(
-            self.root / "actions", "unassigned_secret", fixtures.SAY_ACTION
-        )
-        self.assertNotIn("unassigned_secret", self.agent._contract()[0])
-        self.assertNotIn("unassigned_secret", self.agent.history[0]["content"])
-        self.assertLess(len(json.dumps(self.manager.automation_data_schema())), 6000)
+    def test_development_module_is_visible_only_when_assigned_and_not_flattened(self):
+        self.assertNotIn("capability_development", self.ids("modules"))
+        self.manager.enable_module("main", "capability_development")
+        self.assertEqual(self.ids("modules")[-1], "capability_development")
+        self.assertNotIn("capability_development.execute_command", self.ids("actions"))
+        self.assertIn("capability_development.execute_command", self.agent._contract()[0])
 
     def test_startup_event_is_described_only_to_main(self):
-        info = self.manager.spawn(parent_id="main", name="worker", preset="worker")
+        info = self.manager.spawn(parent_id="main", preset_id="worker")
         worker = self.manager.require_agent(info["agent_id"])
         self.assertIn("system_started", self.ids("events"))
         self.assertNotIn(
             "system_started", [event["event_id"] for event in catalog(worker)["events"]]
-        )
-
-    def test_automation_tools_use_the_same_object_parameter_contract(self):
-        specs, _ = self.agent._contract()
-        for name in ("create_automation", "edit_automation"):
-            schema = specs[name].data_schema
-            self.assertEqual(schema["type"], "object")
-            self.assertIn("properties", schema)
-            for field, parameter in schema["properties"].items():
-                self.assertIn("type", parameter, field)
-                self.assertIn("default", parameter, field)
-        spec = specs["create_automation"]
-        data = arguments_with_defaults(
-            {
-                "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-            },
-            spec.data_schema,
-        )
-        self.assertIsNone(data["call_result"])
-        context = SimpleNamespace(
-            agent_id="main",
-            action_id="create_automation",
-            agent_manager=SimpleNamespace(_manager=self.manager),
-        )
-        result = spec.run(data, context)
-        self.assertEqual(result["status"], "created")
-        self.assertEqual(
-            self.manager.automations.list()[0]["event"]["event_id"], "tick.event"
         )
 
     def test_optional_default_reaches_normal_dispatch_and_partial_result_is_accepted(
@@ -296,10 +263,9 @@ class DeclarationTests(unittest.TestCase):
     def test_system_prompt_has_labeled_blocks_in_required_order(self):
         prompt = agent_system_prompt(
             "  Personality.\n", "Environment.\n", {}, {}, {"modules": []},
-            agent_id="agent-001", agent_name="Example",
-        )
-        expected = "ENVIRONMENT:\nEnvironment.\n\nPERSON:\nPersonality.\n\nMODEL INFO:\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n\nAGENT_INFO:\nТебя зовут Example. Твой идентификатор agent-001.\n\nCAPABILITIES:\n"
-        expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2)
+            agent_id="agent-001", )
+        expected = "<ENVIRONMENT>\nEnvironment.\n</ENVIRONMENT>\n\n<PERSON>\nPersonality.\n</PERSON>\n\n<MODEL_INFO>\nТекущая модель: unknown\nМодель поддерживает эти модальности: text, image, audio, video, file\n</MODEL_INFO>\n\n<AGENT_INFO>\nТвой идентификатор: agent-001. Твой пресет: .\n</AGENT_INFO>\n\n<CAPABILITIES>\n"
+        expected += json.dumps({"actions": [], "events": [], "modules": []}, indent=2) + "\n</CAPABILITIES>"
         self.assertEqual(prompt, expected)
 
     def description(self):
@@ -441,10 +407,10 @@ class DeclarationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fixtures.write_echo_module(root)
-            path = root / "modules/echo/handlers/monitor/handler.py"
+            path = root / "capabilities/modules/echo/handlers/monitor/handler.py"
             path.write_text(path.read_text().replace("echo.echoed", "unqualified"))
             with self.assertRaisesRegex(ValueError, "namespace"):
-                _load_module(root, Path("modules/echo"), "echo")
+                _load_module(root, Path("capabilities/modules/echo"), "echo")
 
     def test_json_action_identifier_is_checked_against_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -454,12 +420,12 @@ class DeclarationTests(unittest.TestCase):
                 + repr(self.description())
                 + ", run=lambda data, context: {})\n"
             )
-            fixtures.write_action(root / "actions", "echo", code)
+            fixtures.write_action(root / "capabilities" / "actions", "echo", code)
             self.assertIn(
-                "echo", _load_leaf(root, Path("actions/echo"), "action", "echo").actions
+                "echo", _load_leaf(root, Path("capabilities/actions/echo"), "action", "echo").actions
             )
             with self.assertRaisesRegex(ValueError, "Declared ID"):
-                _load_leaf(root, Path("actions/echo"), "action", "different")
+                _load_leaf(root, Path("capabilities/actions/echo"), "action", "different")
 
     def test_environment_is_common_and_contains_no_development_sdk(self):
         prompt = read_environment()
@@ -467,21 +433,8 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
         self.assertIn("event_id имеет значение call_result", prompt)
-        for concrete in ("main", "capabilities_manager", "system_started", "telegram", "speech", "spawn_agent"):
+        for concrete in ("main", "capability_manager", "system_started", "telegram", "speech", "agents.spawn"):
             self.assertNotIn(concrete, prompt)
-
-    def test_legacy_automation_is_read_without_rewriting_saved_file(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "automations.json"
-            old = '[{"event":{"handler_id":"watch","data":{}},"actions":[{"action_id":"echo","data":{"text":"ok"}}]}]'
-            path.write_text(old)
-            store = AutomationStore(path, resolve_handler=lambda identifier: "notice")
-            self.assertEqual(
-                store.list()[0]["event"], {"event_id": "notice", "data": {}}
-            )
-            self.assertEqual(len(store.matching({"event_id": "notice", "data": {}})), 1)
-            self.assertEqual(path.read_text(), old)
-
 
 if __name__ == "__main__":
     unittest.main()

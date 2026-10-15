@@ -17,26 +17,26 @@ class MemoryStoreTests(unittest.TestCase):
     def record(self, **overrides):
         record = {
             "agent_id": "main",
-            "name": "Jarvis",
-            "preset": "main",
+            "additional_instructions": "Jarvis",
+            "preset_id": "main",
             "parent_id": None,
-            "modules": ["alpha", "beta"],
-            "actions": ["say", "echo"],
-            "handlers": ["tick", "monitor"],
+            "capabilities_add": ["alpha", "beta", "say", "echo", "tick", "monitor"],
             "messages": [
                 {"role": "user", "content": '{"event_id":"x","data":{}}'},
                 {"role": "assistant", "content": '{"actions":[]}'},
             ],
         }
+        if "name" in overrides:
+            overrides["additional_instructions"] = overrides.pop("name")
+        if any(key in overrides for key in ("modules", "actions", "handlers")):
+            overrides["capabilities_add"] = [value for key in ("modules", "actions", "handlers") for value in overrides.pop(key, []) if "." not in value]
         record.update(overrides)
         return record
 
     def test_round_trip_keeps_metadata_and_messages(self):
         self.store.save(self.record())
         loaded = self.store.load("main", "main")
-        self.assertEqual(loaded["modules"], ["alpha", "beta"])
-        self.assertEqual(loaded["actions"], ["say", "echo"])
-        self.assertEqual(loaded["handlers"], ["tick", "monitor"])
+        self.assertEqual(loaded["capabilities_add"], ["alpha", "beta", "say", "echo", "tick", "monitor"])
         self.assertEqual(loaded["messages"], self.record()["messages"])
         directory = self.root / "main"
         self.assertTrue((directory / "instance.json").is_file())
@@ -55,7 +55,7 @@ class MemoryStoreTests(unittest.TestCase):
         self.store.save(self.record(agent_id="agent-001", parent_id="main"))
         self.store.delete("main", "main")
         self.assertFalse((self.root / "main" / "instance.json").exists())
-        self.assertTrue((self.root / "main" / "agent-001" / "instance.json").exists())
+        self.assertFalse((self.root / "main").exists())
 
     def test_system_message_is_not_persisted(self):
         self.store.save(
@@ -81,11 +81,9 @@ class MemoryStoreTests(unittest.TestCase):
             )
         )
         instance = self.store._read_json(self.root / "main/instance.json")
-        self.assertEqual(instance["modules"], ["telegram"])
-        self.assertEqual(instance["actions"], ["say"])
-        self.assertEqual(instance["handlers"], ["tick"])
+        self.assertEqual(instance["capabilities_add"], ["telegram", "say", "tick"])
         self.assertNotIn("catalog_order", instance)
-        self.assertFalse(any("telegram." in str(instance[key]) for key in ("actions", "handlers")))
+        self.assertFalse(any("telegram." in str(instance[key]) for key in ("capabilities_add",)))
 
     def test_modalities_use_file_id_references_without_names_or_base64(self):
         record = self.record(
@@ -206,7 +204,7 @@ class MemoryStoreTests(unittest.TestCase):
                     )
                 )
         self.assertEqual((self.root / "main" / "instance.json").read_bytes(), previous)
-        self.assertEqual(self.store.load("main", "main")["name"], "old")
+        self.assertEqual(self.store.load("main", "main")["additional_instructions"], "old")
         self.assertEqual(
             self.store.load("main", "main")["messages"][0]["content"], "old"
         )
@@ -233,7 +231,7 @@ class MemoryStoreTests(unittest.TestCase):
                     )
                 )
         loaded = self.store.load("main", "main")
-        self.assertEqual(loaded["name"], "old")
+        self.assertEqual(loaded["additional_instructions"], "old")
         self.assertEqual(loaded["messages"][0]["content"], "old")
         self.assertEqual((directory / "instance.json").read_bytes(), original_instance)
         self.assertEqual((directory / "context.json").read_bytes(), original_context)
@@ -250,13 +248,13 @@ class MemoryStoreTests(unittest.TestCase):
             {"instance": old_instance, "context": old_context},
         )
         self.store._write_json(
-            directory / "instance.json", {**old_instance, "name": "new"}
+            directory / "instance.json", {**old_instance, "additional_instructions": "new"}
         )
         self.store._write_json(
             directory / "context.json", [{"role": "user", "content": "new"}]
         )
         restored = MemoryStore(self.root).load("main", "main")
-        self.assertEqual(restored["name"], "old")
+        self.assertEqual(restored["additional_instructions"], "old")
         self.assertEqual(restored["messages"][0]["content"], "old")
         self.assertFalse((directory / ".save-journal.json").exists())
 
@@ -334,9 +332,9 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(
             json.loads((self.root / "file_index.json").read_text()), {"next_file_id": 3}
         )
-        other.save({**record("agent-002", "Q0ND"), "preset": "capabilities_manager"})
+        other.save({**record("agent-002", "Q0ND"), "preset_id": "capability_manager"})
         third_ref = self.store._read_json(
-            self.root / "capabilities_manager/agent-002/context.json"
+            self.root / "capability_manager/agent-002/context.json"
         )[0]["content"][0]
         self.assertEqual(
             third_ref, {"type": "image_url", "image_url": {"file_id": "file_000003"}}
@@ -385,26 +383,12 @@ class MemoryStoreTests(unittest.TestCase):
             restored[3]["file"]["file_data"], "data:application/pdf;base64,RERE"
         )
 
-    def test_instance_contains_one_disabled_capabilities_list(self):
-        self.store.save(
-            self.record(
-                disabled_modules=["telegram"],
-                disabled_actions=["say"],
-                disabled_handlers=["tick"],
-            )
-        )
+    def test_instance_contains_only_individual_additions(self):
+        self.store.save(self.record(capabilities_add=["telegram"], additional_instructions="Use tests.", model="provider/model"))
         instance = self.store._read_json(self.root / "main/instance.json")
-        self.assertEqual(instance["disabled_capabilities"],
-                         {"modules": ["telegram"], "actions": ["say"], "handlers": ["tick"]})
-        self.assertFalse(
-            any(
-                key.startswith("disabled_") and key != "disabled_capabilities"
-                for key in instance
-            )
-        )
-        self.assertEqual(
-            self.store.load("main", "main")["disabled_modules"], ["telegram"]
-        )
+        self.assertEqual(set(instance), {"agent_id", "preset_id", "parent_id", "description", "model", "additional_instructions", "capabilities_add"})
+        self.assertEqual(instance["capabilities_add"], ["telegram"])
+        self.assertEqual(self.store.load("main", "main")["model"], "provider/model")
 
     def test_persisted_json_is_pretty_printed(self):
         self.store.save(self.record())
@@ -424,7 +408,7 @@ class MemoryStoreTests(unittest.TestCase):
             sorted(path.name for path in directory.iterdir()),
             ["context.json", "files", "instance.json"],
         )
-        self.assertEqual(self.store.load("main", "main")["name"], "version-3")
+        self.assertEqual(self.store.load("main", "main")["additional_instructions"], "version-3")
 
 
 if __name__ == "__main__":

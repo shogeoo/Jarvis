@@ -14,7 +14,6 @@ from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import ActionRequest, CallResult, Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.presets import PresetStore
@@ -99,19 +98,12 @@ class RuntimeTests(unittest.TestCase):
         self.actions.require(action_id)
 
     def enable_for_main(self, *action_ids):
-        path = self.root / "presets" / "main" / "capabilities.json"
-        capabilities = json.loads(path.read_text(encoding="utf-8"))
-        capabilities["actions"] = sorted(
-            set(capabilities["actions"]) | set(action_ids)
-        )
-        path.write_text(
-            json.dumps(capabilities, indent=2) + "\n", encoding="utf-8"
-        )
+        self.presets.edit("main", changes={"capabilities_add": list(dict.fromkeys(value.split(".", 1)[0] if "." in value else value for value in action_ids))})
 
     def load_installed_action(self, action_id):
         if self.actions.get(action_id) is not None:
             return SimpleNamespace(run=self.actions.require(action_id).run)
-        path = self.root / "actions" / action_id / "action.py"
+        path = self.root / "capabilities" / "actions" / action_id / "action.py"
         spec = importlib.util.spec_from_file_location(
             f"installed_{action_id}_action", path
         )
@@ -169,7 +161,7 @@ class RuntimeTests(unittest.TestCase):
 
     def write_action(self, action_id, data_schema, result_schema, run_body):
         fixtures.write_action(
-            self.root / "actions",
+            self.root / "capabilities" / "actions",
             action_id,
             _action_file(data_schema, result_schema, run_body),
         )
@@ -192,7 +184,7 @@ class RuntimeTests(unittest.TestCase):
             ]
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "start")
         self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
         self.assertEqual(
@@ -204,80 +196,10 @@ class RuntimeTests(unittest.TestCase):
             ["say-1", "say-2"],
         )
 
-    def test_automation_dispatches_as_an_assistant_action_into_agent_context(self):
-        client = _Client([_no_action("after-automation")])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        AutomationStore(self.root / "automations.json").append(
-            {
-                "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                "actions": [{"action_id": "say", "data": {"text": "automated"}}],
-            }
-        )
-
-        self.publish(agent, "go")
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 1))
-        assistant_actions = [
-            json.loads(message["content"])
-            for message in agent.history
-            if message["role"] == "assistant"
-            and "auto-" in message["content"]
-        ]
-        self.assertEqual(
-            assistant_actions,
-            [{"actions": [{"action_id": "say", "call_id": "auto-00001", "data": {"text": "automated"}}]}],
-        )
-        self.assertEqual(self.call_results(agent)[0]["call_id"], "auto-00001")
-        self.publish(agent, "go")
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
-        self.assertEqual(
-            [item["call_id"] for item in self.call_results(agent)],
-            ["auto-00001", "auto-00002"],
-        )
-        self.assertEqual(client.chat.completions.calls, [])
-
-    def test_automated_result_does_not_request_model_after_restore(self):
-        memory = MemoryStore(self.root / "memory")
-        client = _Client([_no_action("unexpected")])
-        manager = self.manager(client, memory=memory)
-        agent = manager.spawn_root(name="main", preset="main")
-        agent.history.append({"role": "assistant", "content": '{"actions":[{"action_id":"say","call_id":"auto-00042","data":{"text":"done"}}]}'})
-        agent._used_call_ids.add("auto-00042")
-        manager.persist_agent(agent)
-        record = memory.load("main", "main")
-        self.assertNotIn("automated_call_ids", record)
-        self.assertNotIn("automated_call_ids", json.loads((memory.root / "main/instance.json").read_text()))
-        self.assertIn("auto-00042", str(record["messages"]))
-        manager.shutdown()
-        restored_manager = self.manager(client, memory=memory)
-        restored = restored_manager.restore(name="main", preset="main")
-        restored.enqueue_result(CallResult(call_id="auto-00042", agent_id="main", data={"spoken": True, "text": "done"}))
-        self.assertTrue(_wait(lambda: len(self.call_results(restored)) == 1))
-        self.assertTrue(_wait(lambda: restored.state == "waiting"))
-        self.assertEqual(client.chat.completions.calls, [])
-
-    def test_automation_call_numbers_continue_after_restore(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            memory = MemoryStore(Path(temporary))
-            first = self.manager(_Client([]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
-            AutomationStore(self.root / "automations.json").append({
-                "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                "actions": [{"action_id": "say", "data": {"text": "automated"}}],
-            })
-            self.publish(agent, "go")
-            self.assertTrue(_wait(lambda: any(item["call_id"] == "auto-00001" for item in self.call_results(agent))))
-            first.shutdown()
-            second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
-            self.publish(restored, "go")
-            self.assertTrue(_wait(lambda: any(item["call_id"] == "auto-00002" for item in self.call_results(restored))))
-            second.shutdown()
-
-    def test_automatic_result_and_normal_event_batch_requests_model_once(self):
+    def test_result_and_normal_event_batch_requests_model_once(self):
         client = _Client([_no_action("batch-done")])
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         agent._used_call_ids.add("auto-00001")
         agent._turn([
             CallResult(call_id="auto-00001", agent_id="main", data={"spoken": True}),
@@ -286,143 +208,72 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(len(client.chat.completions.calls), 1)
         self.assertIn("auto-00001", str(client.chat.completions.calls[0]["messages"]))
 
-    def test_normal_call_with_auto_prefix_is_not_an_automation(self):
-        client = _Client([_no_action("normal-done")])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        agent.enqueue_result(CallResult(call_id="auto-00099", agent_id="main", data={"spoken": True}))
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) == 1))
-
-    def test_call_result_automation_ignores_real_call_id_and_uses_normal_dispatch(self):
-        client = _Client([_no_action("after-call-result-automation")])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        AutomationStore(self.root / "automations.json").append(
-            {
-                "call_result": {
-                    "event_id": "call_result",
-                    "call_id": "example-id-not-used-at-runtime",
-                    "data": {"spoken": True, "text": "origin"},
-                },
-                "actions": [{"action_id": "say", "data": {"text": "follow-up"}}],
-            }
-        )
-
-        manager.capabilities.dispatch(
-            action=ActionRequest(
-                "say", {"text": "origin"}, "a-real-unrelated-call-id"
-            ),
-            spec=self.actions.require("say"),
-            agent=agent,
-        )
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
-        self.assertEqual(
-            [result["call_id"] for result in self.call_results(agent)],
-            ["a-real-unrelated-call-id", "auto-00001"],
-        )
-        follow_up = next(
-            json.loads(message["content"])
-            for message in agent.history
-            if message["role"] == "assistant" and "auto-00001" in message["content"]
-        )
-        self.assertEqual(follow_up["actions"][0]["data"], {"text": "follow-up"})
-        self.assertEqual(client.chat.completions.calls, [])
-
     def test_management_actions_return_their_declared_result_shapes(self):
         client = _Client([_no_action("after-management")])
-        self.install_project_action("create_automation")
-        self.install_project_action("create_preset")
-        self.enable_for_main("create_automation", "create_preset")
+        self.install_project_action("agents.create_preset")
+        self.enable_for_main("agents.create_preset")
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         contract = agent._contract()[0]
         manager.capabilities.dispatch(
             action=ActionRequest(
-                "create_automation",
+                "agents.create_preset",
                 {
-                    "event": {"event_id": "tick.event", "data": {"text": "saved"}},
-                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-                },
-                "create-automation-call",
-            ),
-            spec=contract["create_automation"],
-            agent=agent,
-        )
-        manager.capabilities.dispatch(
-            action=ActionRequest(
-                "create_preset",
-                {
-                    "preset_id": "empty-preset",
-                    "person_prompt": "An empty preset.",
-                    "actions": ["missing-action"],
-                    "handlers": [],
-                    "modules": [],
+                    "preset_id": "empty_preset",
+                    "person": "An empty preset.",
+                    "description": "Test specialization.",
+                    "capabilities": ["missing_action"],
                 },
                 "create-preset-call",
             ),
-            spec=contract["create_preset"],
+            spec=contract["agents.create_preset"],
             agent=agent,
         )
         manager.capabilities.dispatch(
             action=ActionRequest(
-                "create_preset",
+                "agents.create_preset",
                 {
-                    "preset_id": "empty-preset",
-                    "person_prompt": "An empty preset.",
-                    "actions": [],
-                    "handlers": [],
-                    "modules": [],
+                    "preset_id": "empty_preset",
+                    "person": "An empty preset.",
+                    "description": "Test specialization.",
+                    "capabilities": [],
                 },
                 "create-preset-success-call",
             ),
-            spec=contract["create_preset"],
+            spec=contract["agents.create_preset"],
             agent=agent,
         )
-        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 3))
+        self.assertTrue(_wait(lambda: len(self.call_results(agent)) == 2))
         results = {item["call_id"]: item["data"] for item in self.call_results(agent)}
-        self.assertEqual(results["create-automation-call"]["status"], "created")
-        self.assertIsNone(results["create-automation-call"]["error"])
         self.assertEqual(results["create-preset-call"]["status"], "not_created")
-        self.assertIn("missing-action", results["create-preset-call"]["error"])
+        self.assertIn("missing_action", results["create-preset-call"]["error"])
         self.assertEqual(
             results["create-preset-success-call"],
-            {"status": "created", "preset_id": "empty-preset", "error": None},
+            {"status": "created", "preset_id": "empty_preset", "error": None},
         )
-        self.assertTrue((self.root / "presets" / "empty-preset").is_dir())
-        stored = AutomationStore(self.root / "automations.json").list()
-        stored = [{key: value for key, value in rule.items() if key != "automation_id"} for rule in stored]
-        self.assertEqual(
-            stored,
-            [
-                {
-                    "event": {"event_id": "tick.event", "data": {"text": "saved"}},
-                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-                }
-            ],
-        )
+        self.assertTrue((self.root / "presets" / "empty_preset").is_dir())
 
     def test_primary_only_management_actions_are_not_in_subagent_prompt(self):
         client = _Client([_no_action("main-ready"), _no_action("worker-ready")])
-        self.install_project_action("create_automation")
-        self.install_project_action("create_preset")
-        self.enable_for_main("create_automation", "create_preset")
+        self.install_project_action("agents.create_preset")
+        self.enable_for_main("agents.create_preset")
         manager = self.manager(client)
-        main = manager.spawn_root(name="main", preset="main")
-        worker = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
+        main = manager.spawn_root(preset="main")
+        worker = manager.spawn(parent_id=main.agent_id, preset_id="worker")
         main_prompt = main.history[0]["content"]
         worker_prompt = manager.require_agent(worker["agent_id"]).history[0]["content"]
-        for action_id in ("create_automation", "create_preset"):
+        for action_id in ("agents.create_preset",):
             self.assertIn(f'"action_id": "{action_id}"', main_prompt)
             self.assertNotIn(f'"action_id": "{action_id}"', worker_prompt)
 
     def test_create_preset_uses_existing_capability_ids_and_refuses_overwrite(self):
-        self.install_project_action("create_preset")
+        self.install_project_action("agents.create_preset")
         manager = self.manager(_Client([]))
-        manager.spawn_root(name="main", preset="main")
-        module = self.load_installed_action("create_preset")
+        manager.spawn_root(preset="main")
+        module = self.load_installed_action("agents.create_preset")
         context = SimpleNamespace(
             agent_id="main",
-            action_id="create_preset",
+            action_id="agents.create_preset",
             agent_manager=manager.capabilities._agent_api,
             metadata={"preset": "main"},
             capabilities=manager.capabilities,
@@ -431,10 +282,9 @@ class RuntimeTests(unittest.TestCase):
         created = module.run(
             {
                 "preset_id": "researcher",
-                "person_prompt": "Research carefully.",
-                "actions": ["say"],
-                "handlers": [],
-                "modules": [],
+                "person": "Research carefully.",
+                "description": "Research specialization.",
+                "capabilities": ["say"],
             },
             context,
         )
@@ -445,14 +295,12 @@ class RuntimeTests(unittest.TestCase):
         preset = self.presets.load("researcher")
         self.assertEqual(preset.person_prompt, "Research carefully.")
         self.assertEqual(preset.actions, ("say",))
-        self.assertFalse(preset.protected)
         refused = module.run(
             {
                 "preset_id": "researcher",
-                "person_prompt": "Do not replace me.",
-                "actions": [],
-                "handlers": [],
-                "modules": [],
+                "person": "Do not replace me.",
+                "description": "Replacement description.",
+                "capabilities": [],
             },
             context,
         )
@@ -467,8 +315,8 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
-            main = manager.spawn_root(name="main", preset="main")
-            created = manager.spawn(parent_id=main.agent_id, name="worker", preset="worker")
+            main = manager.spawn_root(preset="main")
+            created = manager.spawn(parent_id=main.agent_id, preset_id="worker")
             worker_id = created["agent_id"]
             manager.persist_agent(manager.require_agent(worker_id))
             worker_dir = Path(temporary) / "worker" / worker_id
@@ -506,7 +354,7 @@ class RuntimeTests(unittest.TestCase):
             ]
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         manager.enable_action(agent.agent_id, "fail")
         manager.enable_action(agent.agent_id, "next")
         self.publish(agent, "start")
@@ -539,8 +387,8 @@ class RuntimeTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertIsNotNone(values)
         error = next(item for item in values if item["event_id"] == "capability_error")
-        self.assertEqual(error["data"]["kind"], "action")
-        self.assertEqual(error["data"]["id"], "fail")
+        self.assertNotIn("kind", error["data"])
+        self.assertEqual(error["data"]["capability_id"], "fail")
         results = [item for item in values if item["event_id"] == "call_result"]
         self.assertEqual([item["call_id"] for item in results], ["next-1"])
         self.assertEqual(results[0]["data"], {"ok": True})
@@ -556,7 +404,7 @@ class RuntimeTests(unittest.TestCase):
 
         client = _Client([_no_action("done-1"), _no_action("done-2")], block)
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "first")
         self.assertTrue(thinking.wait(2))
         self.publish(agent, "external")
@@ -590,7 +438,7 @@ class RuntimeTests(unittest.TestCase):
             block,
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "first")
         self.assertTrue(correction.wait(2))
         self.publish(agent, "second")
@@ -614,7 +462,7 @@ class RuntimeTests(unittest.TestCase):
             ]
         )
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "start")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
         values = [
@@ -629,33 +477,31 @@ class RuntimeTests(unittest.TestCase):
         self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         client = _Client([_no_action("done-1")])
         manager = self.manager(client)
-        first = manager.spawn_root(name="main", preset="main")
-        second_info = manager.spawn(parent_id=first.agent_id, name="other", preset="worker")
+        first = manager.spawn_root(preset="main")
+        second_info = manager.spawn(parent_id=first.agent_id, preset_id="worker")
         second = manager.require_agent(second_info["agent_id"])
         manager.enable_action(first.agent_id, "clock")
         self.assertIn("clock", first.standalone_actions())
         self.assertNotIn("clock", second.standalone_actions())
         self.assertEqual(self.presets.load("main").actions, ("say",))
 
-    def test_protected_preset_cannot_be_spawned(self):
-        manager = self.manager(_Client([_no_action("done-1")]))
-        agent = manager.spawn_root(name="main", preset="main")
-        with self.assertRaisesRegex(ValueError, "защищён"):
-            manager.spawn(parent_id=agent.agent_id, name="copy", preset="main")
-        self.assertEqual(
-            [item["agent_id"] for item in manager.list_agents()], ["main"]
-        )
+    def test_main_preset_has_no_singleton_policy(self):
+        manager = self.manager(_Client([]))
+        manager.spawn_root(preset="main")
+        child = manager.spawn(parent_id="main", preset_id="main")
+        self.assertNotEqual(child["agent_id"], "main")
+        manager.delete(agent_id=child["agent_id"])
 
     def test_main_uses_reserved_main_agent_id(self):
         manager = self.manager(_Client([_no_action("done-1")]))
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.assertEqual(agent.agent_id, "main")
 
     def test_persisted_context_is_restored_on_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
+            agent = first.spawn_root(preset="main")
             self.publish(agent, "remember me")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3))
             record = memory.load("main", "main")
@@ -665,7 +511,7 @@ class RuntimeTests(unittest.TestCase):
             )
 
             second = self.manager(_Client([_no_action("done-2")]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertEqual(restored.agent_id, "main")
             self.assertEqual(len(restored.history), 3)
             self.assertIn(
@@ -678,13 +524,13 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
+            agent = first.spawn_root(preset="main")
             first.semantic_memory.write("Georgiy uses Arch Linux.")
             instance = (memory.root / "main/instance.json").read_bytes()
             first.shutdown()
             (memory.root / "main/context.json").unlink()
             second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
             self.assertEqual((memory.root / "main/instance.json").read_bytes(), instance)
             self.assertTrue((memory.root / "main/context.json").is_file())
@@ -695,14 +541,14 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([_no_action("saved-1")]), memory=memory)
-            agent = first.spawn_root(name="main", preset="main")
+            agent = first.spawn_root(preset="main")
             self.publish(agent, "keep this")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3 and agent.state == "waiting"))
             first.shutdown()
             saved = (memory.root / "main/context.json").read_bytes()
             (memory.root / "main/instance.json").unlink()
             second = self.manager(_Client([]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
             self.assertTrue((memory.root / "main/instance.json").is_file())
             self.assertEqual((memory.root / "main/context.json").read_bytes(), saved)
@@ -713,20 +559,20 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             first = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            root = first.spawn_root(name="main", preset="main")
+            root = first.spawn_root(preset="main")
             child_info = first.spawn(
-                parent_id=root.agent_id, name="worker", preset="worker"
+                parent_id=root.agent_id, preset_id="worker"
             )
             child = first.require_agent(child_info["agent_id"])
             self.publish(child, "child task")
             self.assertTrue(_wait(lambda: len(child.history) >= 3))
 
             second = self.manager(_Client([_no_action("done-2")]), memory=memory)
-            restored = second.restore(name="main", preset="main")
+            restored = second.restore(preset="main")
             self.assertEqual(restored.agent_id, "main")
             recreated = second.require_agent(child_info["agent_id"])
             self.assertEqual(recreated.parent_id, root.agent_id)
-            self.assertEqual(recreated.name, "worker")
+            self.assertEqual(recreated.preset, "worker")
             self.assertEqual(recreated.preset, "worker")
             self.assertIn(
                 "child task",
@@ -737,9 +583,9 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            root = manager.spawn_root(name="main", preset="main")
+            root = manager.spawn_root(preset="main")
             child_info = manager.spawn(
-                parent_id=root.agent_id, name="worker", preset="worker"
+                parent_id=root.agent_id, preset_id="worker"
             )
             self.assertIsNotNone(memory.load("worker", child_info["agent_id"]))
             manager.delete(agent_id=child_info["agent_id"])
@@ -750,11 +596,11 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done-1")]), memory=memory)
-            root = manager.spawn_root(name="main", preset="main")
+            root = manager.spawn_root(preset="main")
             manager.enable_module(root.agent_id, "echo")
             record = memory.load("main", "main")
-            self.assertIn("echo", record["modules"])
-            self.assertIn("say", record["actions"])
+            self.assertIn("echo", record["capabilities_add"])
+            self.assertNotIn("say", record["capabilities_add"])
 
     def test_call_id_cannot_be_reused_after_completion_or_restore(self):
         outputs = [
@@ -766,7 +612,7 @@ class RuntimeTests(unittest.TestCase):
             memory = MemoryStore(Path(temporary))
             client = _Client(outputs)
             manager = self.manager(client, memory=memory)
-            agent = manager.spawn_root(name="main", preset="main")
+            agent = manager.spawn_root(preset="main")
             self.publish(agent, "start")
             self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 3))
             self.assertEqual(len(self.call_results(agent)), 1)
@@ -774,24 +620,12 @@ class RuntimeTests(unittest.TestCase):
             manager.shutdown()
 
             restarted = self.manager(_Client([outputs[1], _no_action("fresh-2")]), memory=memory)
-            restored = restarted.restore(name="main", preset="main")
+            restored = restarted.restore(preset="main")
             self.publish(restored, "again")
             self.assertTrue(_wait(lambda: len(restarted.client.chat.completions.calls) >= 2))
             self.assertEqual(len(self.call_results(restored)), 1)
 
             restarted.shutdown()
-
-    def test_model_cannot_use_reserved_automation_call_id(self):
-        client = _Client([
-            '{"actions":[{"action_id":"say","call_id":"auto-00001","data":{"text":"wrong"}}]}',
-            _no_action("fresh-after-reserved"),
-        ])
-        manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
-        self.publish(agent, "start")
-        self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        self.assertEqual(self.call_results(agent), [])
-        self.assertIn("зарезервирован", str(agent.history))
 
     def test_transient_model_failure_retries_without_duplicate_input(self):
         class Flaky:
@@ -805,7 +639,7 @@ class RuntimeTests(unittest.TestCase):
         flaky = Flaky()
         client = type("Client", (), {"chat": type("Chat", (), {"completions": flaky})()})()
         manager = self.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         self.publish(agent, "hello")
         self.assertTrue(_wait(lambda: len(flaky.calls) == 2))
         self.assertEqual(len([m for m in agent.history if m["role"] == "user"]), 1)
@@ -813,10 +647,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_disabled_action_is_hidden_but_an_accepted_call_returns_disabled_result(self):
         manager = self.manager(_Client([_no_action("done")]))
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         spec = manager.actions.require("say")
+        manager.edit_agent(agent.agent_id, {"capabilities_add": ["say"]})
+        self.presets.edit("main", changes={"capabilities_remove": ["say"]})
+        manager.refresh_presets("main")
         manager.disable_action(agent.agent_id, "say")
-        self.assertIn("say", agent.known_snapshot()["actions"])
+        self.assertNotIn("say", agent.known_snapshot()["actions"])
         self.assertNotIn("say", agent.capabilities_snapshot()["actions"])
         specs, _ = agent._contract()
         self.assertNotIn("say", specs)
@@ -837,8 +674,8 @@ class RuntimeTests(unittest.TestCase):
                 release.wait(3)
         client = _Client([_no_action("old"), _no_action("new")], block)
         manager = self.manager(client)
-        root = manager.spawn_root(name="main", preset="main")
-        child = manager.spawn(parent_id="main", name="worker", preset="worker")
+        root = manager.spawn_root(preset="main")
+        child = manager.spawn(parent_id="main", preset_id="worker")
         agent = manager.require_agent(child["agent_id"])
         self.publish(agent, "first")
         self.assertTrue(entered.wait(2))
@@ -850,59 +687,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(any('"call_id":"old"' in str(m.get("content")) for m in agent.history))
         self.assertIn(agent.agent_id, manager.agents)
 
-    def test_protected_agent_and_recursive_delete(self):
+    def test_agent_recursive_delete(self):
         manager = self.manager(_Client([_no_action("done")]))
-        root = manager.spawn_root(name="main", preset="main")
-        with self.assertRaisesRegex(ValueError, "Защищённый"):
-            manager.delete(agent_id="main")
-        with self.assertRaisesRegex(ValueError, "Защищённый"):
-            manager.interrupt(agent_id="main", requester_id="another")
-        parent = manager.spawn(parent_id="main", name="parent", preset="worker")["agent_id"]
-        child = manager.spawn(parent_id=parent, name="child", preset="worker")["agent_id"]
-        grandchild = manager.spawn(parent_id=child, name="grandchild", preset="worker")["agent_id"]
+        root = manager.spawn_root(preset="main")
+        manager.interrupt(agent_id="main", requester_id="main")
+        parent = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
+        child = manager.spawn(parent_id=parent, preset_id="worker")["agent_id"]
+        grandchild = manager.spawn(parent_id=child, preset_id="worker")["agent_id"]
         manager.delete(agent_id=parent)
         self.assertEqual(set(manager.agents), {"main"})
         self.assertNotIn(child, manager.bus._agents)
         self.assertNotIn(grandchild, manager.bus._agents)
 
-    def test_non_main_protected_preset_is_singleton_and_undeletable(self):
-        special = self.root / "presets" / "special"
-        special.mkdir()
-        (special / "person.txt").write_text("special", encoding="utf-8")
-        (special / "capabilities.json").write_text(
-            json.dumps({"modules": [], "actions": [], "handlers": []}),
-            encoding="utf-8",
-        )
-        (special / "preset.json").write_text('{"protected": true}', encoding="utf-8")
-        manager = self.manager(_Client([_no_action("done")]))
-        manager.spawn_root(name="main", preset="main")
-        self.assertIn("special", {item["name"] for item in manager.capabilities._agent_api.presets_list()})
-        special_id = manager.spawn(parent_id="main", name="special", preset="special")["agent_id"]
-        special_agent = manager.require_agent(special_id)
-        specs, _ = special_agent._contract()
-        self.assertIn("enable_capability", specs)
-        self.assertIn("disable_capability", specs)
-        self.assertNotIn("spawn_agent", specs)
-        available = {item["name"] for item in manager.capabilities._agent_api.presets_list()}
-        self.assertNotIn("main", available)
-        self.assertNotIn("special", available)
-        own_context = SimpleNamespace(
-            agent_id=special_id, action_id="enable_capability", module_id=None,
-            agent_manager=manager.capabilities._agent_api,
-        )
-        self.assertTrue(specs["enable_capability"].run({"kind": "action", "id": "say"}, own_context)["persistent"])
-        self.assertIn("say", self.presets.load("special").actions)
-        own_context.action_id = "disable_capability"
-        specs["disable_capability"].run({"kind": "action", "id": "say"}, own_context)
-        self.assertIn("say", self.presets.load("special").disabled_actions)
-        with self.assertRaisesRegex(ValueError, "защищён"):
-            manager.spawn(parent_id="main", name="duplicate", preset="special")
-        with self.assertRaisesRegex(ValueError, "Защищённый"):
-            manager.delete(agent_id=special_id)
-
-    def test_external_rpc_cannot_change_protected_agent_capabilities(self):
+    def test_presets_are_not_protected_singletons(self):
+        self.presets.create("special", "Special", [])
         manager = self.manager(_Client([]))
-        manager.spawn_root(name="main", preset="main")
+        manager.spawn_root(preset="main")
+        first = manager.spawn(parent_id="main", preset_id="special")["agent_id"]
+        second = manager.spawn(parent_id="main", preset_id="special")["agent_id"]
+        self.assertNotEqual(first, second)
+        available = {item["id"] for item in manager.capabilities._agent_api.presets_list()}
+        self.assertIn("main", available)
+        self.assertIn("special", available)
+        manager.delete(agent_id=first)
+        self.assertIn(second, manager.agents)
+
+    def test_external_rpc_cannot_change_another_agent_capabilities(self):
+        manager = self.manager(_Client([]))
+        manager.spawn_root(preset="main")
         before = self.presets.load("main").actions
         with patch.object(manager.capabilities, "_send_host") as send:
             manager.capabilities._handle_rpc(SimpleNamespace(), {
@@ -917,15 +729,14 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             memory.save({
-                "agent_id": "main", "name": "Jarvis", "preset": "main",
-                "parent_id": None, "modules": [], "actions": ["missing_action"],
-                "handlers": [], "messages": [{"role": "user", "content": "saved"}],
+                "agent_id": "main", "preset_id": "main",
+                "parent_id": None, "capabilities_add": ["missing_action"], "messages": [{"role": "user", "content": "saved"}],
             })
             before = (Path(temporary) / "main" / "instance.json").read_bytes()
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
-            self.assertIsNone(manager.restore(name="main", preset="main"))
+            self.assertIsNone(manager.restore(preset="main"))
             self.assertEqual(manager.agents, {})
-            self.assertEqual(memory.load("main", "main")["actions"], ["missing_action"])
+            self.assertEqual(memory.load("main", "main")["capabilities_add"], ["missing_action"])
             self.assertEqual((Path(temporary) / "main" / "instance.json").read_bytes(), before)
 
     def test_disable_running_action_kills_execution_and_returns_one_disabled_result(self):
@@ -939,7 +750,7 @@ class RuntimeTests(unittest.TestCase):
             f"    import os, time\n    open({str(marker)!r}, 'w').write(str(os.getpid()))\n    time.sleep(10)\n    return {{'ok': True}}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         manager.enable_action("main", "slow")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(action=ActionRequest("slow", {}, "slow-1"), spec=manager.actions.require("slow"), agent=agent)
@@ -960,8 +771,8 @@ class RuntimeTests(unittest.TestCase):
             "    return {'undeclared': 'wrong'}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
-        root = manager.spawn_root(name="main", preset="main")
-        child_info = manager.spawn(parent_id="main", name="worker", preset="worker")
+        root = manager.spawn_root(preset="main")
+        child_info = manager.spawn(parent_id="main", preset_id="worker")
         child = manager.require_agent(child_info["agent_id"])
         manager.enable_action(child.agent_id, "bad_result")
         from jarvis.core.protocol import ActionRequest
@@ -972,43 +783,44 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(any('"capability_error"' in str(m.get("content")) for m in root.history[1:]))
         self.assertFalse(manager.results.has_pending(child.agent_id, "bad-1"))
 
-    def test_disabled_state_survives_restore_and_available_list_excludes_known(self):
+    def test_removed_individual_capabilities_remain_available_after_restore(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
-            first = self.manager(_Client([_no_action("one")]), memory=memory)
-            root = first.spawn_root(name="main", preset="main")
+            first = self.manager(_Client([]), memory=memory)
+            root = first.spawn_root(preset="main")
+            first.edit_agent("main", {"capabilities_add": ["say", "tick"]})
+            self.presets.edit("main", changes={"capabilities_remove": ["say", "tick"]})
+            first.refresh_presets("main")
             first.disable_action("main", "say")
             first.disable_handler("main", "tick")
-            self.assertIn("say", memory.load("main", "main")["disabled_actions"])
+            self.assertEqual(memory.load("main", "main")["capabilities_add"], [])
             listed = first.capabilities.list_available(root.known_snapshot())
-            self.assertNotIn("say", [item["id"] for item in listed["actions"]])
-            self.assertNotIn("tick", [item["id"] for item in listed["handlers"]])
-            second = self.manager(_Client([_no_action("two")]), memory=memory)
-            restored = second.restore(name="main", preset="main")
-            self.assertIn("say", restored.disabled_snapshot()["actions"])
-            self.assertIn("tick", restored.disabled_snapshot()["handlers"])
-            event = Event(event_id="tick.event", data={"text": "ignored"}, handler_id="tick")
-            self.assertFalse(second.bus.publish(event))
+            self.assertIn("say", [item["id"] for item in listed["actions"]])
+            self.assertIn("tick", [item["id"] for item in listed["handlers"]])
+            first.shutdown()
+            second = self.manager(_Client([]), memory=memory)
+            restored = second.restore(preset="main")
             self.assertNotIn("say", restored._contract()[0])
+            self.assertFalse(second.bus.publish(Event("tick.event", {"text": "ignored"}, handler_id="tick")))
 
     def test_available_list_describes_unloaded_action(self):
         self.write_action("extra", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         manager = self.manager(_Client([_no_action("done")]))
-        root = manager.spawn_root(name="main", preset="main")
+        root = manager.spawn_root(preset="main")
         self.assertNotIn("extra", manager.capabilities.loaded_actions())
         available = manager.capabilities.list_available(root.known_snapshot())
         self.assertEqual([item for item in available["actions"] if item["id"] == "extra"], [{"id": "extra", "description": "test"}])
 
     def test_interrupt_action_rpc_matches_agent_manager_signature(self):
-        self.install_project_action("interrupt_agent")
+        self.install_project_action("agents.interrupt")
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
-        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
-        manager.enable_action("main", "interrupt_agent")
+        main = manager.spawn_root(preset="main")
+        child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
+        self.assertIn("agents.interrupt", manager.require_agent("main")._contract()[0])
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("interrupt_agent", {"agent_id": child_id}, "interrupt-1"),
-            spec=manager.actions.require("interrupt_agent"), agent=main,
+            action=ActionRequest("agents.interrupt", {"agent_id": child_id}, "interrupt-1"),
+            spec=manager.actions.require("agents.interrupt"), agent=main,
         )
         self.assertTrue(_wait(lambda: any(item["call_id"] == "interrupt-1" for item in self.call_results(main))))
         result = next(item for item in self.call_results(main) if item["call_id"] == "interrupt-1")
@@ -1016,15 +828,15 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn(child_id, manager.agents)
 
     def test_delete_action_rpc_needs_only_agent_id(self):
-        self.install_project_action("delete_agent")
+        self.install_project_action("agents.delete")
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
-        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
-        manager.enable_action("main", "delete_agent")
+        main = manager.spawn_root(preset="main")
+        child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
+        self.assertIn("agents.delete", manager.require_agent("main")._contract()[0])
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("delete_agent", {"agent_id": child_id}, "delete-1"),
-            spec=manager.actions.require("delete_agent"), agent=main,
+            action=ActionRequest("agents.delete", {"agent_id": child_id}, "delete-1"),
+            spec=manager.actions.require("agents.delete"), agent=main,
         )
         self.assertTrue(_wait(lambda: any(item["call_id"] == "delete-1" for item in self.call_results(main))))
         result = next(item for item in self.call_results(main) if item["call_id"] == "delete-1")
@@ -1039,19 +851,20 @@ class RuntimeTests(unittest.TestCase):
         }
         self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'old'}\n")
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
-        child_id = manager.spawn(parent_id="main", name="worker", preset="worker")["agent_id"]
-        manager.enable_action("main", "toggle_capability")
+        main = manager.spawn_root(preset="main")
+        child_id = manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
+        self.presets.create("capability_manager", "CapabilityManager", ["say", "tick"])
+        controller = manager.require_agent(manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"])
         manager.enable_action("main", "reloadable")
         manager.enable_action(child_id, "reloadable")
         old_host = manager.capabilities._actions["reloadable"].host
         old_process = old_host.process
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
-            action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "pause-1"),
-            spec=manager.actions.require("toggle_capability"), agent=main,
+            action=ActionRequest("toggle_capability", {"capability_id": "reloadable"}, "pause-1"),
+            spec=manager.actions.require("toggle_capability"), agent=controller,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.call_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-1" for item in self.call_results(controller))))
         self.assertNotIn("reloadable", manager.capabilities.loaded_actions())
         self.assertNotIn(old_host.key, manager.capabilities._hosts)
         self.assertIsNotNone(old_process.poll())
@@ -1061,10 +874,10 @@ class RuntimeTests(unittest.TestCase):
 
         self.write_action("reloadable", EMPTY_SCHEMA, value_schema, "    return {'value': 'new'}\n")
         manager.capabilities.dispatch(
-            action=ActionRequest("toggle_capability", {"kind": "action", "id": "reloadable"}, "resume-1"),
-            spec=manager.actions.require("toggle_capability"), agent=main,
+            action=ActionRequest("toggle_capability", {"capability_id": "reloadable"}, "resume-1"),
+            spec=manager.actions.require("toggle_capability"), agent=controller,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.call_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "resume-1" for item in self.call_results(controller))))
         self.assertIn("reloadable", main.standalone_actions())
         self.assertIn("reloadable", manager.require_agent(child_id).standalone_actions())
         self.assertNotIn("reloadable", manager.capabilities.global_paused()["actions"])
@@ -1086,8 +899,9 @@ class RuntimeTests(unittest.TestCase):
             f"    import os, time\n    open({str(marker)!r}, 'w').write(str(os.getpid()))\n    time.sleep(10)\n    return {{'ok': True}}\n",
         )
         manager = self.manager(_Client([_no_action("done")]))
-        main = manager.spawn_root(name="main", preset="main")
-        manager.enable_action("main", "toggle_capability")
+        main = manager.spawn_root(preset="main")
+        self.presets.create("capability_manager", "CapabilityManager", ["say", "tick"])
+        controller = manager.require_agent(manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"])
         manager.enable_action("main", "global_slow")
         from jarvis.core.protocol import ActionRequest
         manager.capabilities.dispatch(
@@ -1097,10 +911,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(_wait(marker.exists))
         pid = int(marker.read_text())
         manager.capabilities.dispatch(
-            action=ActionRequest("toggle_capability", {"kind": "action", "id": "global_slow"}, "pause-running-1"),
-            spec=manager.actions.require("toggle_capability"), agent=main,
+            action=ActionRequest("toggle_capability", {"capability_id": "global_slow"}, "pause-running-1"),
+            spec=manager.actions.require("toggle_capability"), agent=controller,
         )
-        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.call_results(main))))
+        self.assertTrue(_wait(lambda: any(item["call_id"] == "pause-running-1" for item in self.call_results(controller))))
         results = [item for item in self.call_results(main) if item["call_id"] == "running-1"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["data"]["status"], "paused")
@@ -1112,16 +926,17 @@ class RuntimeTests(unittest.TestCase):
         self.install_project_action("toggle_capability")
         client = _Client([
             '{"actions":['
-            '{"action_id":"toggle_capability","call_id":"toggle-1","data":{"kind":"action","id":"say"}},'
-            '{"action_id":"toggle_capability","call_id":"toggle-2","data":{"kind":"action","id":"say"}}]}',
+            '{"action_id":"toggle_capability","call_id":"toggle-1","data":{"capability_id":"say"}},'
+            '{"action_id":"toggle_capability","call_id":"toggle-2","data":{"capability_id":"say"}}]}',
             _no_action("done-1"),
         ])
         manager = self.manager(client)
-        main = manager.spawn_root(name="main", preset="main")
-        manager.enable_action("main", "toggle_capability")
-        self.publish(main, "check")
+        main = manager.spawn_root(preset="main")
+        self.presets.create("capability_manager", "CapabilityManager", ["say", "tick"])
+        controller = manager.require_agent(manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"])
+        self.publish(controller, "check")
         self.assertTrue(_wait(lambda: len(client.chat.completions.calls) >= 2))
-        self.assertIn("structure_error", str(main.history))
+        self.assertIn("structure_error", str(controller.history))
         self.assertIn("say", main.standalone_actions())
         self.assertNotIn("say", manager.capabilities.global_paused()["actions"])
 

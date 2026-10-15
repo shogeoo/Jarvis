@@ -18,6 +18,7 @@ from typing import Any, Callable
 from .config import build_config, STT_ENABLED, TTS_ENABLED
 from .stt import Pipeline, pipeline
 from .tts import Speaker, SpeechInterrupted
+from ..capabilities.api import PENDING
 
 
 SPEECH_HANDLER = "core:speech"
@@ -36,8 +37,11 @@ class SpeechService:
         self._ready = threading.Event()
         self._ready.set()
         self._background: threading.Thread | None = None
+        self._speech_completions: list[tuple[Any, Callable]] = []
 
-    def begin_background(self, jarvis_dir: Path, *, emit: SpeechEvent, debug: Any = None, on_ready=None) -> None:
+    def begin_background(
+        self, jarvis_dir: Path, *, emit: SpeechEvent, debug: Any = None, on_ready=None
+    ) -> None:
         """Start speech without delaying the subscription agent's startup event."""
         self._ready.clear()
 
@@ -54,7 +58,9 @@ class SpeechService:
                     except Exception as exc:  # noqa: BLE001
                         self._report(debug, "speech_ready_callback_failed", exc)
 
-        self._background = threading.Thread(target=run, name="jarvis-speech-init", daemon=True)
+        self._background = threading.Thread(
+            target=run, name="jarvis-speech-init", daemon=True
+        )
         self._background.start()
 
     @property
@@ -81,7 +87,9 @@ class SpeechService:
                     speaker = Speaker(config)
                     speaker.start()
                 elif TTS_ENABLED:
-                    logger.info("s2 binary not found; speech action is unavailable. STT remains independent.")
+                    logger.info(
+                        "s2 binary not found; speech action is unavailable. STT remains independent."
+                    )
             except Exception as exc:  # noqa: BLE001
                 self._report(debug, "speech_tts_failed", exc)
                 speaker = None
@@ -97,7 +105,7 @@ class SpeechService:
                 detach.append(
                     pipe.attach(
                         "speech",
-                        lambda data: emit({"text": data["text"]}),
+                        lambda data: self._recognized_speech(data, emit),
                     )
                 )
                 detach.append(
@@ -121,7 +129,23 @@ class SpeechService:
         if self.available:
             logger.info("Речь: инициализация завершена.")
 
-    def speak_result(self, text: str) -> dict[str, Any]:
+    def _recognized_speech(self, data: dict, emit: SpeechEvent) -> None:
+        """Release interrupted results together with the recognized utterance."""
+        callbacks = []
+        with self._lock:
+            remaining = []
+            for future, complete in self._speech_completions:
+                if future.done() and isinstance(future.exception(), SpeechInterrupted):
+                    callbacks.append(complete)
+                else:
+                    remaining.append((future, complete))
+            self._speech_completions = remaining
+        event = {"text": data["text"]}
+        if callbacks:
+            event["_interrupted_completions"] = callbacks
+        emit(event)
+
+    def speak_result(self, text: str, *, interrupted_complete=None) -> Any:
         """Озвучить text. Результат — только статус; сбой является ошибкой."""
 
         self._ready.wait()
@@ -131,12 +155,30 @@ class SpeechService:
         if not text:
             return {"status": "successful"}
         speaker = self._speaker
+        with self._lock:
+            future = speaker.submit(text)
+            if interrupted_complete is not None:
+                self._speech_completions.append((future, interrupted_complete))
         try:
-            result = speaker.submit(text).result()
+            result = future.result()
         except SpeechInterrupted:
+            if interrupted_complete is not None:
+                return PENDING
             return {"status": "interrupted"}
         except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._speech_completions = [
+                    (item, callback)
+                    for item, callback in self._speech_completions
+                    if item is not future
+                ]
             raise RuntimeError(f"speech_failed: {exc}") from exc
+        with self._lock:
+            self._speech_completions = [
+                (item, callback)
+                for item, callback in self._speech_completions
+                if item is not future
+            ]
         if isinstance(result, dict) and result.get("error"):
             raise RuntimeError(f"speech_failed: {result['error']}")
         return {"status": "successful"}
@@ -156,6 +198,7 @@ class SpeechService:
             speaker, self._speaker = self._speaker, None
             detach, self._detach = self._detach, []
             self.available = False
+            self._speech_completions.clear()
         for callback in detach:
             try:
                 callback()

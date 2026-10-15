@@ -1,4 +1,4 @@
-"""Контракт системных действий create_automation и create_preset."""
+"""Контракт системных действий create_preset."""
 
 import json
 import tempfile
@@ -11,7 +11,6 @@ from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import EventBus
 from jarvis.core.runtime import register_core_protocol
 from jarvis.presets import PresetStore
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.debug import Debugger
 
 import fixtures
@@ -35,23 +34,20 @@ class CreateActionsTests(unittest.TestCase):
         self.state_manager = SimpleNamespace(
             actions=self.actions,
             presets=PresetStore(self.root / "presets"),
-            automations=AutomationStore(self.root / "automations.json"),
+            capabilities=self.manager,
+            refresh_presets=lambda preset_id: None,
+            require_agent=lambda agent_id: SimpleNamespace(modules=lambda: {"agents"} if agent_id == "main" else set()),
         )
 
     def load_action(self, action_id):
         def run(data, context):
+            data = {"description": "Test specialization.", **data}
             context.action_id = action_id
             context.agent_manager = SimpleNamespace(_manager=self.state_manager)
             context.capabilities = self.manager
             context.metadata = {"preset": "main"}
             return self.actions.require(action_id).run(data, context)
         return SimpleNamespace(run=run)
-
-    def automation_context(self, agent_id):
-        return SimpleNamespace(
-            agent_id=agent_id,
-            config=SimpleNamespace(jarvis_dir=self.root),
-        )
 
     def preset_context(self, agent_id):
         return SimpleNamespace(
@@ -60,84 +56,40 @@ class CreateActionsTests(unittest.TestCase):
             config=SimpleNamespace(jarvis_dir=self.root),
         )
 
-    def test_create_automation_refuses_other_agents(self):
-        module = self.load_action("create_automation")
-        with self.assertRaisesRegex(ValueError, "main"):
-            module.run(
-                {
-                    "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                    "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-                },
-                self.automation_context("agent-001"),
-            )
-        self.assertFalse((self.root / "automations.json").exists())
-
-    def test_create_automation_appends_validated_rule_for_main(self):
-        module = self.load_action("create_automation")
-        rule = {
-            "event": {"event_id": "tick.event", "data": {"text": "go"}},
-            "actions": [{"action_id": "say", "data": {"text": "ok"}}],
-        }
-        result = module.run(rule, self.automation_context("main"))
-        self.assertEqual(result["status"], "created")
-        stored = self.state_manager.automations.list()[0]
-        self.assertEqual(stored["automation_id"], result["automation_id"])
-        stored.pop("automation_id")
-        self.assertEqual(stored, rule)
-
-    def test_create_automation_rejects_malformed_rule(self):
-        module = self.load_action("create_automation")
-        result = module.run(
-                {
-                    "event": {"event_id": "tick.event", "data": {"text": "go"}},
-                    "actions": [{"action_id": "say", "call_id": "smuggled", "data": {}}],
-                },
-                self.automation_context("main"),
-            )
-        self.assertEqual(result["status"], "not_created")
-        self.assertEqual(AutomationStore(self.root / "automations.json").list(), [])
-
     def test_create_preset_refuses_other_agents(self):
-        module = self.load_action("create_preset")
-        result = module.run(
+        module = self.load_action("agents.create_preset")
+        with self.assertRaisesRegex(ValueError, "agents"):
+            module.run(
             {
                 "preset_id": "intruder",
-                "person_prompt": "Not allowed.",
-                "actions": [],
-                "handlers": [],
-                "modules": [],
+                "person": "Not allowed.",
+                "capabilities": [],
             },
             self.preset_context("agent-001"),
         )
-        self.assertEqual(result["status"], "not_created")
-        self.assertIn("main", result["error"])
         self.assertFalse((self.root / "presets" / "intruder").exists())
 
     def test_create_preset_rejects_unknown_capability_ids(self):
-        module = self.load_action("create_preset")
+        module = self.load_action("agents.create_preset")
         result = module.run(
             {
                 "preset_id": "broken",
-                "person_prompt": "References nothing real.",
-                "actions": ["missing-action"],
-                "handlers": ["missing-handler"],
-                "modules": [],
+                "person": "References nothing real.",
+                "capabilities": ["missing_action", "missing_handler"],
             },
             self.preset_context("main"),
         )
         self.assertEqual(result["status"], "not_created")
-        self.assertIn("missing-action", result["error"])
+        self.assertIn("missing_action", result["error"])
         self.assertFalse((self.root / "presets" / "broken").exists())
 
     def test_create_preset_accepts_existing_capability_ids(self):
-        module = self.load_action("create_preset")
+        module = self.load_action("agents.create_preset")
         result = module.run(
             {
                 "preset_id": "listener",
-                "person_prompt": "Listen to ticks.",
-                "actions": ["say"],
-                "handlers": ["tick"],
-                "modules": [],
+                "person": "Listen to ticks.",
+                "capabilities": ["say", "tick"],
             },
             self.preset_context("main"),
         )
@@ -148,20 +100,17 @@ class CreateActionsTests(unittest.TestCase):
         preset_dir = self.root / "presets" / "listener"
         self.assertTrue(preset_dir.is_dir())
         capabilities = json.loads(
-            (preset_dir / "capabilities.json").read_text(encoding="utf-8")
+            (preset_dir / "preset.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(capabilities["actions"], ["say"])
-        self.assertEqual(capabilities["handlers"], ["tick"])
+        self.assertEqual(capabilities["capabilities"], ["say", "tick"])
 
     def test_create_preset_refuses_overwrite(self):
-        module = self.load_action("create_preset")
+        module = self.load_action("agents.create_preset")
         context = self.preset_context("main")
         payload = {
             "preset_id": "listener",
-            "person_prompt": "Original prompt.",
-            "actions": ["say"],
-            "handlers": [],
-            "modules": [],
+            "person": "Original prompt.",
+            "capabilities": ["say"],
         }
         self.assertEqual(module.run(payload, context)["status"], "created")
         payload["person_prompt"] = "Replacement prompt."

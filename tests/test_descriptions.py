@@ -18,18 +18,16 @@ class DescriptionTests(unittest.TestCase):
         actions, events = ActionRegistry(), EventRegistry()
         register_core_protocol(actions, events)
         specs = actions.all()
-        specs["create_automation"] = replace(specs["create_automation"], data_schema=AgentManager.automation_data_schema(None))
-        specs["edit_automation"] = replace(specs["edit_automation"], data_schema=object_schema({
-            "automation_id": {"type": "string"}, "automation": AgentManager.automation_data_schema(None),
-        }))
         return specs, events.all()
 
     def test_all_builtin_descriptions_preserve_schema_and_execution(self):
         actions, events = self.definitions()
         catalog = read_descriptions()
-        self.assertEqual(set(catalog["actions"]), set(actions))
+        module_actions = {key: value for module in catalog["modules"].values() for entry in module.get("actions", []) for key, value in entry.items()}
+        descriptions = {**catalog["actions"], **module_actions}
+        self.assertEqual(set(descriptions), set(actions))
         self.assertEqual(set(catalog["handlers"]), set(events))
-        self.assertEqual(catalog["modules"], {})
+        self.assertEqual(set(catalog["modules"]), {"capability_development", "agents", "semantic_memory"})
         actual_actions, actual_events = apply_descriptions(actions, events)
         def without_descriptions(value):
             if isinstance(value, dict):
@@ -38,7 +36,7 @@ class DescriptionTests(unittest.TestCase):
                 return [without_descriptions(child) for child in value]
             return value
         for identifier, spec in actual_actions.items():
-            self.assertEqual(spec.description, catalog["actions"][identifier]["description"])
+            self.assertEqual(spec.description, descriptions[identifier]["description"])
             self.assertIs(spec.run, actions[identifier].run)
             self.assertEqual(without_descriptions(spec.data_schema), without_descriptions(actions[identifier].data_schema))
             self.assertEqual(without_descriptions(spec.result_schema), without_descriptions(actions[identifier].result_schema))

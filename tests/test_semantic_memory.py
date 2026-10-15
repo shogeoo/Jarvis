@@ -93,15 +93,16 @@ class SemanticMemoryTests(unittest.TestCase):
             root = fixtures.write_jarvis_root(Path(temporary) / ".jarvis")
             actions, events = ActionRegistry(), EventRegistry()
             register_core_protocol(actions, events)
-            identifiers = {"memory_write", "memory_edit", "memory_delete"}
+            identifiers = {"semantic_memory.write", "semantic_memory.edit", "semantic_memory.delete"}
             primary = actions.for_capabilities(
-                modules=set(), actions=set(), primary=True
+                modules={"semantic_memory"}, actions=set(), primary=True
             )
             other = actions.for_capabilities(modules=set(), actions=set())
             self.assertTrue(identifiers <= primary.keys())
             self.assertTrue(identifiers.isdisjoint(other))
             memory = SemanticMemory(root / "memory/main/semantic.json")
             context = SimpleNamespace(
+                agent_id="main",
                 agent_manager=SimpleNamespace(
                     _manager=SimpleNamespace(semantic_memory=memory)
                 )
@@ -113,11 +114,10 @@ class SemanticMemoryTests(unittest.TestCase):
                 {},
                 {},
                 agent_id="main",
-                agent_name="Jarvis",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text", "image")),
                 semantic_memory=memory.snapshot(),
             )
-            identifier = primary["memory_write"].run(
+            identifier = primary["semantic_memory.write"].run(
                 {"content": "Georgiy uses dual boot."}, context
             )["id"]
             after = agent_system_prompt(
@@ -127,22 +127,21 @@ class SemanticMemoryTests(unittest.TestCase):
                 {},
                 {},
                 agent_id="main",
-                agent_name="Jarvis",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text", "image")),
                 semantic_memory=memory.snapshot(),
             )
             self.assertNotIn("Georgiy uses dual boot.", before)
             self.assertIn('"content": "Georgiy uses dual boot."', after)
             self.assertIn('"id": "mem_000001"', after)
-            self.assertIn("MODEL INFO:\nТекущая модель: gpt-6-luna", after)
+            self.assertIn("<MODEL_INFO>\nТекущая модель: gpt-6-luna", after)
             self.assertEqual(
-                primary["memory_edit"].run(
+                primary["semantic_memory.edit"].run(
                     {"id": identifier, "content": "Georgiy prefers Russian."}, context
                 ),
                 {"status": "updated"},
             )
             self.assertEqual(
-                primary["memory_delete"].run({"id": identifier}, context),
+                primary["semantic_memory.delete"].run({"id": identifier}, context),
                 {"status": "deleted"},
             )
             self.assertEqual(memory.snapshot(), {"entries": []})
@@ -153,10 +152,9 @@ class SemanticMemoryTests(unittest.TestCase):
                 {},
                 {},
                 agent_id="agent-001",
-                agent_name="Other",
                 model_capabilities=ModelCapabilities("gpt-6-luna", ("text",)),
             )
-            self.assertNotIn("MEMORY:", without_memory)
+            self.assertNotIn("<MEMORY>", without_memory)
 
     def test_next_inference_reads_memory_written_by_previous_action(self):
         fixture = runtime_tests.RuntimeTests()
@@ -165,12 +163,12 @@ class SemanticMemoryTests(unittest.TestCase):
         self.addCleanup(fixture.tearDown)
         client = runtime_tests._Client(
             [
-                '{"actions":[{"action_id":"memory_write","call_id":"write-1","data":{"content":"Georgiy uses dual boot."}}]}',
+                '{"actions":[{"action_id":"semantic_memory.write","call_id":"write-1","data":{"content":"Georgiy uses dual boot."}}]}',
                 '{"actions":[{"action_id":"no_action","call_id":"wait-1","data":{}}]}',
             ]
         )
         manager = fixture.manager(client)
-        agent = manager.spawn_root(name="main", preset="main")
+        agent = manager.spawn_root(preset="main")
         fixture.publish(agent, "remember")
         self.assertTrue(
             runtime_tests._wait(lambda: len(client.chat.completions.calls) >= 2)

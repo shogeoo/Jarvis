@@ -4,7 +4,10 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
-from ..infrastructure.model_capabilities import ModelCapabilities, SUPPORTED_INPUT_MODALITIES
+from ..infrastructure.model_capabilities import (
+    ModelCapabilities,
+    SUPPORTED_INPUT_MODALITIES,
+)
 from ..infrastructure.prompt_templates import render_template
 from .protocol import json_text, validate_catalog_text
 from .registry import ActionRegistry
@@ -30,9 +33,10 @@ def agent_system_prompt(
     capability_catalog: dict[str, Any],
     *,
     agent_id: str,
-    agent_name: str,
     model_capabilities: ModelCapabilities | None = None,
     semantic_memory: dict[str, Any] | None = None,
+    additional_instructions: str = "",
+    preset_id: str = "",
 ) -> str:
     modules = capability_catalog.get("modules", [])
     module_actions = {
@@ -61,15 +65,31 @@ def agent_system_prompt(
         "modules": modules,
     }
     validate_catalog_text(catalog)
-    model = model_capabilities or ModelCapabilities("unknown", SUPPORTED_INPUT_MODALITIES)
+    model = model_capabilities or ModelCapabilities(
+        "unknown", SUPPORTED_INPUT_MODALITIES
+    )
     blocks = [("ENVIRONMENT", environment.strip()), ("PERSON", person_prompt.strip())]
+    if additional_instructions.strip():
+        blocks.append(("ADDITIONAL_INSTRUCTIONS", additional_instructions.strip()))
     if semantic_memory is not None:
-        blocks.append(("MEMORY", render_template("memory_instruction.txt") + "\n" + json_text(semantic_memory, indent=2)))
+        blocks.append(
+            (
+                "MEMORY",
+                render_template("memory_instruction.txt")
+                + "\n"
+                + json_text(semantic_memory, indent=2),
+            )
+        )
     blocks.extend(
         [
-            ("MODEL INFO", model.prompt_block()),
-            ("AGENT_INFO", render_template("agent_info.txt", name=agent_name, agent_id=agent_id)),
+            ("MODEL_INFO", model.prompt_block()),
+            (
+                "AGENT_INFO",
+                render_template(
+                    "agent_info.txt", agent_id=agent_id, preset_id=preset_id
+                ),
+            ),
             ("CAPABILITIES", json_text(catalog, indent=2)),
         ]
     )
-    return "\n\n".join(f"{title}:\n{content}" for title, content in blocks)
+    return "\n\n".join(f"<{title}>\n{content}\n</{title}>" for title, content in blocks)

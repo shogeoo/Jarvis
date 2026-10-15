@@ -10,7 +10,6 @@ from jarvis.capabilities.manager import CapabilityManager
 from jarvis.core.protocol import Event
 from jarvis.core.registry import ActionRegistry, EventRegistry
 from jarvis.core.runtime import AgentManager, EventBus, register_core_protocol
-from jarvis.infrastructure.automations import AutomationStore
 from jarvis.infrastructure.context import MemoryStore
 from jarvis.infrastructure.debug import Debugger
 from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
@@ -31,18 +30,18 @@ class SystemStateTests(unittest.TestCase):
         self.memory = MemoryStore(self.root / "memory")
         self.manager = AgentManager(model="test", client=_Client([]), actions=self.actions, events=self.events, bus=self.bus, capabilities=self.capabilities, presets=PresetStore(self.root / "presets"), environment="environment", memory=self.memory)
         self.addCleanup(self.manager.shutdown)
-        self.main = self.manager.spawn_root(name="main", preset="main")
+        self.main = self.manager.spawn_root(preset="main")
 
     def invoke(self, name, data):
         context = SimpleNamespace(agent_id="main", action_id=name, agent_manager=self.capabilities._agent_api, capabilities=self.capabilities, metadata={"preset": "main"})
         return self.actions.require(name).run(data, context)
 
-    def test_instantiated_main_is_not_an_available_preset(self):
-        listed = self.invoke("list_agent_presets", {})["presets"]
-        names = {item["name"] for item in listed}
-        self.assertNotIn("main", names)
+    def test_main_preset_is_available_without_protected_policy(self):
+        listed = self.invoke("agents.list_presets", {})["presets"]
+        names = {item["id"] for item in listed}
+        self.assertIn("main", names)
         self.assertIn("worker", names)
-        self.assertTrue(self.manager.require_agent("main").protected)
+        self.assertFalse(hasattr(self.main, "protected"))
         self.assertIn("enable_capability", self.main._contract()[0])
 
     def test_restored_main_uses_current_builtin_personality_without_losing_context(self):
@@ -57,29 +56,33 @@ class SystemStateTests(unittest.TestCase):
         self.assertNotIn("Stale saved personality.", restored.history[0]["content"])
         self.assertEqual(restored.history[1], record["messages"][0])
 
-    def test_preset_edit_preserves_existing_instance_and_restore_personality(self):
-        child_id = self.manager.spawn(parent_id="main", name="old", preset="worker")["agent_id"]
+    def test_preset_edit_updates_existing_instances_and_restore_without_history_loss(self):
+        child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         child = self.manager.require_agent(child_id)
-        original = child.person_prompt
-        result = self.invoke("edit_preset", {"preset_id": "worker", "person_prompt": "New personality.", "actions": [], "handlers": [], "modules": []})
+        self.manager.edit_agent(child_id, {"additional_instructions": "Keep this addition."})
+        child.history.append({"role": "user", "content": "Preserved history."})
+        child._persist_context()
+        result = self.invoke("agents.edit_preset", {"preset_id": "worker", "changes": {"person": "New personality.", "capabilities": []}})
         self.assertEqual(result["status"], "edited")
-        self.assertEqual(child.person_prompt, original)
-        self.assertIn("say", child.standalone_actions())
-        new_id = self.manager.spawn(parent_id="main", name="new", preset="worker")["agent_id"]
-        self.assertEqual(self.manager.require_agent(new_id).person_prompt, "New personality.")
+        self.assertEqual(child.person_prompt, "New personality.")
+        self.assertNotIn("say", child.standalone_actions())
+        child._contract()
+        self.assertIn("<ADDITIONAL_INSTRUCTIONS>\nKeep this addition.", child.history[0]["content"])
         record = self.memory.load("worker", child_id)
-        self.assertEqual(record["person_prompt"], original)
+        self.assertNotIn("person_prompt", record)
+        self.assertEqual(record["additional_instructions"], "Keep this addition.")
         self.manager.delete(agent_id=child_id)
         restored = self.manager._spawn_record(record, primary=False)
-        self.assertEqual(restored.person_prompt, original)
+        self.assertEqual(restored.person_prompt, "New personality.")
+        self.assertEqual(restored.history[1]["content"], "Preserved history.")
 
     def test_remove_preset_recursively_deletes_agents_context_and_memory(self):
-        parent_id = self.manager.spawn(parent_id="main", name="parent", preset="worker")["agent_id"]
+        parent_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         self.manager.presets.create("descendant", "Descendant", {"actions": [], "handlers": [], "modules": []})
-        child_id = self.manager.spawn(parent_id=parent_id, name="child", preset="descendant")["agent_id"]
+        child_id = self.manager.spawn(parent_id=parent_id, preset_id="descendant")["agent_id"]
         parent = self.manager.require_agent(parent_id)
-        result = self.invoke("remove_preset", {"preset_id": "worker"})
-        self.assertEqual(result["status"], "removed")
+        result = self.invoke("agents.delete_preset", {"preset_id": "worker"})
+        self.assertEqual(result["status"], "deleted")
         self.assertNotIn(parent_id, self.manager.agents)
         self.assertNotIn(child_id, self.manager.agents)
         self.assertEqual(parent.history, [])
@@ -89,40 +92,20 @@ class SystemStateTests(unittest.TestCase):
         self.assertFalse((self.root / "presets" / "worker").exists())
 
     def test_messages_are_system_actions_for_every_agent(self):
-        child_id = self.manager.spawn(parent_id="main", name="child", preset="worker")["agent_id"]
+        child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         specs = self.manager.require_agent(child_id)._contract()[0]
         self.assertIn("send_message_to_agent", specs)
-        self.assertNotIn("delete_agent", specs)
+        self.assertNotIn("agents.delete", specs)
 
-    def test_capability_management_defaults_to_capabilities_manager(self):
-        self.manager.presets.create("capabilities_manager", "Capabilities manager", {"actions": [], "handlers": [], "modules": []})
-        agent_id = self.manager.spawn(parent_id="main", name="modules", preset="capabilities_manager")["agent_id"]
+    def test_development_module_is_explicitly_assigned_to_capability_manager(self):
+        self.manager.presets.create("capability_manager", "CapabilityManager", ["capability_development", "list_capabilities", "capability_info", "toggle_capability"])
+        agent_id = self.manager.spawn(parent_id="main", preset_id="capability_manager")["agent_id"]
         specs = self.manager.require_agent(agent_id)._contract()[0]
-        for action_id in ("read_file", "write_file", "edit_file", "execute_command"):
-            self.assertIn(action_id, specs)
-            self.assertNotIn(action_id, self.main._contract()[0])
-        for action_id in ("list_capabilities", "capability_info", "toggle_capability"):
-            self.assertIn(action_id, specs)
-            self.assertNotIn(action_id, self.main._contract()[0])
-
-    def test_concurrent_automation_creations_and_edit_preserve_other_rules(self):
-        store = self.manager.automations
-        def create(index):
-            store.create({"event": {"event_id": "tick", "data": {"index": index}}, "actions": [{"action_id": "speech", "data": {"text": str(index)}}]})
-        threads = [threading.Thread(target=create, args=(index,)) for index in range(20)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        rules = store.identified()
-        self.assertEqual(len(rules), 20)
-        self.assertEqual(len({item["automation_id"] for item in rules}), 20)
-        identifier = rules[0]["automation_id"]
-        replacement = {"event": {"event_id": "new", "data": {}}, "actions": [{"action_id": "speech", "data": {"text": "edited"}}]}
-        store.edit(identifier, replacement)
-        self.assertEqual(len(store.list()), 20)
-        store.remove_id(identifier)
-        self.assertEqual(len(store.list()), 19)
+        for name in ("read_file", "write_file", "edit_file", "execute_command"):
+            self.assertIn("capability_development." + name, specs)
+            self.assertNotIn("capability_development." + name, self.main._contract()[0])
+        for name in ("list_capabilities", "capability_info", "toggle_capability"):
+            self.assertIn(name, specs)
 
     def test_corrupted_startup_state_is_reported_and_preserved(self):
         global_file = self.root / "capability_state.json"
@@ -144,7 +127,7 @@ class SystemStateTests(unittest.TestCase):
                 yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='{"actions":[{"action_id":"no_action","call_id":"late","data":{}}]}', refusal=None))])
             def close(self):
                 closed.set()
-        child_id = self.manager.spawn(parent_id="main", name="child", preset="worker")["agent_id"]
+        child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         child = self.manager.require_agent(child_id)
         counter = [0]
         def request(**kwargs):
@@ -161,7 +144,7 @@ class SystemStateTests(unittest.TestCase):
         self.assertNotIn('"call_id":"late"', str(child.history))
 
     def test_delete_waits_for_inflight_save_then_removes_all_memory(self):
-        child_id = self.manager.spawn(parent_id="main", name="child", preset="worker")["agent_id"]
+        child_id = self.manager.spawn(parent_id="main", preset_id="worker")["agent_id"]
         child = self.manager.require_agent(child_id)
         entered, release = threading.Event(), threading.Event()
         original = self.memory.save

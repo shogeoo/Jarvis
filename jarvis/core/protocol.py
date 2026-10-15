@@ -48,7 +48,6 @@ _FIELD_DESCRIPTIONS = {
     "name": "Human-readable name of the agent.",
     "preset": "Name of the agent preset.",
     "preset_id": "Identifier of the preset.",
-    "automation_id": "Persistent identifier of the automation rule.",
     "person_prompt": "Personality, role and task instructions for future preset instances.",
     "kind": "Capability category: module, action or handler.",
     "id": "Identifier of the capability.",
@@ -73,7 +72,6 @@ _FIELD_DESCRIPTIONS = {
     "actions": "Standalone action identifiers assigned to the agent.",
     "handlers": "Standalone observer identifiers assigned to the agent.",
     "modules": "Module identifiers assigned to the agent.",
-    "protected": "Whether the preset or agent has protected singleton semantics.",
     "enabled": "Whether the capability is locally enabled for the agent.",
     "delivered": "Whether the recipient accepted the message into its queue.",
     "written": "Whether the file was written successfully.",
@@ -81,7 +79,6 @@ _FIELD_DESCRIPTIONS = {
     "deleted": "Whether the agent and its descendants were deleted.",
     "spawned": "Whether the new agent instance was created.",
     "affected_agent_ids": "Agent instances affected by the global state change.",
-    "automations": "Saved automation rules with their persistent identifiers.",
     "presets": "Saved presets and their initial assignments.",
     "agents": "Current live agent instances.",
 }
@@ -155,6 +152,10 @@ def validate_catalog_text(value: Any) -> None:
     """Validate description values without restricting their language."""
     if isinstance(value, dict):
         for key, child in value.items():
+            if key == "properties" and isinstance(child, dict):
+                for field in child.values():
+                    validate_catalog_text(field)
+                continue
             if key == "description" and (not isinstance(child, str) or not child.strip()):
                 raise ValueError("CAPABILITY descriptions must be non-empty text")
             validate_catalog_text(child)

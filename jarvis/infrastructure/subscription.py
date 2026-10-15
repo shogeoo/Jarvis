@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 from copy import deepcopy
 from types import SimpleNamespace
@@ -322,6 +323,8 @@ class SubscriptionClient:
         self.auth.ensure_login(announce)
 
     def create(self, **kwargs):
+        if "/" in (kwargs.get("model") or ""):
+            return self._api_request(kwargs)
         with self._lock:
             if self._api_only:
                 return self._api_request(kwargs)
@@ -339,13 +342,31 @@ class SubscriptionClient:
             self.on_fallback(self.api_capabilities)
 
     def _api_request(self, options: dict[str, Any]):
+        requested_model = options.get("model") or self.api_model
+        api_model = requested_model if "/" in requested_model else self.api_model
         messages = deepcopy(options["messages"])
-        subscription_model_info = ModelCapabilities(self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities).prompt_block()
-        messages[0]["content"] = messages[0]["content"].replace(
-            subscription_model_info,
-            ModelCapabilities(self.api_model, self.api_capabilities.input_modalities).prompt_block(),
-            1,
-        )
+        model_info = ModelCapabilities(
+            api_model, self.api_capabilities.input_modalities
+        ).prompt_block()
+        if (
+            "<MODEL_INFO>" in messages[0]["content"]
+            and "</MODEL_INFO>" in messages[0]["content"]
+        ):
+            messages[0]["content"] = re.sub(
+                r"<MODEL_INFO>.*?</MODEL_INFO>",
+                lambda _: "<MODEL_INFO>\n" + model_info + "\n</MODEL_INFO>",
+                messages[0]["content"],
+                count=1,
+                flags=re.DOTALL,
+            )
+        else:
+            messages[0]["content"] = messages[0]["content"].replace(
+                ModelCapabilities(
+                    self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
+                ).prompt_block(),
+                model_info,
+                1,
+            )
         for message in messages[1:]:
             if message.get("role") != "user" or not isinstance(
                 message.get("content"), list
@@ -364,7 +385,7 @@ class SubscriptionClient:
                 )
             ]
         return self.api_client.chat.completions.create(
-            **{**options, "model": self.api_model, "messages": messages}
+            **{**options, "model": api_model, "messages": messages}
         )
 
     def _generate(
@@ -377,7 +398,7 @@ class SubscriptionClient:
                 "Subscription request must start with Jarvis system prompt"
             )
         body: dict[str, Any] = {
-            "model": self.subscription_model,
+            "model": options.get("model") or self.subscription_model,
             "input": _history_items(messages),
             "store": False,
             "stream": True,
@@ -419,9 +440,11 @@ class SubscriptionClient:
             if response.status_code >= 400:
                 message = response.text[:1000]
                 response.close()
-                raise RuntimeError(
+                error = RuntimeError(
                     f"ChatGPT subscription request failed ({response.status_code}): {message}"
                 )
+                error.status_code = response.status_code
+                raise error
             break
         content = ""
         completed = False
