@@ -61,6 +61,9 @@ class Debugger:
                 self.stream.write("Инициализация системы Jarvis....\n")
                 self.stream.flush()
 
+    def notice(self, message: str):
+        self.initialization_notice(message)
+
     def initialization_notice(self, message: str) -> None:
         """Show authentication progress before the JSON-only runtime trace."""
         if self.enabled:

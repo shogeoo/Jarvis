@@ -194,6 +194,11 @@
           }
         }
       }
+    },
+    {
+      "shutdown": {
+        "description": "Finish the logical session of the entire J.A.R.V.I.S. system. Main only; this must be your only action. Core freezes input, interrupts work, archives full histories and files, then allows exactly one final speech or reply before process exit. Ctrl+C does not complete a session."
+      }
     }
   ],
   "handlers": [
@@ -538,7 +543,7 @@
           },
           {
             "agents.delete": {
-              "description": "End an agent instance and recursively remove all its descendants, running executions, context, files and saved instance information. This permanently removes the instances, not their reusable presets.",
+              "description": "Delete an instance and its descendants, stopping their executions. Their current-session activity and deletion markers remain for archival at shutdown. Previously completed archives remain readable.",
               "data_schema": {
                 "properties": {
                   "agent_id": {
@@ -668,7 +673,7 @@
           },
           {
             "agents.delete_preset": {
-              "description": "Permanently remove a preset and recursively delete every instance created from it, including individually modified instances and all their descendants. Their running work and all saved instance information are removed.",
+              "description": "Delete a reusable preset and its instances and descendants. Current-session activity is retained with deletion markers until session archival; completed archives are preserved.",
               "data_schema": {
                 "properties": {
                   "preset_id": {
@@ -696,7 +701,7 @@
     },
     {
       "semantic_memory": {
-        "description": "Carry confirmed semantic knowledge from your past self to your future self. Maintain concise, independent messages about established facts expected to remain stable; the next inference immediately sees the revised MEMORY.",
+        "description": "Maintain your own instance semantic facts across sessions. Entries are private to your instance and immediately appear in your MEMORY block.",
         "actions": [
           {
             "semantic_memory.write": {
@@ -753,6 +758,106 @@
                 "properties": {
                   "status": {
                     "description": "Operation result; deleted means the identified memory entry was removed."
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "memory": {
+        "description": "Read and investigate the complete archived experience of J.A.R.V.I.S. instances. This indivisible module provides seven read-only archive actions; unfinished live sessions are not searchable archives.",
+        "actions": [
+          {
+            "memory.search": {
+              "description": "Rank individual summaries of one instance across completed sessions by topic. Scores are relevance signals, not factual probabilities.",
+              "result_schema": {
+                "properties": {
+                  "matches": {
+                    "description": "Matches sorted by relevance: session_id, agent_id, historical preset_id and score from 0 to 1. A score is not a factual probability."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.list_sessions": {
+              "description": "List completed sessions containing the specified instance, newest first.",
+              "result_schema": {
+                "properties": {
+                  "sessions": {
+                    "description": "Completed session identifiers containing this instance, newest first."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_summary": {
+              "description": "Read the individual or complete system session summary from a completed archive.",
+              "result_schema": {
+                "properties": {
+                  "summary": {
+                    "description": "Full Markdown account of the selected instance or system session."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_context_info": {
+              "description": "Get original message count and full serialized character count, including available thinking.",
+              "result_schema": {
+                "properties": {
+                  "messages": {
+                    "description": "Number of original archived context messages."
+                  },
+                  "characters": {
+                    "description": "Unicode character count of the full serialized context, including markers, interpretations and available thinking."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.search_in_context": {
+              "description": "Rank overlapping token-aligned context fragments without thinking. Return inclusive zero-based original message ranges; read them separately with get_context.",
+              "result_schema": {
+                "properties": {
+                  "matches": {
+                    "description": "Ranked inclusive zero-based original message ranges: start, end and score from 0 to 1. No message text is returned; overlapping ranges can refer to different token windows of a long message."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_context": {
+              "description": "Read full serialized history including thinking. Skip messages at each end; total counts only returned messages.",
+              "result_schema": {
+                "properties": {
+                  "context": {
+                    "description": "Full compact serialized history of returned messages, with reasoning and interpretation markers."
+                  },
+                  "total": {
+                    "description": "Number of messages actually returned after skip_first and skip_last."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_file": {
+              "description": "Receive the original archived attachment as native media. The file is identified jointly by agent_id, session_id and file_id.",
+              "result_schema": {
+                "properties": {
+                  "file_id": {
+                    "description": "The requested file ID, local to this agent and session."
+                  },
+                  "filename": {
+                    "description": "Actual archived original filename. The original bytes follow as a native multimodal content part."
                   }
                 }
               }

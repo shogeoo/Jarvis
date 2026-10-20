@@ -19,6 +19,8 @@ def ensure_whisper_model(root: Path) -> Path:
 def download_models(root: Path) -> None:
     from ..speech.config import STT_ENABLED, TTS_ENABLED, build_config
 
+    from ..memory.reranker import download_reranker
+    logger.info(f"Memory reranker: {download_reranker(root)}")
     if STT_ENABLED:
         from ..speech.vad import ensure_model
 

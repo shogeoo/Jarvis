@@ -448,6 +448,7 @@ class SubscriptionClient:
             break
         content = ""
         completed = False
+        thinking = ""
         try:
             for raw in response.iter_lines():
                 if stream._closed.is_set():
@@ -466,6 +467,8 @@ class SubscriptionClient:
                 kind = event.get("type")
                 if kind == "response.output_text.delta":
                     content += event.get("delta") or ""
+                elif kind in {'response.reasoning_summary_text.delta', 'response.reasoning_text.delta'}:
+                    thinking += event.get('delta') or ''
                 elif kind in {"response.failed", "error"}:
                     error = (
                         event.get("error")
@@ -486,6 +489,8 @@ class SubscriptionClient:
             raise RuntimeError(
                 "ChatGPT subscription stream ended without response.completed"
             )
+        if thinking:
+            stream._publish(SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content='', refusal=None, reasoning_content=thinking))]))
         try:
             return _normalize_response(content, schema)
         except (ValueError, TypeError) as exc:

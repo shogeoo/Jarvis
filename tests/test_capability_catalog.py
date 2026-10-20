@@ -148,7 +148,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         before = catalog(self.agent)
         self.manager.persist_agent(self.agent)
         self.manager.shutdown()
-        instance = json.loads((self.root / "memory/main/instance.json").read_text())
+        instance = json.loads((self.root / "memory/instances/main/instance.json").read_text())
         self.assertNotIn("catalog_order", instance)
         self.assertEqual(
             [item for item in instance["capabilities_add"] if item in {"zzz", "aaa"}],
@@ -432,9 +432,9 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("action_definition", prompt)
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
-        self.assertIn("event_id имеет значение call_result", prompt)
-        for concrete in ("main", "capability_manager", "system_started", "telegram", "speech", "agents.spawn"):
-            self.assertNotIn(concrete, prompt)
+        self.assertIn('call_result', prompt)
+        for concept in ('shutdown', 'memory_manager', 'semantic_memory', 'agent_id', 'thinking'):
+            self.assertIn(concept, prompt)
 
 if __name__ == "__main__":
     unittest.main()

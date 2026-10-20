@@ -71,7 +71,7 @@ class PresetStore:
     def _kind(self, capability_id):
         if self.resolve_kind is not None:
             return self.resolve_kind(capability_id)
-        if capability_id in {"capability_development", "agents", "semantic_memory"}:
+        if capability_id in {"capability_development", "agents", "semantic_memory", "memory"}:
             return "module"
         for kind, category in (("module", "modules"), ("handler", "handlers")):
             if (self.root.parent / "capabilities" / category / capability_id).is_dir():

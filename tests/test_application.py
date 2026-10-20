@@ -95,7 +95,7 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(
                         app.capabilities.loaded_snapshot(),
                         {
-                            "modules": {"capability_development", "agents", "semantic_memory"},
+                            "modules": {"capability_development", "agents", "semantic_memory", "memory"},
                             "actions": {"say"} | {identifier for identifier, spec in app.actions.all().items() if spec.owner.startswith("core") and "." not in identifier},
                             "handlers": {"tick", "speech_detected"},
                         },

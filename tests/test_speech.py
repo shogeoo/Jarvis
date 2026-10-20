@@ -33,6 +33,8 @@ class _Agent:
 class _Manager:
     def __init__(self, agent):
         self.agent = agent
+        self._lock = threading.RLock()
+        self.core_stops = {}
         self.debug = Debugger(enabled=False)
         self.results = CallResultTracker(debug=self.debug)
 

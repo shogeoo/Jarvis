@@ -635,6 +635,8 @@ def parse_actions(value: Any) -> list[ActionRequest]:
             )
         )
 
+    if any(action.action_id == 'shutdown' for action in actions) and len(actions) != 1:
+        raise ValueError('shutdown must be the only action in the response')
     no_action_count = sum(action.action_id == "no_action" for action in actions)
     if no_action_count and (no_action_count != 1 or len(actions) != 1):
         raise ValueError("no_action должен быть единственным действием в ответе")

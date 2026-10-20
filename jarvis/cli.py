@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--download-models",
         action="store_true",
-        help="Скачать модели речи и выйти; s2 устанавливается отдельно",
+        help="Скачать модели речи и поиска памяти и выйти; s2 устанавливается отдельно",
     )
     return parser
 
@@ -70,7 +70,8 @@ def _run(config, args, stream) -> int:
             logger.error("Main restore failed; persisted data preserved.")
             return 1
         while not stop.wait(0.2):
-            pass
+            if app.agents.completed.is_set():
+                return 0
         return 128 + (received_signal or signal.SIGINT)
     except Exception as exc:
         logger.exception("Jarvis failed: %s", exc)

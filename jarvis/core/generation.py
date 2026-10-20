@@ -49,44 +49,10 @@ class AgentGeneration:
                 if generation != self._generation:
                     self._requeue_front(batch)
                     return
-                for item in batch:
-                    if isinstance(item, CallResult):
-                        self.history.append(item.model_message())
-                        self.manager.debug.result(item, agent_id=self.agent_id)
-                    else:
-                        self.history.append(self._event_history_message(item))
-                        self.manager.debug.input(
-                            item,
-                            self.manager.model_capabilities,
-                            agent_id=self.agent_id,
-                        )
-                self._persist_context()
                 self._model_failure(exc)
                 return
 
-        requires_model = False
-        for index, item in enumerate(batch):
-            with self._generation_lock:
-                if self._stop.is_set():
-                    return
-                if generation != self._generation:
-                    self._requeue_front(batch[index:])
-                    return
-                if isinstance(item, CallResult):
-                    self.history.append(item.model_message())
-                    self.manager.debug.result(item, agent_id=self.agent_id)
-                    model_value = item.model_value()
-                else:
-                    self.history.append(self._event_history_message(item))
-                    self.manager.debug.input(
-                        item, self.manager.model_capabilities, agent_id=self.agent_id
-                    )
-                    model_value = item.model_value()
-
-                requires_model = True
-
-        self._persist_context()
-        if not requires_model:
+        if not batch and not self._needs_generation:
             self._set_state("waiting")
             return
 
@@ -112,7 +78,7 @@ class AgentGeneration:
                 schemas = {name: spec.data_schema for name, spec in specs.items()}
                 stream = self.manager.client.chat.completions.create(
                     model=active_model,
-                    messages=list(self.history),
+                    messages=self._model_messages(active_model),
                     response_format=response_format(schemas),
                     **(
                         {"reasoning_effort": self.manager.config.reasoning_effort}
@@ -129,6 +95,8 @@ class AgentGeneration:
                     self._active_stream = stream
                 content = ""
                 refusal = ""
+                thinking = ""
+                reasoning_details = []
                 try:
                     for chunk in stream:
                         if generation != self._generation or self._stop.is_set():
@@ -137,6 +105,12 @@ class AgentGeneration:
                             delta = chunk.choices[0].delta
                             content += delta.content or ""
                             refusal += getattr(delta, "refusal", None) or ""
+                            thought = getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
+                            if isinstance(thought, str):
+                                thinking += thought
+                            details = getattr(delta, 'reasoning_details', None)
+                            if isinstance(details, list):
+                                reasoning_details.extend(details)
                 finally:
                     stream.close()
                     with self._generation_lock:
@@ -191,7 +165,13 @@ class AgentGeneration:
                 )
                 repeated = appeared & self._used_call_ids
                 self._used_call_ids.update(appeared)
-                self.history.append({"role": "assistant", "content": content})
+                message = {"role": "assistant", "content": content}
+                if thinking:
+                    message['thinking'] = thinking
+                if reasoning_details:
+                    message['reasoning_details'] = reasoning_details
+                self.history.append(message)
+                self._needs_generation = not self._events.empty()
                 self._persist_context()
             self.manager.debug.model(self.agent_id, content)
             if refusal:
@@ -247,10 +227,9 @@ class AgentGeneration:
                 self._set_state("waiting")
                 return
             self._set_state("acting", action_count=len(actions))
-            with self._generation_lock:
-                if generation != self._generation or self._stop.is_set():
-                    return
-                self._execute_actions(actions, specs)
+            if generation != self._generation or self._stop.is_set():
+                return
+            self._execute_actions(actions, specs)
             if not self._stop.is_set():
                 self._set_state("waiting")
             return
@@ -274,7 +253,8 @@ class AgentGeneration:
             source="core",
             target=self.agent_id,
         )
-        self.history.append(event.model_message(self.manager.model_capabilities))
+        self.history.append(event.model_message())
+        self._needs_generation = True
         self.manager.debug.input(
             event, self.manager.model_capabilities, agent_id=self.agent_id
         )
@@ -288,3 +268,18 @@ class AgentGeneration:
             traceback=traceback.format_exc(),
         )
         self._set_state("waiting")
+
+    def _model_messages(self, model_id=None):
+        from ..memory.serialization import api_messages
+        directory = (self.manager.memory.instances / self.agent_id if self.manager.memory is not None
+                     else self.manager.presets.root.parent / 'memory/instances' / self.agent_id)
+        with self._generation_lock:
+            messages = [dict(self.history[0]), *api_messages(self.history[1:], directory)]
+        if self.manager.config is None or not self.manager.config.subscription_enabled:
+            capabilities = self.manager.capabilities_for_model(model_id or self.effective_model())
+            from ..infrastructure.context import KINDS
+            for message in messages[1:]:
+                if isinstance(message.get('content'), list):
+                    message['content'] = [part for part in message['content']
+                                          if capabilities.supports(KINDS.get(part.get('type'), 'text'))]
+        return messages

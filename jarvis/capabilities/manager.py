@@ -309,6 +309,9 @@ class CapabilityManager(
                             for item in message.get("parts", [])
                         ),
                     )
+                elif kind == 'execution_terminated':
+                    from ..core.shutdown import TERMINATED
+                    self._manager().interrupt_execution(message['agent_id'], message['call_id'], TERMINATED)
                 elif kind == "cancelled":
                     with self._lock:
                         waiter = self._cancel_waiters.get(
@@ -365,7 +368,8 @@ class CapabilityManager(
                 for pending in manager.results.for_capability(
                     action_ids, {agent.agent_id}
                 ):
-                    manager.fail_call(agent.agent_id, pending.call_id, error)
+                    from ..core.shutdown import TERMINATED
+                    manager.interrupt_execution(agent.agent_id, pending.call_id, TERMINATED)
         if host.kind == "module":
             self.unload_module(host.unit_id)
         elif host.kind == "action":
@@ -392,6 +396,13 @@ class CapabilityManager(
 
     def cancel_execution(self, agent_id: str, call_id: str, action_id: str) -> None:
         manager = self._manager()
+        if manager is not None:
+            signal = getattr(manager, 'core_stops', {}).pop((agent_id, call_id), None)
+            if signal is not None:
+                signal.set()
+        if action_id == 'speech':
+            from ..speech import service
+            service.interrupt()
         if manager is not None:
             manager.processes.cancel_call(agent_id, call_id)
         with self._lock:

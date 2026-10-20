@@ -311,7 +311,7 @@ class RuntimeTests(unittest.TestCase):
             "Research carefully.",
         )
 
-    def test_delete_agent_removes_memory_directory(self):
+    def test_delete_agent_retains_memory_until_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
@@ -319,13 +319,14 @@ class RuntimeTests(unittest.TestCase):
             created = manager.spawn(parent_id=main.agent_id, preset_id="worker")
             worker_id = created["agent_id"]
             manager.persist_agent(manager.require_agent(worker_id))
-            worker_dir = Path(temporary) / "worker" / worker_id
+            worker_dir = memory.instances / worker_id
             self.assertTrue(worker_dir.is_dir())
             self.assertEqual(
                 manager.delete(agent_id=worker_id),
                 {"agent_id": worker_id, "deleted": True},
             )
-            self.assertFalse(worker_dir.exists())
+            self.assertTrue(worker_dir.exists())
+            self.assertTrue(memory.load("worker", worker_id)["deleted"])
 
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(
@@ -526,14 +527,14 @@ class RuntimeTests(unittest.TestCase):
             first = self.manager(_Client([]), memory=memory)
             agent = first.spawn_root(preset="main")
             first.semantic_memory.write("Georgiy uses Arch Linux.")
-            instance = (memory.root / "main/instance.json").read_bytes()
+            instance = (memory.root / "instances/main/instance.json").read_bytes()
             first.shutdown()
-            (memory.root / "main/context.json").unlink()
+            (memory.root / "instances/main/context.json").unlink()
             second = self.manager(_Client([]), memory=memory)
             restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
-            self.assertEqual((memory.root / "main/instance.json").read_bytes(), instance)
-            self.assertTrue((memory.root / "main/context.json").is_file())
+            self.assertEqual((memory.root / "instances/main/instance.json").read_bytes(), instance)
+            self.assertTrue((memory.root / "instances/main/context.json").is_file())
             self.assertIn("Georgiy uses Arch Linux.", restored.history[0]["content"])
             second.shutdown()
 
@@ -545,13 +546,13 @@ class RuntimeTests(unittest.TestCase):
             self.publish(agent, "keep this")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3 and agent.state == "waiting"))
             first.shutdown()
-            saved = (memory.root / "main/context.json").read_bytes()
-            (memory.root / "main/instance.json").unlink()
+            saved = (memory.root / "instances/main/context.json").read_bytes()
+            (memory.root / "instances/main/instance.json").unlink()
             second = self.manager(_Client([]), memory=memory)
             restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
-            self.assertTrue((memory.root / "main/instance.json").is_file())
-            self.assertEqual((memory.root / "main/context.json").read_bytes(), saved)
+            self.assertTrue((memory.root / "instances/main/instance.json").is_file())
+            self.assertEqual((memory.root / "instances/main/context.json").read_bytes(), saved)
             self.assertIn("keep this", str(restored.history))
             second.shutdown()
 
@@ -589,7 +590,7 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertIsNotNone(memory.load("worker", child_info["agent_id"]))
             manager.delete(agent_id=child_info["agent_id"])
-            self.assertIsNone(memory.load("worker", child_info["agent_id"]))
+            self.assertTrue(memory.load("worker", child_info["agent_id"])["deleted"])
 
     def test_enabled_capabilities_are_persisted(self):
         fixtures.write_echo_module(self.root)
@@ -732,12 +733,12 @@ class RuntimeTests(unittest.TestCase):
                 "agent_id": "main", "preset_id": "main",
                 "parent_id": None, "capabilities_add": ["missing_action"], "messages": [{"role": "user", "content": "saved"}],
             })
-            before = (Path(temporary) / "main" / "instance.json").read_bytes()
+            before = (Path(temporary) / "instances" / "main" / "instance.json").read_bytes()
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
             self.assertIsNone(manager.restore(preset="main"))
             self.assertEqual(manager.agents, {})
             self.assertEqual(memory.load("main", "main")["capabilities_add"], ["missing_action"])
-            self.assertEqual((Path(temporary) / "main" / "instance.json").read_bytes(), before)
+            self.assertEqual((Path(temporary) / "instances" / "main" / "instance.json").read_bytes(), before)
 
     def test_disable_running_action_kills_execution_and_returns_one_disabled_result(self):
         marker = self.root / "running.pid"

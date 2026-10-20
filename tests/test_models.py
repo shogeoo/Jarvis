@@ -8,6 +8,11 @@ from jarvis.infrastructure.models import download_models, ensure_whisper_model
 
 
 class ModelPreparationTests(unittest.TestCase):
+    def setUp(self):
+        stub = patch('jarvis.memory.reranker.download_reranker', return_value=Path('/fake/reranker'))
+        stub.start()
+        self.addCleanup(stub.stop)
+
     def test_model_paths_belong_to_runtime_models(self):
         from jarvis.speech.config import build_config
         root = Path("/test/Jarvis/.jarvis")

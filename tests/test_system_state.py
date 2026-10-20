@@ -87,8 +87,8 @@ class SystemStateTests(unittest.TestCase):
         self.assertNotIn(child_id, self.manager.agents)
         self.assertEqual(parent.history, [])
         self.manager.persist_agent(parent)
-        self.assertFalse(self.memory.agent_dir("worker", parent_id).exists())
-        self.assertFalse(self.memory.agent_dir("descendant", child_id).exists())
+        self.assertTrue(self.memory.agent_dir("worker", parent_id).exists())
+        self.assertTrue(self.memory.agent_dir("descendant", child_id).exists())
         self.assertFalse((self.root / "presets" / "worker").exists())
 
     def test_messages_are_system_actions_for_every_agent(self):
@@ -151,7 +151,7 @@ class SystemStateTests(unittest.TestCase):
         def slow_save(record):
             entered.set()
             release.wait(2)
-            original(record)
+            return original(record)
         with patch.object(self.memory, "save", side_effect=slow_save):
             saver = threading.Thread(target=self.manager.persist_agent, args=(child,))
             saver.start()
@@ -164,7 +164,7 @@ class SystemStateTests(unittest.TestCase):
         self.assertFalse(saver.is_alive())
         self.assertFalse(deleter.is_alive())
         self.manager.persist_agent(child)
-        self.assertFalse(self.memory.agent_dir("worker", child_id).exists())
+        self.assertTrue(self.memory.agent_dir("worker", child_id).exists())
         self.assertEqual(child.history, [])
 
     def test_stream_fragments_do_not_execute_before_complete_json(self):

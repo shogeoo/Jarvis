@@ -66,11 +66,23 @@ class AgentManager(InstanceConfiguration):
         self.debug = debug or Debugger(enabled=False)
         self.memory = memory
         self.semantic_memory = SemanticMemory(
-            (Path(config.jarvis_dir) if config is not None else presets.root.parent)
-            / "memory"
-            / "main"
-            / "semantic.json"
+            (memory.instances if memory is not None else (Path(config.jarvis_dir) if config is not None else presets.root.parent) / 'memory/instances')
+            / 'main/semantic.json'
         )
+        self.input_lock = threading.RLock()
+        self.frozen = threading.Event()
+        self.completed = threading.Event()
+        self.final_lock = threading.Lock()
+        self.final_stream = None
+        self.core_stops = {}
+        from ..memory.reranker import Reranker
+        from ..memory.reader import ArchiveReader
+        from .shutdown import SessionShutdown
+        root = Path(config.jarvis_dir) if config is not None else presets.root.parent
+        self.reranker = Reranker(root)
+        self.archive_reader = ArchiveReader(memory.root if memory is not None else root / 'memory', self.reranker)
+        self.session_shutdown = SessionShutdown(self)
+        self.restoring_shutdown = False
         self.results = CallResultTracker(debug=self.debug)
         self.stopping = threading.Event()
         self.processes = ProcessManager()
@@ -82,6 +94,8 @@ class AgentManager(InstanceConfiguration):
         bus.manager = self  # type: ignore[attr-defined]
 
     def _new_id(self) -> str:
+        if self.memory is not None:
+            return self.memory.allocate_agent_id()
         with self._lock:
             ids = set(self.agents)
             if self.memory is not None:
@@ -104,6 +118,7 @@ class AgentManager(InstanceConfiguration):
 
         with self._lock:
             agent = self.agents.get(result.agent_id)
+            self.core_stops.pop((result.agent_id, result.call_id), None)
         if agent is None:
             self.debug.log(
                 "call_result_dropped",
@@ -115,7 +130,7 @@ class AgentManager(InstanceConfiguration):
         if batch is not None:
             batch.append((agent, result))
         else:
-            agent.enqueue_result(result)
+            return agent.enqueue_result(result)
         return True
 
     def deliver_speech_with_interruptions(self, event: Event, completions) -> bool:
@@ -148,6 +163,15 @@ class AgentManager(InstanceConfiguration):
         """Поднять экземпляры из памяти или создать новый корневой агент."""
 
         records = self.memory.load_all() if self.memory is not None else []
+        if records and not self.restoring_shutdown:
+            from .shutdown import unfinished_calls, TERMINATED
+            for record in records:
+                for call in unfinished_calls(record['messages']):
+                    if call['action_id'] == 'shutdown':
+                        continue
+                    record['messages'].append(CallResult(call['call_id'], {'status': 'interrupted', 'info': TERMINATED}, record['agent_id']).model_message())
+                    record['pending_turn'] = True
+                self.memory.save(record)
         if not records and self.memory is not None and self.memory.has_existing_state():
             logger.error(
                 "Jarvis restore failed: сохранённая память есть, но не содержит целого состояния; данные сохранены"
@@ -222,6 +246,10 @@ class AgentManager(InstanceConfiguration):
             logger.error(
                 f"Jarvis restore skipped {record['agent_id']}: parent {record['parent_id']} отсутствует"
             )
+        if not self.restoring_shutdown:
+            for agent in self.agents_snapshot():
+                if getattr(agent, '_needs_generation', False) and not agent.primary:
+                    agent.resume()
         return main_agent
 
     def _spawn_record(self, record: dict[str, Any], *, primary: bool) -> Agent:
@@ -249,6 +277,7 @@ class AgentManager(InstanceConfiguration):
             model=record.get("model"),
             capabilities_add=additions,
             description=record.get("description"),
+            pending_turn=record.get("pending_turn", False),
             persist_initial=legacy
             or bool(
                 record.get("restore_from_preset")
@@ -282,8 +311,9 @@ class AgentManager(InstanceConfiguration):
         model: str | None = None,
         capabilities_add: list[str] | None = None,
         description: str | None = None,
+        pending_turn: bool = False,
     ) -> Agent:
-        if self.stopping.is_set():
+        if self.stopping.is_set() or (self.frozen.is_set() and not self.restoring_shutdown):
             raise RuntimeError("runtime_stopping")
         selected = self.presets.load(preset)
         initial = {
@@ -323,16 +353,19 @@ class AgentManager(InstanceConfiguration):
                 model=model,
                 capabilities_add=capabilities_add,
                 description=description,
+                pending_turn=pending_turn,
             )
             self.agents[resolved_id] = agent
             self.bus.bind(agent)
             if primary and self.primary_agent_id is None:
                 self.primary_agent_id = resolved_id
         try:
-            agent.start()
-            self.capabilities.start_snapshot(
-                self.capabilities.runnable_snapshot(initial)
-            )
+            if not self.restoring_shutdown:
+                agent.start()
+            else:
+                agent._contract()
+            if not self.restoring_shutdown:
+                self.capabilities.start_snapshot(self.capabilities.runnable_snapshot(initial))
         except Exception:
             with self._lock:
                 self.agents.pop(resolved_id, None)
@@ -354,20 +387,20 @@ class AgentManager(InstanceConfiguration):
 
         if self.memory is None:
             return
-        with self._lock:
+        with agent._generation_lock, self._lock:
             # Удалённый агент мог завершить ход уже после memory.delete;
             # поздний persist не должен воскрешать его запись.
             if self.agents.get(agent.agent_id) is not agent or agent._stop.is_set():
                 return
             try:
-                self.memory.save(agent.memory_record())
+                stored = self.memory.save(agent.memory_record())
+                agent.history[1:] = stored
             except Exception as exc:  # noqa: BLE001
                 self.debug.log(
                     "memory_save_error", agent_id=agent.agent_id, error=str(exc)
                 )
-                logger.error(
-                    f"Jarvis persistence failed for {agent.agent_id}: {traceback.format_exc()}"
-                )
+                logger.error(f"Jarvis persistence failed for {agent.agent_id}: {traceback.format_exc()}")
+                raise
 
     def require_agent(self, agent_id: str) -> Agent:
         agent = self.agents.get(agent_id)
@@ -420,10 +453,17 @@ class AgentManager(InstanceConfiguration):
             agent.stop(wait=False)
             self.bus.unbind(candidate)
             for pending in self.results.for_agent(candidate):
+                if self.memory is not None:
+                    from .shutdown import TERMINATED
+                    self.session_shutdown._append_result(candidate, pending.call_id, TERMINATED)
                 self.capabilities.cancel_call(candidate, pending.call_id)
             self.results.discard_agent(candidate)
             try:
                 if self.memory is not None:
+                    record = self.memory.load(agent.preset, candidate)
+                    if record is not None:
+                        record['messages'].append(Event('instance_deleted', {'agent_id': candidate, 'reason': 'Instance and descendants deleted.'}).model_message())
+                        self.memory.save(record)
                     self.memory.delete(agent.preset, candidate)
             except Exception as exc:
                 errors.append(str(exc))
@@ -515,7 +555,14 @@ class AgentManager(InstanceConfiguration):
                 if handler_id in agent.standalone_handlers()
             )
 
+    def interrupt_execution(self, agent_id, call_id, info):
+        pending = self.results.discard(agent_id, call_id)
+        if pending is not None:
+            self.deliver_result(CallResult(call_id, {'status': 'interrupted', 'info': info}, agent_id))
+
     def fail_call(self, agent_id: str, call_id: str, error: Exception | str) -> None:
+        with self._lock:
+            self.core_stops.pop((agent_id, call_id), None)
         pending = self.results.discard(agent_id, call_id)
         if pending is not None:
             kind, capability_id = _capability_identity(pending.action_id)
@@ -582,17 +629,31 @@ class AgentManager(InstanceConfiguration):
         )
 
     def begin_shutdown(self) -> None:
+        if self.stopping.is_set():
+            return
         self.stopping.set()
-        self.results.clear()
-        with self._lock:
-            agents = list(self.agents.values())
+        with self.input_lock:
+            self.frozen.set()
+        self.session_shutdown.stop()
+        agents = self.agents_snapshot()
         for agent in agents:
             agent.stop(wait=False)
+        from .shutdown import TERMINATED
+        for agent in agents:
+            for pending in self.results.for_agent(agent.agent_id):
+                if pending.action_id == 'shutdown':
+                    continue
+                self.results.discard(agent.agent_id, pending.call_id)
+                self.capabilities.cancel_execution(agent.agent_id, pending.call_id, pending.action_id)
+                if self.memory is not None:
+                    self.session_shutdown._append_result(agent.agent_id, pending.call_id, TERMINATED)
+        self.results.clear()
 
     def shutdown(self) -> None:
         self.begin_shutdown()
         self.processes.stop()
         self.capabilities.shutdown()
+        self.reranker.close()
         for agent in list(self.agents.values()):
             if agent._thread is not None:
                 agent._thread.join(timeout=2)
