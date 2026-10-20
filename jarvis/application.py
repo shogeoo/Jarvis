@@ -99,6 +99,7 @@ class JarvisApplication:
         else:
             self.client = api_client
             capabilities = ModelCapabilities(config.model or "unknown", SUPPORTED_INPUT_MODALITIES)
+        self.services['memory_client'] = self.client
         environment = read_environment()
         self.agents = AgentManager(
             model=config.model,

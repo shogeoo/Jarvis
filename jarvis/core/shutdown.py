@@ -115,7 +115,10 @@ class SessionShutdown:
         archiver = Archiver(
             store,
             manager.config,
-            manager.services.get("memory_api_client", manager.client),
+            manager.services.get(
+                "memory_client",
+                manager.services.get("memory_api_client", manager.client),
+            ),
             manager.environment,
             stopped=self.cancelled.is_set,
         )

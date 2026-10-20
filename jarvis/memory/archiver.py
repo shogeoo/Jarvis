@@ -86,9 +86,20 @@ class Archiver:
 
     def request(self, messages, modalities):
         self.check()
-        response = self.client.chat.completions.create(
-            model=self.model(modalities), messages=messages, stream=False
-        )
+        model = self.model(modalities)
+        if getattr(self.config, "subscription_enabled", False) and callable(
+            getattr(self.client, "create_memory_completion", None)
+        ):
+            response = self.client.create_memory_completion(
+                model=model,
+                messages=messages,
+                modalities=modalities,
+                cancelled=self.stopped,
+            )
+        else:
+            response = self.client.chat.completions.create(
+                model=model, messages=messages, stream=False
+            )
         text = response.choices[0].message.content
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Memory model returned an empty Markdown response")
