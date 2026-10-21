@@ -21,12 +21,7 @@ from .protocol import (
 
 class AgentGeneration:
     def _event_history_message(self, item: Event) -> dict[str, Any]:
-        # Keep original attachments in Jarvis memory even when the subscription
-        # model cannot receive their modality. API fallback gets the same
-        # persisted context and can use its own model capabilities.
-        if self.manager.config is not None and self.manager.config.subscription_enabled:
-            return item.model_message()
-        return item.model_message(self.manager.model_capabilities)
+        return item.model_message()
 
     def _run_turn(
         self,
@@ -76,7 +71,12 @@ class AgentGeneration:
             try:
                 specs, _ = self._contract(model_id=active_model)
                 schemas = {name: spec.data_schema for name, spec in specs.items()}
-                request_messages = self._model_messages(active_model)
+                from ..infrastructure.subscription import SubscriptionClient
+                routing = isinstance(self.manager.client, SubscriptionClient)
+                with self._generation_lock:
+                    from copy import deepcopy
+                    original_history = deepcopy(self.history)
+                request_messages = (original_history if routing else self._model_messages(active_model, history=original_history))
                 request_started = time.monotonic()
                 self.manager.debug.log("model_request_started", agent_id=self.agent_id,
                                        model=active_model, messages=len(request_messages),
@@ -92,6 +92,7 @@ class AgentGeneration:
                         else {}
                     ),
                     stream=True,
+                    **({"_jarvis_messages": lambda model, caps, history=original_history: self._model_messages(model, capabilities=caps, history=history)} if routing else {}),
                 )
                 with self._generation_lock:
                     if generation != self._generation or self._stop.is_set():
@@ -296,17 +297,9 @@ class AgentGeneration:
         )
         self._set_state("waiting")
 
-    def _model_messages(self, model_id=None):
-        from ..memory.serialization import api_messages
-        directory = (self.manager.memory.instances / self.agent_id if self.manager.memory is not None
-                     else self.manager.presets.root.parent / 'memory/instances' / self.agent_id)
+    def _model_messages(self, model_id=None, *, capabilities=None, history=None):
+        from .media import agent_messages
+        from copy import deepcopy
         with self._generation_lock:
-            messages = [dict(self.history[0]), *api_messages(self.history[1:], directory)]
-        if self.manager.config is None or not self.manager.config.subscription_enabled:
-            capabilities = self.manager.capabilities_for_model(model_id or self.effective_model())
-            from ..infrastructure.context import KINDS
-            for message in messages[1:]:
-                if isinstance(message.get('content'), list):
-                    message['content'] = [part for part in message['content']
-                                          if capabilities.supports(KINDS.get(part.get('type'), 'text'))]
-        return messages
+            snapshot = deepcopy(self.history) if history is None else deepcopy(history)
+        return agent_messages(self, snapshot, model_id or self.effective_model(), capabilities)

@@ -7,7 +7,7 @@ from copy import deepcopy
 from ..capabilities.api import PENDING, ActionContext
 from ..infrastructure.context import read_json
 from ..memory.archiver import Archiver
-from ..memory.serialization import api_messages
+from .media import render_request
 from .protocol import CallResult, parse_actions, response_format
 
 INTERRUPTED = "Action interrupted by session shutdown."
@@ -91,6 +91,10 @@ class SessionShutdown:
                         record["agent_id"], call["call_id"], INTERRUPTED
                     )
         manager.processes.stop()
+        # Canceled input preparation must release files before archive conversion.
+        for agent in manager.agents_snapshot():
+            with agent._media_lock:
+                pass
 
     def _append_result(self, agent_id, call_id, info):
         store = self.manager.memory
@@ -181,7 +185,7 @@ class SessionShutdown:
         spec = manager.actions.require(action_id)
         directory = store.sessions / state["session_id"] / "instances/main"
         # Service phase uses a private copy of the completed Main context.
-        history = api_messages(read_json(directory / "context.json"), directory)
+        history = read_json(directory / "context.json")
         restart = manager.services.pop("session_restart_event", None)
         if restart is not None:
             history.append(restart.model_message())
@@ -203,9 +207,18 @@ class SessionShutdown:
         # No retries of final generation/action across restarts: at most one farewell.
         self._stage("finished")
         try:
+            from ..infrastructure.subscription import SubscriptionClient
+            def prepare(model, caps):
+                from ..infrastructure.model_capabilities import ModelCapabilities
+                if "/" in model and model != manager.model:
+                    caps = manager.capabilities_for_model(model)
+                caps = ModelCapabilities(model, caps.input_modalities)
+                return render_request(messages, caps, directory, "main", state["session_id"])
+            routing = isinstance(manager.client, SubscriptionClient)
             stream = manager.client.chat.completions.create(
                 model=main.effective_model(),
-                messages=messages,
+                messages=messages if routing else prepare(main.effective_model(), manager.capabilities_for_model(main.effective_model())),
+                **({"_jarvis_messages": prepare} if routing else {}),
                 response_format=response_format({action_id: spec.data_schema}),
                 stream=True,
             )

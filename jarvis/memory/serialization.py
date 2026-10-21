@@ -194,3 +194,34 @@ def api_messages(context, directory, *, document_parts=None, include_thinking=Fa
                 ]
         result.append(clean)
     return result
+
+
+def summary_context(context):
+    """Session-ending protocol is excluded only from the summarizer's input."""
+    result = []
+    shutdown_calls = set()
+    for message in context:
+        copy = deepcopy(message)
+        content = copy.get("content")
+        if copy.get("role") == "assistant" and isinstance(content, str):
+            try:
+                value = json.loads(content)
+            except ValueError:
+                value = None
+            if isinstance(value, dict) and isinstance(value.get("actions"), list) and any(a.get("action_id") == "shutdown" for a in value["actions"]):
+                shutdown_calls.update(a.get("call_id") for a in value["actions"] if a.get("action_id") == "shutdown")
+                kept = [a for a in value["actions"] if a.get("action_id") != "shutdown"]
+                if not kept:
+                    continue
+                if len(kept) != len(value["actions"]):
+                    value["actions"] = kept
+                    copy["content"] = compact(value)
+        if isinstance(content, str):
+            try:
+                event = json.loads(content)
+            except ValueError:
+                event = None
+            if isinstance(event, dict) and event.get("event_id") == "call_result" and event.get("call_id") in shutdown_calls:
+                continue
+        result.append(copy)
+    return result

@@ -130,6 +130,7 @@ class Agent(AgentGeneration):
         self._state_lock = threading.Lock()
         self._generation = 0
         self._generation_lock = threading.RLock()
+        self._media_lock = threading.RLock()
         self._active_stream = None
         self._needs_generation = pending_turn
         self._accepted_inputs = set()

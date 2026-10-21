@@ -306,7 +306,7 @@ class SessionMemoryTests(unittest.TestCase):
         self.assertEqual(archiver.model({"audio"}), "api/text_image_audio_video")
         part = {"type": "video_url", "filename": "clip.mp4"}
         with patch(
-            "jarvis.memory.archiver.subprocess.run",
+            "jarvis.core.media.subprocess.run",
             return_value=SimpleNamespace(stdout='{"streams":[{"codec_type":"audio"}]}'),
         ):
             self.assertIn("audio", archiver.modalities([part], self.root))

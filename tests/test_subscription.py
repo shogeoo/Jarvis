@@ -520,7 +520,7 @@ class SubscriptionTests(unittest.TestCase):
         ]
         router._api_request({"messages": messages, "stream": True})
         content = api.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-        self.assertEqual([part["type"] for part in content], ["text", "file"])
+        self.assertEqual([part["type"] for part in content], ["text", "file", "input_audio"])
         self.assertEqual(content[1]["file"]["filename"], "report.pdf")
         self.assertEqual(len(messages[1]["content"]), 3)
 
@@ -609,6 +609,7 @@ class SubscriptionTests(unittest.TestCase):
             workers = []
 
             def visit(url):
+                self.assertTrue(any(url in notice for notice in notices))
                 query = parse_qs(urlsplit(url).query)
                 self.assertEqual(query["code_challenge_method"], ["S256"])
                 self.assertEqual(
@@ -638,6 +639,7 @@ class SubscriptionTests(unittest.TestCase):
             self.assertTrue(auth.path.exists())
             self.assertEqual(auth.credentials()["account_id"], "account-test")
             self.assertIn("Войдите", notices[0])
+            self.assertTrue(any("https://auth.openai.com/oauth/authorize?" in notice for notice in notices))
             self.assertEqual(
                 session.post.call_args.kwargs["data"]["code"], "login-code"
             )

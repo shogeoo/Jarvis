@@ -457,55 +457,42 @@ class SubscriptionClient:
     def _api_request(self, options: dict[str, Any]):
         requested_model = options.get("model") or self.api_model
         api_model = requested_model if "/" in requested_model else self.api_model
-        messages = deepcopy(options["messages"])
-        model_info = ModelCapabilities(
-            api_model, self.api_capabilities.input_modalities
-        ).prompt_block()
-        if (
-            "<MODEL_INFO>" in messages[0]["content"]
-            and "</MODEL_INFO>" in messages[0]["content"]
-        ):
-            messages[0]["content"] = re.sub(
-                r"<MODEL_INFO>.*?</MODEL_INFO>",
-                lambda _: "<MODEL_INFO>\n" + model_info + "\n</MODEL_INFO>",
-                messages[0]["content"],
-                count=1,
-                flags=re.DOTALL,
-            )
-        else:
-            messages[0]["content"] = messages[0]["content"].replace(
-                ModelCapabilities(
-                    self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
-                ).prompt_block(),
-                model_info,
-                1,
-            )
-        for message in messages[1:]:
-            if message.get("role") != "user" or not isinstance(
-                message.get("content"), list
+        prepare = options.get("_jarvis_messages")
+        messages = (prepare(api_model, self.api_capabilities) if prepare else deepcopy(options["messages"]))
+        if prepare is None:
+            model_info = ModelCapabilities(
+                api_model, self.api_capabilities.input_modalities
+            ).prompt_block()
+            if (
+                "<MODEL_INFO>" in messages[0]["content"]
+                and "</MODEL_INFO>" in messages[0]["content"]
             ):
-                continue
-            message["content"] = [
-                part
-                for part in message["content"]
-                if self.api_capabilities.supports(
-                    {
-                        "image_url": "image",
-                        "input_audio": "audio",
-                        "video_url": "video",
-                        "file": "file",
-                    }.get(part.get("type"), "text")
+                messages[0]["content"] = re.sub(
+                    r"<MODEL_INFO>.*?</MODEL_INFO>",
+                    lambda _: "<MODEL_INFO>\n" + model_info + "\n</MODEL_INFO>",
+                    messages[0]["content"],
+                    count=1,
+                    flags=re.DOTALL,
                 )
-            ]
+            else:
+                messages[0]["content"] = messages[0]["content"].replace(
+                    ModelCapabilities(
+                        self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
+                    ).prompt_block(),
+                    model_info,
+                    1,
+                )
         return self.api_client.chat.completions.create(
-            **{**options, "model": api_model, "messages": messages}
+            **{**{k: v for k, v in options.items() if k != "_jarvis_messages"}, "model": api_model, "messages": messages}
         )
 
     def _generate(
         self, options: dict[str, Any], stream: SubscriptionStream
     ) -> str | None:
         schema = options.get("response_format", {}).get("json_schema", {}).get("schema")
-        messages = options["messages"]
+        prepare = options.get("_jarvis_messages")
+        messages = (prepare(options.get("model") or self.subscription_model, SUBSCRIPTION_MODALITIES)
+                    if prepare else options["messages"])
         if not messages or messages[0].get("role") != "system":
             raise ValueError(
                 "Subscription request must start with Jarvis system prompt"
