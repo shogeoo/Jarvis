@@ -110,7 +110,7 @@
     },
     {
       "enable_capability": {
-        "description": "Add an existing user capability to your own abilities by its global ID. A module is assigned whole. Global pause remains independent of assignment, so assigning a paused capability does not resume it for everyone.",
+        "description": "Add an existing user capability to your own abilities by its global ID. A module is assigned whole. Global pause remains independent of assignment, so assigning a paused capability does not resume it for everyone. For main, this updates the main preset permanently; other instances receive an individual addition. Modules are assigned as an indivisible capability.",
         "data_schema": {
           "properties": {
             "capability_id": {
@@ -132,7 +132,7 @@
     },
     {
       "disable_capability": {
-        "description": "Remove an individually added user capability from your own abilities when no longer needed. This does not globally pause it or remove its files. System capabilities cannot be disabled; preset assignments must be changed through the preset.",
+        "description": "Remove an individually added user capability from your own abilities when no longer needed. This does not globally pause it or remove its files. System capabilities cannot be disabled; preset assignments must be changed through the preset. For main, this removes the capability from the main preset; other instances cannot remove mandatory preset assignments. System capabilities cannot be disabled.",
         "data_schema": {
           "properties": {
             "capability_id": {
@@ -418,7 +418,7 @@
     },
     {
       "agents": {
-        "description": "Coordinate your independent agents and shape their reusable specializations. Create, inspect, instruct, interrupt or recursively remove instances, and manage presets without losing the distinction between a specialization and an individual.",
+        "description": "Organize collaboration between persistent cognitive processes. Use specialists for substantial tasks that require focused investigation, implementation or independent verification; delegate separable work with a clear objective, relevant context, constraints and expected result. Discover existing instances and preset specializations first. Reuse a suitable available instance when its context and responsibility fit. Create an instance to perform concrete work under an existing specialization; create a preset only when a reusable personality or professional specialization is missing. A preset is a portable personality and common configuration, not a task. An instance has its own persistent identity, context, semantic memory and parent; it may create subordinate specialists when appropriate. Particular assignments belong in messages or instance instructions. Coordinate dependent work, collect results, verify the integrated outcome and keep the requester informed. Other specializations can request help across the hierarchy through send_message_to_agent. Obtain the agents capability when organizing your own subordinate processes requires it.",
         "actions": [
           {
             "agents.spawn": {
@@ -713,15 +713,15 @@
     },
     {
       "semantic_memory": {
-        "description": "Maintain your own instance semantic facts across sessions. Entries are private to your instance and immediately appear in your MEMORY block.",
+        "description": "Maintain your own instance knowledge across sessions. The separate MEMORY block defines what merits preservation and how to assess its evidence. These operations change your own entries; changes immediately appear in MEMORY.",
         "actions": [
           {
             "semantic_memory.write": {
-              "description": "Write a message from your past self to your future self in semantic memory. Record one confirmed, self-contained fact likely to remain true in the near future: a person's stable habits, character, preferences, interests, biography or relationships, or persistent information about devices and surroundings. State the established fact directly, with enough context to understand it later. Do not record uncertain inferences, hypothetical possibilities, plans as completed events, current tasks, temporary projects or short-lived states. Do not infer a habit from one observation or duplicate an existing entry, PERSON or ENVIRONMENT. The core generates the entry ID.",
+              "description": "Save one useful self-contained knowledge entry according to the MEMORY block. The core assigns its ID. Record new useful knowledge during activity without waiting for a separate request.",
               "data_schema": {
                 "properties": {
                   "content": {
-                    "description": "One short, self-contained message to your future self stating a confirmed fact expected to remain stable in the near future. Include whom or what the fact concerns; exclude uncertainty, hypothetical plans, current tasks and temporary states."
+                    "description": "Concise standalone knowledge, with confidence or evidential basis when necessary to preserve its meaning."
                   }
                 }
               },
@@ -736,14 +736,14 @@
           },
           {
             "semantic_memory.edit": {
-              "description": "Replace the complete text of an existing semantic memory entry by its ID. Write a clear message to your future self containing the corrected, confirmed and sufficiently stable fact. Preserve relevant established information; do not turn possibilities, intentions or uncertain conclusions into facts.",
+              "description": "Replace the full text of an existing entry by its current MEMORY ID when knowledge needs correction, refinement or consolidation. Follow the MEMORY block.",
               "data_schema": {
                 "properties": {
                   "id": {
                     "description": "Exact ID of the existing MEMORY entry to replace."
                   },
                   "content": {
-                    "description": "Complete replacement message to your future self, stating the corrected confirmed and stable information clearly enough to understand without the current conversation."
+                    "description": "Full corrected standalone entry, preserving relevant knowledge and expressing confidence or evidential basis when needed, according to MEMORY."
                   }
                 }
               },
@@ -758,7 +758,7 @@
           },
           {
             "semantic_memory.delete": {
-              "description": "Delete a semantic memory entry by its ID when its information is false, obsolete, duplicated or no longer suitable as a confirmed stable message to your future self.",
+              "description": "Remove an entry by its current MEMORY ID when it is incorrect, obsolete, redundant or no longer useful.",
               "data_schema": {
                 "properties": {
                   "id": {

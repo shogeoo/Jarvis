@@ -7,9 +7,9 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from copy import deepcopy
 from ..infrastructure.context import (
     KINDS,
+    context_files,
     hydrate_part,
     read_json,
     write_text,
@@ -120,13 +120,14 @@ class Archiver:
             # Newly extracted document media extend the manifest; checkpoint each file.
             while True:
                 pending = [
-                    f for f in self.store.files(agent) if not f.get("interpreted")
+                    f for f in self.store.files(agent) if not f.get("text_representation")
                 ]
                 if not pending:
                     break
                 for item in pending:
                     self.check()
                     if item["type"] == "file":
+                        item.pop("embedded_files", None)
                         item["document_markdown"] = documents.convert(item)
                         item["text_representation"] = item["document_markdown"]
                     else:
@@ -152,7 +153,6 @@ class Archiver:
                             ],
                             self.modalities([item], directory),
                         )
-                    item.update(interpreted=True, agent_id=agent, session_id=session)
                     self.store.update_file(agent, item)
             items = {f["file_id"]: f for f in self.store.files(agent)}
             # Insert interpretations into the archival Markdown; retain original
@@ -163,21 +163,6 @@ class Archiver:
                         item["document_markdown"], items
                     )
                     self.store.update_file(agent, item)
-            context = read_json(directory / "context.json", [])
-            for message in context:
-                if isinstance(message.get("content"), list):
-                    message["content"] = [
-                        {
-                            key: deepcopy(value)
-                            for key, value in items[part["file_id"]].items()
-                            if key not in {"sha256", "source", "interpreted"}
-                        }
-                        if part.get("file_id")
-                        else part
-                        for part in message["content"]
-                    ]
-            self.store._write_json(directory / "context.json", context)
-
     @staticmethod
     def expand_interpretations(markdown, items):
         def insert(match):
@@ -196,7 +181,7 @@ class Archiver:
         markdown = part.get("document_markdown", part["text_representation"])
         manifest = {
             f["file_id"]: f
-            for f in read_json(directory / "files.json", {"files": []})["files"]
+            for f in context_files(read_json(directory / "context.json", []))
         }
         result, offset = [], 0
         for match in re.finditer(
@@ -260,9 +245,14 @@ class Archiver:
                 directory,
                 output,
                 ignore=shutil.ignore_patterns(
-                    "semantic.json", ".save-journal.json", ".*.tmp"
+                    "semantic.json", "files.json", "instance.json", ".save-journal.json", ".*.tmp"
                 ),
             )
+            self.store._write_json(output / "instance.json", {
+                key: record.get(key) for key in
+                ("agent_id", "preset_id", "parent_id", "description", "deleted")
+                if key in record
+            })
             write_text(output / "summary.md", summary)
 
     def summarize_session(self):

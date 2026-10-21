@@ -13,13 +13,14 @@ def compact(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def interpretation(part):
+def interpretation(part, *, agent_id=None, session_id=None):
     modality = KINDS.get(part.get("type"), "file")
     identity = {
         key: part[key]
         for key in ("agent_id", "session_id", "file_id", "filename")
         if key in part
     }
+    identity.update({key: value for key, value in (("agent_id", agent_id), ("session_id", session_id)) if value is not None})
     return (
         f"<{modality}_interpretation_start>"
         + compact(identity)
@@ -50,7 +51,7 @@ def _text(value, include_thinking):
     return compact(obj if include_thinking else _without_reasoning(obj))
 
 
-def serialize_message(message, *, include_thinking=True):
+def serialize_message(message, *, include_thinking=True, agent_id=None, session_id=None):
     agent = message.get("role") == "assistant"
     start, end = ("agent", "agent") if agent else ("event", "event")
     blocks = []
@@ -67,7 +68,7 @@ def serialize_message(message, *, include_thinking=True):
     if isinstance(content, list):
         for part in content:
             if part.get("type") in KINDS:
-                blocks.append(interpretation(part))
+                blocks.append(interpretation(part, agent_id=agent_id, session_id=session_id))
             elif part.get("type") in {"thinking", "reasoning"}:
                 if include_thinking:
                     blocks.append(
@@ -100,18 +101,18 @@ def serialize_message(message, *, include_thinking=True):
     return f"<{start}_start>" + "".join(blocks) + f"<{end}_end>"
 
 
-def serialize_context(context, *, include_thinking=True):
+def serialize_context(context, *, include_thinking=True, agent_id=None, session_id=None):
     return "".join(
-        serialize_message(m, include_thinking=include_thinking) for m in context
+        serialize_message(m, include_thinking=include_thinking, agent_id=agent_id, session_id=session_id) for m in context
     )
 
 
-def chunks(context, tokenizer, *, max_tokens=30000):
+def chunks(context, tokenizer, *, max_tokens=30000, agent_id=None, session_id=None):
     """About 30 overlapping token windows; retain inclusive source message indexes."""
     tokens, ranges = [], []
     for i, message in enumerate(context):
         encoded = tokenizer.encode(
-            serialize_message(message, include_thinking=False), add_special_tokens=False
+            serialize_message(message, include_thinking=False, agent_id=agent_id, session_id=session_id), add_special_tokens=False
         )
         ranges.append((len(tokens), len(tokens) + len(encoded), i))
         tokens.extend(encoded)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import mimetypes
 import os
@@ -70,8 +69,7 @@ def hydrate_part(part, directory):
         raise ValueError("Invalid attachment filename")
     raw = (Path(directory) / "files" / filename).read_bytes()
     mime = (
-        part.get("mime_type")
-        or mimetypes.guess_type(filename)[0]
+        mimetypes.guess_type(filename)[0]
         or "application/octet-stream"
     )
     data = base64.b64encode(raw).decode("ascii")
@@ -79,7 +77,7 @@ def hydrate_part(part, directory):
     if kind == "input_audio":
         return {
             "type": kind,
-            kind: {"data": data, "format": part.get("format") or mime.split("/")[-1]},
+            kind: {"data": data, "format": Path(filename).suffix.lstrip(".")},
         }
     if kind == "file":
         return {
@@ -88,8 +86,22 @@ def hydrate_part(part, directory):
         }
     return {
         "type": kind,
-        kind: {**part.get("native_options", {}), "url": f"data:{mime};base64,{data}"},
+        kind: {"url": f"data:{mime};base64,{data}"},
     }
+
+
+def context_files(context):
+    """Attachment metadata has one source of truth: the context tree."""
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("type") in KINDS and value.get("file_id"):
+                yield value
+            for child in value.values():
+                yield from walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from walk(child)
+    return list(walk(context))
 
 
 class MemoryStore:
@@ -98,6 +110,45 @@ class MemoryStore:
         self.instances = self.root / "instances"
         self.sessions = self.root / "sessions"
         self._save_lock = threading.RLock()
+        self._migrate_file_indexes()
+
+    def _migrate_file_indexes(self):
+        """Fold the previous duplicate registry into its owning context once."""
+        for index_path in self.root.rglob("files.json"):
+            directory = index_path.parent
+            if directory.parent.name != "instances":
+                continue
+            self._recover(directory)
+            context = read_json(directory / "context.json", [])
+            registry = {f["file_id"]: f for f in read_json(index_path, {"files": []})["files"]}
+            obsolete = {"source", "sha256", "native_options", "mime_type", "format", "agent_id", "session_id", "interpreted"}
+
+            def clean(part, ancestors=()):
+                if part.get("file_id") in ancestors:
+                    return
+                for key in obsolete:
+                    part.pop(key, None)
+                identifiers = re.findall(r"memory://[^/]+/[^/]+/(file_[0-9]+)\?", part.get("document_markdown", ""))
+                nested = list(part.get("embedded_files", []))
+                known = {f["file_id"] for f in nested}
+                for identifier in dict.fromkeys(identifiers):
+                    if identifier != part["file_id"] and identifier not in known and identifier in registry:
+                        nested.append(deepcopy(registry[identifier]))
+                        known.add(identifier)
+                if nested:
+                    part["embedded_files"] = nested
+                    for child in nested:
+                        clean(child, (*ancestors, part["file_id"]))
+
+            for part in context_files(context):
+                clean(part)
+            self._write_json(directory / "context.json", context)
+            if directory.parent != self.instances:
+                metadata = read_json(directory / "instance.json")
+                if metadata is not None:
+                    self._write_json(directory / "instance.json", {k: v for k, v in metadata.items() if k in {"agent_id", "preset_id", "parent_id", "description", "deleted"}})
+            index_path.unlink()
+            sync_directory(directory)
 
     _read_json = staticmethod(read_json)
 
@@ -208,73 +259,50 @@ class MemoryStore:
             (directory / ".save-journal.json").unlink()
             sync_directory(directory)
 
-    def register_file(self, agent_id, raw, filename, kind, mime, *, source=None):
-        """A per-instance manifest makes saves/retries idempotent without renaming originals."""
+    def register_file(self, agent_id, raw, filename, kind, mime, *, siblings=()):
+        """Write original bytes; the caller commits metadata in its context tree."""
         with self._save_lock:
             if not valid_name(agent_id) or kind not in KINDS:
                 raise ValueError("Invalid file owner/type")
             directory = self.instances / agent_id
-            index = read_json(directory / "files.json", {"next_id": 1, "files": []})
-            digest = hashlib.sha256(raw).hexdigest()
-            filename = Path(
-                filename or ("attachment" + (mimetypes.guess_extension(mime) or ".bin"))
-            ).name
-            # Same position/source is the same attachment on subsequent context saves.
-            key = source or f"{kind}:{filename}:{digest}"
-            previous = next(
-                (item for item in index["files"] if item.get("source") == key), None
-            )
-            if previous:
-                if previous["sha256"] != digest:
-                    raise ValueError("An existing attachment changed bytes")
-                return deepcopy(previous)
-            used = {item["filename"] for item in index["files"]}
-            candidate = filename
-            suffix = 1
-            while candidate in used or (directory / "files" / candidate).exists():
+            known = [*self.files(agent_id), *context_files(list(siblings))]
+            number = 1 + max((int(f["file_id"][5:]) for f in known), default=0)
+            filename = Path(filename or ("attachment" + (mimetypes.guess_extension(mime) or ".bin"))).name
+            candidate, suffix = filename, 1
+            while (directory / "files" / candidate).exists():
                 candidate = f"{Path(filename).stem}_{suffix}{Path(filename).suffix}"
                 suffix += 1
             files = directory / "files"
             files.mkdir(parents=True, exist_ok=True)
-            path = files / candidate
-            with path.open("wb") as stream:
+            with (files / candidate).open("wb") as stream:
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
             sync_directory(files)
-            item = {
-                "type": kind,
-                "file_id": f"file_{index['next_id']:06d}",
-                "filename": candidate,
-                "mime_type": mime,
-                "text_representation": "",
-                "source": key,
-                "sha256": digest,
-            }
-            index["next_id"] += 1
-            index["files"].append(item)
-            self._write_json(directory / "files.json", index)
-            return deepcopy(item)
+            return {"type": kind, "file_id": f"file_{number:06d}",
+                    "filename": candidate, "text_representation": ""}
 
     def files(self, agent_id):
-        return read_json(self.instances / agent_id / "files.json", {"files": []})[
-            "files"
-        ]
+        return context_files(read_json(self.instances / agent_id / "context.json", []))
 
     def update_file(self, agent_id, item):
         with self._save_lock:
-            path = self.instances / agent_id / "files.json"
-            index = read_json(path)
-            index["files"] = [
-                deepcopy(item) if f["file_id"] == item["file_id"] else f
-                for f in index["files"]
-            ]
-            self._write_json(path, index)
+            path = self.instances / agent_id / "context.json"
+            context = read_json(path, [])
+            found = False
+            for attachment in context_files(context):
+                if attachment["file_id"] == item["file_id"]:
+                    attachment.clear()
+                    attachment.update(deepcopy(item))
+                    found = True
+            if not found:
+                raise ValueError("Unknown context attachment")
+            self._write_json(path, context)
 
     def store_messages(self, agent_id, messages):
         result = deepcopy(messages)
-        known = {item["file_id"]: item for item in self.files(agent_id)}
-        for i, message in enumerate(result):
+        previous = read_json(self.instances / agent_id / "context.json", [])
+        for message_index, message in enumerate(result):
             if message.get("role") not in {
                 "system",
                 "user",
@@ -293,9 +321,8 @@ class MemoryStore:
                 if kind not in KINDS:
                     continue
                 if part.get("file_id"):
-                    item = known.get(part["file_id"])
-                    if item is None:
-                        raise ValueError("Unknown live attachment")
+                    # Preserve the context itself, including manual edits.
+                    continue
                 else:
                     inner = part.get(kind) or {}
                     field = {
@@ -323,27 +350,16 @@ class MemoryStore:
                             mime = response.headers.get_content_type()
                     else:
                         raise ValueError("Unsupported attachment source")
-                    item = self.register_file(
-                        agent_id,
-                        raw,
-                        inner.get("filename") or inner.get("name"),
-                        kind,
-                        mime,
-                        source=f"context:{i}:{j}",
-                    )
-                    if kind in {"image_url", "video_url"}:
-                        item["native_options"] = {
-                            k: v for k, v in inner.items() if k not in {"url", "name"}
-                        }
-                        self.update_file(agent_id, item)
-                    if kind == "input_audio":
-                        item["format"] = inner.get("format", "wav")
-                        self.update_file(agent_id, item)
-                content[j] = {
-                    key: deepcopy(value)
-                    for key, value in item.items()
-                    if key not in {"source", "sha256"}
-                }
+                    old_parts = (previous[message_index].get("content", []) if message_index < len(previous) else [])
+                    old = old_parts[j] if isinstance(old_parts, list) and j < len(old_parts) else {}
+                    if old.get("type") == kind and old.get("file_id") and (self.instances / agent_id / "files" / old["filename"]).read_bytes() == raw:
+                        item = old
+                    else:
+                        item = self.register_file(
+                            agent_id, raw, inner.get("filename") or inner.get("name"),
+                            kind, mime, siblings=context_files(result),
+                        )
+                content[j] = deepcopy(item)
         return result
 
     def save(self, record):

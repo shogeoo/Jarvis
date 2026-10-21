@@ -103,6 +103,80 @@ class SessionMemoryTests(unittest.TestCase):
             messages[0]["content"][0]["image_url"]["url"],
         )
 
+    def test_context_is_the_only_file_metadata_and_manual_edits_survive_restart(self):
+        self.store.save(self.record(messages=[{"role": "user", "content": [self.attachment()]}]))
+        directory = self.store.instances / "main"
+        self.assertFalse((directory / "files.json").exists())
+        history = read_json(directory / "context.json")
+        part = history[0]["content"][0]
+        self.assertEqual(set(part), {"type", "file_id", "filename", "text_representation"})
+        (directory / "files/report.png").rename(directory / "files/renamed.png")
+        part.update(filename="renamed.png", text_representation="Manually corrected")
+        self.store._write_json(directory / "context.json", history)
+        restored = MemoryStore(self.store.root)
+        record = restored.load("main", "main")
+        restored.save(record)
+        self.assertEqual(restored.files("main")[0], part)
+        self.assertIn("data:image/png", hydrate_part(part, directory)["image_url"]["url"])
+
+    def test_original_document_named_files_json_is_not_treated_as_a_registry(self):
+        native = {"type": "file", "file": {"filename": "files.json",
+                  "file_data": "data:application/json;base64," + base64.b64encode(b'{"important": true}').decode()}}
+        self.store.save(self.record(messages=[{"role": "user", "content": [native]}]))
+        restarted = MemoryStore(self.store.root)
+        self.assertEqual((restarted.instances / "main/files/files.json").read_bytes(), b'{"important": true}')
+
+    def test_legacy_index_migrates_embedded_media_into_context_and_is_removed(self):
+        self.store.save(self.record())
+        directory = self.store.instances / "main"
+        child = {"type": "image_url", "file_id": "file_000002", "filename": "image.png",
+                 "mime_type": "image/png", "source": "old", "sha256": "old", "native_options": {},
+                 "text_representation": "Image"}
+        document = {"type": "file", "file_id": "file_000001", "filename": "report.docx",
+                    "text_representation": "Document", "agent_id": "main", "session_id": "session_000001",
+                    "document_markdown": "[Media](memory://main/session_000001/file_000002?filename=image.png)"}
+        self.store._write_json(directory / "context.json", [{"role": "user", "content": [document]}])
+        self.store._write_json(directory / "files.json", {"files": [document, child]})
+        restored = MemoryStore(self.store.root)
+        self.assertFalse((directory / "files.json").exists())
+        items = restored.files("main")
+        self.assertEqual([f["file_id"] for f in items], ["file_000001", "file_000002"])
+        self.assertNotIn("agent_id", items[0])
+        self.assertEqual(set(items[1]), {"type", "file_id", "filename", "text_representation"})
+
+    def test_document_archival_resumes_after_media_api_failure_without_new_ids(self):
+        from docx import Document
+        document = Document()
+        document.add_paragraph("Before")
+        document.add_picture(io.BytesIO(PNG))
+        document.add_paragraph("After")
+        stream = io.BytesIO()
+        document.save(stream)
+        native = {"type": "file", "file": {"filename": "report.docx",
+                  "file_data": "data:application/octet-stream;base64," + base64.b64encode(stream.getvalue()).decode()}}
+        self.store.save(self.record(messages=[{"role": "user", "content": [native]}]))
+        self.store.update_state(shutdown={"session_id": "session_000001"})
+        config = SimpleNamespace(memory_model_text="api/text", memory_model_text_image="api/image")
+        with self.assertRaises(RuntimeError):
+            Archiver(self.store, config, FakeMemoryAPI(fail_on=1), "env").interpret()
+        before = self.store.files("main")
+        self.assertEqual(len(before), 2)
+        restarted = MemoryStore(self.store.root)
+        archiver = Archiver(restarted, config, FakeMemoryAPI(), "env")
+        archiver.interpret()
+        self.assertEqual([f["file_id"] for f in restarted.files("main")], [f["file_id"] for f in before])
+        archiver.summarize_instances()
+        archiver.summarize_session()
+        archiver.commit()
+        directory = restarted.sessions / "session_000001/instances/main"
+        self.assertFalse((directory / "files.json").exists())
+        metadata = read_json(directory / "instance.json")
+        self.assertNotIn("pending_turn", metadata)
+        self.assertNotIn("capabilities_add", metadata)
+        name, media = ArchiveReader(restarted.root, Mock()).get_file("main", "session_000001", before[1]["file_id"])
+        self.assertEqual(name, before[1]["filename"])
+        self.assertEqual(base64.b64decode(media["image_url"]["url"].split(",", 1)[1]), PNG)
+
     def test_prepared_context_transaction_is_recovered_after_a_write_failure(self):
         self.store.save(self.record(messages=[{"role": "user", "content": "before"}]))
         real = self.store._write_json
@@ -246,6 +320,7 @@ class SessionMemoryTests(unittest.TestCase):
         image = self.store.register_file(
             "main", PNG, "embedded.png", "image_url", "image/png"
         )
+        self.store.save(self.record(messages=[{"role": "user", "content": [image]}]))
         markdown = f"Before [Media](memory://main/session_000001/{image['file_id']}?filename=embedded.png) After"
         archiver = Archiver(self.store, SimpleNamespace(), Mock(), "env")
         parts = archiver.document_parts(
@@ -713,7 +788,9 @@ class DocumentTests(unittest.TestCase):
         item = self.store.register_file(
             "main", path.read_bytes(), path.name, "file", "application/octet-stream"
         )
+        self.store.save(self.record(messages=[{"role": "user", "content": [item]}]))
         body = Documents(self.store, "main", "session_000001").convert(item)
+        self.store.update_file("main", item)
         images = [f for f in self.store.files("main") if f["type"] == "image_url"]
         self.assertTrue(images)
         self.assertIn("memory://main/session_000001/", body)

@@ -73,6 +73,19 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             self.assertEqual((custom / "person.txt").read_text(), "Keep this personality")
 
+    def test_main_defaults_include_installed_capabilities_without_resetting_edits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = ["send_notification", "set_timer", "take_screenshot"]
+            for name in expected:
+                (root / "capabilities/actions" / name).mkdir(parents=True)
+            ensure_runtime_layout(root)
+            store = PresetStore(root / "presets")
+            self.assertEqual(list(store.load("main").capabilities), expected)
+            store.edit("main", changes={"capabilities_remove": ["set_timer"]})
+            ensure_runtime_layout(root)
+            self.assertNotIn("set_timer", store.load("main").capabilities)
+
     def test_environment_example_contains_only_model_settings(self):
         template = (ROOT / ".env.example").read_text()
         self.assertEqual({line.split("=", 1)[0] for line in template.splitlines() if line and not line.startswith("#")},

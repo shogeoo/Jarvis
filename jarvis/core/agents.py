@@ -267,6 +267,10 @@ class AgentManager(InstanceConfiguration):
             old_person = record.get("_legacy_person")
             if old_person and old_person != selected.person_prompt:
                 instructions = old_person
+        if primary and additions:
+            self.presets.edit(preset_id, changes={"capabilities_add": additions})
+            additions = []
+            legacy = True
         return self._spawn(
             preset=preset_id,
             parent_id=record["parent_id"],
@@ -315,6 +319,8 @@ class AgentManager(InstanceConfiguration):
     ) -> Agent:
         if self.stopping.is_set() or (self.frozen.is_set() and not self.restoring_shutdown):
             raise RuntimeError("runtime_stopping")
+        if preset == "main" and not primary:
+            raise ValueError("The main preset has exactly one instance: main")
         selected = self.presets.load(preset)
         initial = {
             "modules": set(selected.modules),

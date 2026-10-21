@@ -1,7 +1,7 @@
 """Read-only access to committed archives. Never expose unfinished staging."""
 
 from pathlib import Path
-from ..infrastructure.context import read_json, valid_name, hydrate_part
+from ..infrastructure.context import read_json, valid_name, hydrate_part, context_files
 from .serialization import serialize_context, chunks
 
 
@@ -42,7 +42,7 @@ class ArchiveReader:
 
     def get_context_info(self, agent_id, session_id):
         context = read_json(self.directory(agent_id, session_id) / "context.json")
-        return {"messages": len(context), "characters": len(serialize_context(context))}
+        return {"messages": len(context), "characters": len(serialize_context(context, agent_id=agent_id, session_id=session_id))}
 
     def get_context(self, agent_id, session_id, skip_first=0, skip_last=0):
         if skip_first < 0 or skip_last < 0:
@@ -50,7 +50,7 @@ class ArchiveReader:
         context = read_json(self.directory(agent_id, session_id) / "context.json")
         end = max(0, len(context) - skip_last)
         selected = context[skip_first:end]
-        return {"context": serialize_context(selected), "total": len(selected)}
+        return {"context": serialize_context(selected, agent_id=agent_id, session_id=session_id), "total": len(selected)}
 
     def search(self, agent_id, query, limit=3):
         self._validate_search(query, limit)
@@ -90,6 +90,7 @@ class ArchiveReader:
             context,
             self.reranker.tokenizer,
             max_tokens=self.reranker.candidate_capacity(query),
+            agent_id=agent_id, session_id=session_id,
         )
         scores = (
             self.reranker.score(query, [c["text"] for c in candidates])
@@ -106,7 +107,7 @@ class ArchiveReader:
 
     def get_file(self, agent_id, session_id, file_id):
         directory = self.directory(agent_id, session_id)
-        files = read_json(directory / "files.json", {"files": []})["files"]
+        files = context_files(read_json(directory / "context.json", []))
         part = next((item for item in files if item["file_id"] == file_id), None)
         if part is None:
             raise ValueError("Archived file not found")

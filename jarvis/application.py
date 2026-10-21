@@ -61,6 +61,7 @@ class JarvisApplication:
             base_url=config.base_url or None,
             api_key=config.api_key or None,
             timeout=60.0,
+            max_retries=0,
         )
         self.api_client = api_client
         self.services['memory_api_client'] = api_client

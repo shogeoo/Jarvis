@@ -151,7 +151,7 @@ class CatalogRuntimeTests(unittest.TestCase):
         instance = json.loads((self.root / "memory/instances/main/instance.json").read_text())
         self.assertNotIn("catalog_order", instance)
         self.assertEqual(
-            [item for item in instance["capabilities_add"] if item in {"zzz", "aaa"}],
+            [item for item in self.manager.presets.load("main").capabilities if item in {"zzz", "aaa"}],
             ["zzz", "aaa"],
         )
         restored_manager = self.fixture.manager(

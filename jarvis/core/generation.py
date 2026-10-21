@@ -76,9 +76,14 @@ class AgentGeneration:
             try:
                 specs, _ = self._contract(model_id=active_model)
                 schemas = {name: spec.data_schema for name, spec in specs.items()}
+                request_messages = self._model_messages(active_model)
+                request_started = time.monotonic()
+                self.manager.debug.log("model_request_started", agent_id=self.agent_id,
+                                       model=active_model, messages=len(request_messages),
+                                       system_characters=len(request_messages[0]["content"]))
                 stream = self.manager.client.chat.completions.create(
                     model=active_model,
-                    messages=self._model_messages(active_model),
+                    messages=request_messages,
                     response_format=response_format(schemas),
                     **(
                         {"reasoning_effort": self.manager.config.reasoning_effort}
@@ -93,6 +98,7 @@ class AgentGeneration:
                         stream.close()
                         return
                     self._active_stream = stream
+                first_chunk = True
                 content = ""
                 refusal = ""
                 thinking = ""
@@ -101,6 +107,11 @@ class AgentGeneration:
                     for chunk in stream:
                         if generation != self._generation or self._stop.is_set():
                             return
+                        if first_chunk:
+                            self.manager.debug.log("model_first_chunk", agent_id=self.agent_id,
+                                                   model=active_model,
+                                                   seconds=round(time.monotonic() - request_started, 3))
+                            first_chunk = False
                         if chunk.choices:
                             delta = chunk.choices[0].delta
                             content += delta.content or ""
@@ -121,6 +132,19 @@ class AgentGeneration:
                     return
                 failures += 1
                 self.manager.debug.error(str(exc))
+                self.manager.debug.notice(f"Model request failed [{self.agent_id}, {active_model}]: {exc}")
+                status = getattr(exc, "status_code", None)
+                insufficient_balance = status == 402 or any(
+                    phrase in str(exc).lower() for phrase in
+                    ("insufficient credits", "insufficient funds", "insufficient balance", "requires more credits")
+                )
+                if insufficient_balance:
+                    self.manager.debug.notice("API: недостаточно средств. Пополните баланс провайдера.")
+                    self._model_failure(exc)
+                    return
+                if status in {400, 401, 422} and not (status == 400 and "model" in str(exc).lower()):
+                    self._model_failure(exc)
+                    return
                 unavailable = (
                     getattr(exc, "status_code", None) in {403, 404}
                     or (
@@ -157,6 +181,9 @@ class AgentGeneration:
                     time.sleep(min(0.05, deadline - time.monotonic()))
                 continue
 
+            self.manager.debug.log("model_request_completed", agent_id=self.agent_id,
+                                   model=active_model,
+                                   seconds=round(time.monotonic() - request_started, 3))
             with self._generation_lock:
                 if generation != self._generation or self._stop.is_set():
                     return

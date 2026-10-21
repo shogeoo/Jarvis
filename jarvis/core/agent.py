@@ -259,66 +259,51 @@ class Agent(AgentGeneration):
             for module_id in snapshot["modules"]
         )
 
+    def _enable_assignment(self, identifier):
+        if identifier in self.intrinsic_capabilities():
+            return
+        if self.agent_id == "main":
+            self.manager.presets.edit(self.preset, changes={"capabilities_add": [identifier]})
+            self._additional_capabilities = [v for v in self._additional_capabilities if v != identifier]
+        elif identifier not in self.manager.presets.load(self.preset).capabilities and identifier not in self._additional_capabilities:
+            self._additional_capabilities.append(identifier)
+
+    def _disable_assignment(self, identifier):
+        if self.manager.capabilities.is_system(identifier):
+            raise ValueError("Cannot disable a system capability")
+        if identifier in self.manager.presets.load(self.preset).capabilities:
+            if self.agent_id != "main":
+                raise ValueError("Cannot remove a mandatory preset capability")
+            self.manager.presets.edit(self.preset, changes={"capabilities_remove": [identifier]})
+        self._additional_capabilities = [v for v in self._additional_capabilities if v != identifier]
+
     def enable_module(self, module_id: str) -> None:
-        if (
-            module_id not in self.manager.presets.load(self.preset).capabilities
-            and module_id not in self.intrinsic_capabilities()
-            and module_id not in self._additional_capabilities
-        ):
-            self._additional_capabilities.append(module_id)
+        self._enable_assignment(module_id)
         self._refresh_configuration()
         self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
-        if self.manager.capabilities.is_system(module_id):
-            raise ValueError("Cannot disable a system capability")
-        if module_id in self.manager.presets.load(self.preset).capabilities:
-            raise ValueError("Cannot remove a mandatory preset capability")
-        self._additional_capabilities = [
-            value for value in self._additional_capabilities if value != module_id
-        ]
+        self._disable_assignment(module_id)
         self._refresh_configuration()
         self._persist_context()
 
     def enable_action(self, action_id: str) -> None:
-        if (
-            action_id not in self.manager.presets.load(self.preset).capabilities
-            and action_id not in self.intrinsic_capabilities()
-            and action_id not in self._additional_capabilities
-        ):
-            self._additional_capabilities.append(action_id)
+        self._enable_assignment(action_id)
         self._refresh_configuration()
         self._persist_context()
 
     def disable_action(self, action_id: str) -> None:
-        if self.manager.capabilities.is_system(action_id):
-            raise ValueError("Cannot disable a system capability")
-        if action_id in self.manager.presets.load(self.preset).capabilities:
-            raise ValueError("Cannot remove a mandatory preset capability")
-        self._additional_capabilities = [
-            value for value in self._additional_capabilities if value != action_id
-        ]
+        self._disable_assignment(action_id)
         self._refresh_configuration()
         self._persist_context()
 
     def enable_handler(self, handler_id: str) -> None:
-        if (
-            handler_id not in self.manager.presets.load(self.preset).capabilities
-            and handler_id not in self.intrinsic_capabilities()
-            and handler_id not in self._additional_capabilities
-        ):
-            self._additional_capabilities.append(handler_id)
+        self._enable_assignment(handler_id)
         self._refresh_configuration()
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
-        if self.manager.capabilities.is_system(handler_id):
-            raise ValueError("Cannot disable a system capability")
-        if handler_id in self.manager.presets.load(self.preset).capabilities:
-            raise ValueError("Cannot remove a mandatory preset capability")
-        self._additional_capabilities = [
-            value for value in self._additional_capabilities if value != handler_id
-        ]
+        self._disable_assignment(handler_id)
         self._refresh_configuration()
         self._persist_context()
 

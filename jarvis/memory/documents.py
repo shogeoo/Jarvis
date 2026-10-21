@@ -22,7 +22,7 @@ class Documents:
         self.store, self.agent_id, self.session_id = store, agent_id, session_id
         self._parent = None
 
-    def media(self, raw, filename, mime=None, source=None):
+    def media(self, raw, filename, mime=None):
         mime = mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
         modality = mime.split("/")[0]
         kind = {"image": "image_url", "audio": "input_audio", "video": "video_url"}.get(
@@ -36,20 +36,15 @@ class Documents:
             filename,
             kind,
             mime,
-            source=f"document:{self._parent['file_id']}:{source or filename}",
+            siblings=[self._parent],
         )
+        self._parent.setdefault("embedded_files", []).append(item)
         return f"[Media: {item['filename']}]({file_link(self.agent_id, self.session_id, item)})"
 
     def convert(self, item):
         self._parent = item
         path = self.store.instances / self.agent_id / "files" / item["filename"]
-        suffix = {
-            "application/pdf": ".pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-            "text/html": ".html",
-        }.get(item.get("mime_type"), path.suffix.lower())
+        suffix = path.suffix.lower()
         if suffix == ".docx":
             body = self.docx(path)
         elif suffix == ".pptx":
@@ -110,7 +105,7 @@ class Documents:
 
                     name = posixpath.normpath("word/" + target)
                     link = self.media(
-                        original.read(name), Path(name).name, mime, source=name
+                        original.read(name), Path(name).name, mime
                     )
                     owner = element
                     while owner is not None and owner.tag not in {w + "r", w + "p"}:
@@ -147,7 +142,7 @@ class Documents:
                 "image" + (mimetypes.guess_extension(image.content_type) or ".bin"),
             )
             link = self.media(
-                raw, name, image.content_type, source=hashlib.sha256(raw).hexdigest()
+                raw, name, image.content_type
             )
             return {"src": re.search(r"\]\((.*)\)$", link).group(1)}
 
@@ -196,7 +191,7 @@ class Documents:
                         ):
                             links.append(
                                 documents.media(
-                                    part.blob, Path(name).name, mime, source=name
+                                    part.blob, Path(name).name, mime
                                 )
                             )
                             seen.add(name)
@@ -238,7 +233,6 @@ class Documents:
                         link = self.media(
                             image["image"],
                             f"image_{xref}.{image['ext']}",
-                            source=f"pdf:{xref}",
                         )
                     else:
                         # Inline PDF images have no standalone encoded stream; PyMuPDF
@@ -257,7 +251,6 @@ class Documents:
                         link = self.media(
                             block["image"],
                             f"inline_{number}_{info['number']}.{block['ext']}",
-                            source=f"pdf:{number}:{info['number']}",
                         )
                     entries.append((info["bbox"][1], info["bbox"][0], link + "\n\n"))
                 for annotation in page.annots() or []:
@@ -274,7 +267,6 @@ class Documents:
                                 annotation.get_file(),
                                 name,
                                 mime,
-                                source=f"pdf-attachment:{annotation.xref}",
                             )
                             entries.append(
                                 (annotation.rect.y0, annotation.rect.x0, link + "\n\n")
@@ -300,7 +292,6 @@ class Documents:
                     self.media(
                         image._data(),
                         Path(image.path).name,
-                        source=f"xlsx:{sheet.title}:{i}",
                     )
                 )
             for row in sheet.iter_rows():
@@ -346,7 +337,7 @@ class Documents:
                 path = base / unquote(source)
                 raw = path.read_bytes()
                 name, mime = path.name, mimetypes.guess_type(path.name)[0]
-            link = self.media(raw, name, mime, source=f"html:{i}")
+            link = self.media(raw, name, mime)
             anchor = soup.new_tag("a", href=re.search(r"\]\((.*)\)$", link).group(1))
             anchor.string = "Media: " + name
             node.replace_with(anchor)

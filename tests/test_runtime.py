@@ -474,7 +474,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(values[-1]["event_id"], "structure_error")
         self.assertEqual(self.call_results(agent), [])
 
-    def test_enabled_capabilities_belong_to_current_instance(self):
+    def test_main_enables_capabilities_in_its_preset(self):
         self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         client = _Client([_no_action("done-1")])
         manager = self.manager(client)
@@ -484,14 +484,13 @@ class RuntimeTests(unittest.TestCase):
         manager.enable_action(first.agent_id, "clock")
         self.assertIn("clock", first.standalone_actions())
         self.assertNotIn("clock", second.standalone_actions())
-        self.assertEqual(self.presets.load("main").actions, ("say",))
+        self.assertEqual(self.presets.load("main").actions, ("say", "clock"))
 
-    def test_main_preset_has_no_singleton_policy(self):
+    def test_main_preset_has_only_one_instance(self):
         manager = self.manager(_Client([]))
         manager.spawn_root(preset="main")
-        child = manager.spawn(parent_id="main", preset_id="main")
-        self.assertNotEqual(child["agent_id"], "main")
-        manager.delete(agent_id=child["agent_id"])
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            manager.spawn(parent_id="main", preset_id="main")
 
     def test_main_uses_reserved_main_agent_id(self):
         manager = self.manager(_Client([_no_action("done-1")]))
@@ -600,7 +599,8 @@ class RuntimeTests(unittest.TestCase):
             root = manager.spawn_root(preset="main")
             manager.enable_module(root.agent_id, "echo")
             record = memory.load("main", "main")
-            self.assertIn("echo", record["capabilities_add"])
+            self.assertNotIn("echo", record["capabilities_add"])
+            self.assertIn("echo", self.presets.load("main").capabilities)
             self.assertNotIn("say", record["capabilities_add"])
 
     def test_call_id_cannot_be_reused_after_completion_or_restore(self):
@@ -627,6 +627,31 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(self.call_results(restored)), 1)
 
             restarted.shutdown()
+
+    def test_empty_api_balance_is_reported_immediately_without_retry(self):
+        from unittest.mock import Mock
+        manager = self.manager(_Client([]))
+        agent = manager.spawn_root(preset="main")
+        failure = RuntimeError("Insufficient credits")
+        failure.status_code = 402
+        request = Mock(side_effect=failure)
+        manager.client.chat.completions.create = request
+        manager.debug.notice = Mock()
+        agent._turn([Event("speech_detected", {"text": "hello"})], agent._generation)
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(any("недостаточно средств" in call.args[0] for call in manager.debug.notice.call_args_list))
+        self.assertTrue(agent._needs_generation)
+
+    def test_stream_balance_error_without_http_status_is_not_retried(self):
+        from unittest.mock import Mock
+        manager = self.manager(_Client([]))
+        agent = manager.spawn_root(preset="main")
+        request = Mock(side_effect=RuntimeError("Insufficient credits for this request"))
+        manager.client.chat.completions.create = request
+        manager.debug.notice = Mock()
+        agent._turn([Event("speech_detected", {"text": "hello"})], agent._generation)
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(any("недостаточно средств" in call.args[0] for call in manager.debug.notice.call_args_list))
 
     def test_transient_model_failure_retries_without_duplicate_input(self):
         class Flaky:
