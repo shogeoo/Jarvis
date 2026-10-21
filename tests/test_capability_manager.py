@@ -41,6 +41,8 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
     def test_capability_manager_has_complete_sdk_and_system_development_tools(self):
         preset = self.presets.load("capability_manager")
         prompt = preset.person_prompt + read_environment()
+        from jarvis.core.descriptions import read_descriptions
+        description = read_descriptions()['modules']['capability_development']['description']
         for marker in (
             "СТРОЖАЙШЕ ЗАПРЕЩЕНО читать исходный код Jarvis",
             "action_definition",
@@ -50,7 +52,8 @@ class CapabilitiesManagerContractTests(unittest.TestCase):
             "create_module",
             "ДОЖДИСЬ call_result",
         ):
-            self.assertIn(marker, prompt)
+            self.assertNotIn(marker, prompt)
+            self.assertIn(marker, description)
         specs = self.actions.for_capabilities(
             modules={"capability_development"}, actions={"list_capabilities", "capability_info", "toggle_capability"}
         )

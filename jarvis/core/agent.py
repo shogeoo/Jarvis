@@ -425,12 +425,7 @@ class Agent(AgentGeneration):
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt.replace(
-                    "{storage_root}",
-                    str(self.manager.capabilities.storage_root.resolve()),
-                )
-                if self.preset == "capability_manager"
-                else self.person_prompt,
+                self.person_prompt,
                 self.manager.environment,
                 actions,
                 events,

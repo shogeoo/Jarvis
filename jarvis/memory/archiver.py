@@ -86,19 +86,24 @@ class Archiver:
 
     def request(self, messages, modalities):
         self.check()
-        model = self.model(modalities)
-        if getattr(self.config, "subscription_enabled", False) and callable(
-            getattr(self.client, "create_memory_completion", None)
+        subscription_model = getattr(self.config, "memory_subscription_model", None)
+        if (
+            getattr(self.config, "subscription_enabled", False)
+            and subscription_model
+            and callable(getattr(self.client, "create_memory_completion", None))
         ):
             response = self.client.create_memory_completion(
-                model=model,
+                model=subscription_model,
+                api_model=lambda: self.model(modalities),
                 messages=messages,
                 modalities=modalities,
                 cancelled=self.stopped,
             )
         else:
-            response = self.client.chat.completions.create(
-                model=model, messages=messages, stream=False
+            # API profile settings never become subscription model identifiers.
+            api_client = getattr(self.client, "api_client", self.client)
+            response = api_client.chat.completions.create(
+                model=self.model(modalities), messages=messages, stream=False
             )
         text = response.choices[0].message.content
         if not isinstance(text, str) or not text.strip():

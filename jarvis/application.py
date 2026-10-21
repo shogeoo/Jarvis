@@ -139,6 +139,12 @@ class JarvisApplication:
             self.main_agent = self.agents.restore(preset='main')
             if self.main_agent is not None:
                 self.debug.initialized()
+                # Keep the archival snapshot frozen; notify Main in its private final phase.
+                self.services['session_restart_event'] = Event(
+                    event_id='system_restarted',
+                    data={'datetime': datetime.now().astimezone().isoformat(timespec='seconds')},
+                    source='core', target=self.main_agent.agent_id,
+                )
                 self.agents.session_shutdown.start()
             return self
         has_s2 = bool(shutil.which(str(build_config(self.config.jarvis_dir).tts_server_bin)))
@@ -173,7 +179,7 @@ class JarvisApplication:
             self.debug.initialized()
             self.bus.publish(
                 Event(
-                    event_id="system_started",
+                    event_id=self.memory.claim_start_event(),
                     data={
                         "datetime": datetime.now()
                         .astimezone()

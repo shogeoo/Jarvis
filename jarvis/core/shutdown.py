@@ -167,6 +167,7 @@ class SessionShutdown:
             store.update_state(
                 session_id=f"session_{state['next_session']:06d}",
                 next_session=state["next_session"] + 1,
+                started=False,
             )
 
     def final(self):
@@ -181,6 +182,10 @@ class SessionShutdown:
         directory = store.sessions / state["session_id"] / "instances/main"
         # Service phase uses a private copy of the completed Main context.
         history = api_messages(read_json(directory / "context.json"), directory)
+        restart = manager.services.pop("session_restart_event", None)
+        if restart is not None:
+            history.append(restart.model_message())
+            manager.debug.input(restart, agent_id="main")
         event = CallResult(state["call_id"], {"status": "completed"}, "main")
         manager.debug.result(event, agent_id="main")
         system = main.history[0]["content"] + (

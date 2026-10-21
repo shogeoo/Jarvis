@@ -83,7 +83,7 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(info, "Твой идентификатор: main. Твой пресет: main.")
                     self.assertIn("Текущая модель: test", system_prompt)
                     self.assertIn('"entries": []', system_prompt)
-                    self.assertIn("Jarvis — среда существования", system_prompt)
+                    self.assertIn("J.A.R.V.I.S. — единая интеллектуальная система", system_prompt)
                     self.assertIn("Модель поддерживает эти модальности: text", system_prompt)
                     self.assertIn('"action_id": "say"', system_prompt)
                     self.assertIn('"event_id": "tick.event"', system_prompt)

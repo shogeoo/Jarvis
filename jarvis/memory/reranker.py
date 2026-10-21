@@ -19,13 +19,8 @@ SUFFIX = "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
 
 
 def download_reranker(root):
-    from huggingface_hub import snapshot_download
-
-    return Path(
-        snapshot_download(
-            MODEL_ID, local_dir=str(Path(root) / "runtime/models/Qwen3-Reranker-0.6B")
-        )
-    )
+    from ..infrastructure.models import ensure_local_model
+    return ensure_local_model(root, "reranker")
 
 
 class Reranker:
@@ -58,14 +53,12 @@ class Reranker:
 
         if not torch.cuda.is_available():
             raise RuntimeError("Qwen3 reranker requires an available CUDA GPU")
-        path = self.root / "runtime/models/Qwen3-Reranker-0.6B"
-        if not (path / "model.safetensors").exists():
-            path = download_reranker(self.root)
-        self._tokenizer = AutoTokenizer.from_pretrained(path, padding_side="left")
+        path = download_reranker(self.root)
+        self._tokenizer = AutoTokenizer.from_pretrained(path, padding_side="left", local_files_only=True)
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         self._model = (
             AutoModelForCausalLM.from_pretrained(
-                path, torch_dtype=dtype, attn_implementation="sdpa"
+                path, torch_dtype=dtype, attn_implementation="sdpa", local_files_only=True
             )
             .to("cuda")
             .eval()

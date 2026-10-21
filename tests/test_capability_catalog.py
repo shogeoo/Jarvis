@@ -432,9 +432,9 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("action_definition", prompt)
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
-        self.assertIn('call_result', prompt)
-        for concept in ('shutdown', 'memory_manager', 'semantic_memory', 'agent_id', 'thinking'):
-            self.assertIn(concept, prompt)
+        self.assertIn('call_id', prompt)
+        for concrete in ('system_started', 'system_restarted', 'shutdown', 'memory_manager', 'semantic_memory'):
+            self.assertNotIn(concrete, prompt)
 
 if __name__ == "__main__":
     unittest.main()

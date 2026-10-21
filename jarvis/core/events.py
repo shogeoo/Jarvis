@@ -50,6 +50,12 @@ class EventBus:
                 ]
             else:
                 recipients = []
+        if event.event_id in {"system_started", "system_restarted"}:
+            recipients = [
+                agent
+                for agent in recipients
+                if agent is not None and agent.agent_id == "main"
+            ]
         delivered = False
         for agent in recipients:
             if agent is not None and (

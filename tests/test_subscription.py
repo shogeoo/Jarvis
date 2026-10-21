@@ -122,7 +122,8 @@ class MemorySubscriptionTests(unittest.TestCase):
         router, api, session = self.router([self.response()])
         messages = self.messages()
         result = router.create_memory_completion(
-            model="openai/memory-text-image",
+            model="memory-text-image",
+            api_model="provider/api-images",
             messages=messages,
             modalities={"text", "image"},
         )
@@ -153,7 +154,8 @@ class MemorySubscriptionTests(unittest.TestCase):
         messages = self.messages()
         for _ in range(2):
             router.create_memory_completion(
-                model="openai/memory-unavailable",
+                model="memory-unavailable",
+                api_model="provider/api-fallback",
                 messages=messages,
                 modalities={"text", "image"},
             )
@@ -162,7 +164,7 @@ class MemorySubscriptionTests(unittest.TestCase):
         self.assertEqual(
             api.chat.completions.create.call_args.kwargs,
             {
-                "model": "openai/memory-unavailable",
+                "model": "provider/api-fallback",
                 "messages": messages,
                 "stream": False,
             },
@@ -176,12 +178,13 @@ class MemorySubscriptionTests(unittest.TestCase):
             [_ResponseStream(status=404, text="Model not found")]
         )
         router.create_memory_completion(
-            model="provider/memory-model",
+            model="subscription-memory",
+            api_model="provider/memory-model",
             messages=self.messages(),
             modalities={"text", "image"},
         )
         self.assertEqual(
-            session.post.call_args.kwargs["json"]["model"], "provider/memory-model"
+            session.post.call_args.kwargs["json"]["model"], "subscription-memory"
         )
         self.assertEqual(
             api.chat.completions.create.call_args.kwargs["model"],
@@ -194,7 +197,10 @@ class MemorySubscriptionTests(unittest.TestCase):
         )
         for model in ["openai/memory-a", "openai/memory-b"]:
             router.create_memory_completion(
-                model=model, messages=self.messages(), modalities={"text", "image"}
+                model="subscription-memory",
+                api_model=model,
+                messages=self.messages(),
+                modalities={"text", "image"},
             )
         self.assertEqual(session.post.call_count, 1)
         self.assertEqual(
@@ -214,7 +220,8 @@ class MemorySubscriptionTests(unittest.TestCase):
                     {"role": "user", "content": [{"type": kind, kind: value}]},
                 ]
                 router.create_memory_completion(
-                    model="provider/full-media",
+                    model="subscription-memory",
+                    api_model="provider/full-media",
                     messages=messages,
                     modalities={"text", modality},
                 )
@@ -232,7 +239,8 @@ class MemorySubscriptionTests(unittest.TestCase):
         )
         for _ in range(2):
             result = router.create_memory_completion(
-                model="openai/memory-model",
+                model="subscription-memory",
+                api_model="provider/api-memory",
                 messages=self.messages(),
                 modalities={"text", "image"},
             )
@@ -244,7 +252,8 @@ class MemorySubscriptionTests(unittest.TestCase):
         router, api, session = self.router([])
         with self.assertRaises(InterruptedError):
             router.create_memory_completion(
-                model="openai/memory-model",
+                model="subscription-memory",
+                api_model="provider/api-memory",
                 messages=self.messages(),
                 modalities={"text", "image"},
                 cancelled=lambda: True,
@@ -257,15 +266,59 @@ class MemorySubscriptionTests(unittest.TestCase):
 
         router, api, session = self.router([self.response()])
         config = SimpleNamespace(
-            subscription_enabled=True, memory_model_text_image="openai/memory-image"
+            subscription_enabled=True,
+            memory_subscription_model="subscription-image",
+            memory_model_text_image="provider/api-image",
         )
         archiver = Archiver(Mock(), config, router, "Environment")
         self.assertEqual(
             archiver.request(self.messages(), {"text", "image"}),
             "# Session\nЗавершено.",
         )
-        self.assertEqual(session.post.call_args.kwargs["json"]["model"], "memory-image")
+        self.assertEqual(
+            session.post.call_args.kwargs["json"]["model"], "subscription-image"
+        )
         api.chat.completions.create.assert_not_called()
+
+    def test_subscription_memory_succeeds_without_an_api_model_setting(self):
+        from jarvis.memory.archiver import Archiver
+
+        router, api, session = self.router([self.response()])
+        archiver = Archiver(
+            Mock(),
+            SimpleNamespace(
+                subscription_enabled=True, memory_subscription_model="memory-only"
+            ),
+            router,
+            "Environment",
+        )
+        self.assertIn("Завершено", archiver.request(self.messages(), {"text", "image"}))
+        self.assertEqual(session.post.call_args.kwargs["json"]["model"], "memory-only")
+        api.chat.completions.create.assert_not_called()
+
+    def test_missing_subscription_setting_uses_only_api_and_preserves_media(self):
+        from jarvis.memory.archiver import Archiver
+
+        router, api, session = self.router([])
+        config = SimpleNamespace(
+            subscription_enabled=True,
+            memory_subscription_model=None,
+            memory_model_text_image="provider/api-image",
+        )
+        api.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="API Markdown"))]
+        )
+        result = Archiver(Mock(), config, router, "Environment").request(
+            self.messages(), {"text", "image"}
+        )
+        self.assertEqual(result, "API Markdown")
+        session.post.assert_not_called()
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["model"], "provider/api-image"
+        )
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["messages"], self.messages()
+        )
 
 
 class SubscriptionTests(unittest.TestCase):

@@ -357,12 +357,14 @@ class SubscriptionClient:
         return True
 
     def create_memory_completion(
-        self, *, model, messages, modalities, cancelled=lambda: False
+        self, *, model, api_model, messages, modalities, cancelled=lambda: False
     ):
-        """Try the configured memory model in the subscription, then its API ID.
+        """Try the dedicated subscription memory model, then the selected API profile.
 
         This plain-Markdown route does not use the agent action schema or the
         default agent API model, and never filters the original fallback input.
+        The API profile is resolved lazily: a successful subscription request does
+        not require API model settings to be populated.
         """
 
         def check_cancelled():
@@ -414,7 +416,7 @@ class SubscriptionClient:
                     with self._lock:
                         self._memory_unavailable.add(model)
                 logger.info(
-                    "Memory model %s unavailable through subscription; trying its API: %s",
+                    "Subscription memory model %s unavailable; using the configured API profile: %s",
                     model,
                     exc,
                 )
@@ -423,8 +425,11 @@ class SubscriptionClient:
                 with self._lock:
                     self._memory_streams.discard(stream)
         check_cancelled()
+        fallback_model = api_model() if callable(api_model) else api_model
+        if not fallback_model:
+            raise ValueError("The memory API fallback profile is not configured")
         return self.api_client.chat.completions.create(
-            model=model, messages=messages, stream=False
+            model=fallback_model, messages=messages, stream=False
         )
 
     def ensure_chatgpt_login(self, announce) -> None:

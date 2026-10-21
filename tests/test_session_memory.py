@@ -534,9 +534,17 @@ class ShutdownTests(unittest.TestCase):
         self.manager.restoring_shutdown = True
         self.manager.frozen.set()
         self.main = self.manager.restore(preset="main")
+        self.manager.services["session_restart_event"] = Event(
+            "system_restarted", {"datetime": "2026-10-21T12:00:00+03:00"}, target="main"
+        )
         self.stop_session()
         self.assertEqual(self.api.calls, [])
         self.assertEqual(archive.read_bytes(), original)
+        final_input = self.manager.client.chat.completions.calls[-1]["messages"]
+        self.assertTrue(
+            any("system_restarted" in str(m.get("content")) for m in final_input)
+        )
+        self.assertNotIn("system_restarted", archive.read_text())
         self.assertEqual(read_json(self.store.instances / "main/context.json"), [])
 
     def test_successful_media_archive_returns_original_and_uses_api_profiles(self):
@@ -668,6 +676,7 @@ class ShutdownTests(unittest.TestCase):
         self.assertEqual(len([m for m in saved if m["role"] == "user"]), 1)
 
     def test_main_shutdown_action_runs_complete_protocol_through_normal_dispatch(self):
+        self.assertEqual(self.store.claim_start_event(), "system_started")
         self.main.start()
         self.manager.client = runtime._Client(
             [
@@ -684,6 +693,8 @@ class ShutdownTests(unittest.TestCase):
         self.assertIn("shutdown-via-model", str(archived))
         self.assertNotIn("farewell", str(archived))
         self.assertEqual(read_json(self.store.instances / "main/context.json"), [])
+        self.assertFalse(self.store.state()["started"])
+        self.assertEqual(self.store.claim_start_event(), "system_started")
 
 
 class DocumentTests(unittest.TestCase):

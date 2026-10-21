@@ -24,6 +24,7 @@ class Config:
     reasoning_effort: str | None = None
     subscription_enabled: bool = False
     subscription_model: str | None = None
+    memory_subscription_model: str | None = None
     memory_model_text: str | None = None
     memory_model_text_image: str | None = None
     memory_model_text_image_video: str | None = None
@@ -59,8 +60,17 @@ def load_config(env_path: str | os.PathLike | None = None) -> Config:
         reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip() or None,
         subscription_enabled=_enabled(os.environ.get("CHATGPT_SUBSCRIPTION_ENABLED")),
         subscription_model=os.environ.get("LLM_SUBSCRIPTION_MODEL", "").strip() or None,
-        memory_model_text=os.getenv('MEMORY_MODEL_TEXT', '').strip() or None,
-        memory_model_text_image=os.getenv('MEMORY_MODEL_TEXT_IMAGE', '').strip() or None,
-        memory_model_text_image_video=os.getenv('MEMORY_MODEL_TEXT_IMAGE_VIDEO', '').strip() or None,
-        memory_model_text_image_audio_video=os.getenv('MEMORY_MODEL_TEXT_IMAGE_AUDIO_VIDEO', '').strip() or None,
+        memory_subscription_model=os.getenv("MEMORY_SUBSCRIPTION_MODEL", "").strip()
+        or None,
+        memory_model_text=os.getenv("MEMORY_MODEL_TEXT", "").strip() or None,
+        memory_model_text_image=os.getenv("MEMORY_MODEL_TEXT_IMAGE", "").strip()
+        or None,
+        memory_model_text_image_video=os.getenv(
+            "MEMORY_MODEL_TEXT_IMAGE_VIDEO", ""
+        ).strip()
+        or None,
+        memory_model_text_image_audio_video=os.getenv(
+            "MEMORY_MODEL_TEXT_IMAGE_AUDIO_VIDEO", ""
+        ).strip()
+        or None,
     )

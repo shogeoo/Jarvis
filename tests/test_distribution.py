@@ -53,7 +53,7 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             store = PresetStore(root / "presets")
             self.assertNotIn("protected", json.loads((root / "presets/main/preset.json").read_text()))
-            self.assertIn("CapabilityManager", store.load("capability_manager").person_prompt)
+            self.assertIn("инженер", store.load("capability_manager").person_prompt)
             self.assertEqual(store.load("main").actions, ())
             self.assertEqual(store.load("capability_manager").capabilities, ())
             self.assertEqual(json.loads((root / "presets/capability_manager/preset.json").read_text())["capabilities"], [])
@@ -76,7 +76,7 @@ class DistributionTests(unittest.TestCase):
     def test_environment_example_contains_only_model_settings(self):
         template = (ROOT / ".env.example").read_text()
         self.assertEqual({line.split("=", 1)[0] for line in template.splitlines() if line and not line.startswith("#")},
-                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_API_MODEL", "LLM_SUBSCRIPTION_MODEL", "CHATGPT_SUBSCRIPTION_ENABLED", "LLM_REASONING_EFFORT", "MEMORY_MODEL_TEXT", "MEMORY_MODEL_TEXT_IMAGE", "MEMORY_MODEL_TEXT_IMAGE_VIDEO", "MEMORY_MODEL_TEXT_IMAGE_AUDIO_VIDEO"})
+                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_API_MODEL", "LLM_SUBSCRIPTION_MODEL", "CHATGPT_SUBSCRIPTION_ENABLED", "LLM_REASONING_EFFORT", "MEMORY_MODEL_TEXT", "MEMORY_MODEL_TEXT_IMAGE", "MEMORY_MODEL_TEXT_IMAGE_VIDEO", "MEMORY_MODEL_TEXT_IMAGE_AUDIO_VIDEO", "MEMORY_SUBSCRIPTION_MODEL"})
 
     def test_speech_constants_ignore_old_environment_settings(self):
         import importlib

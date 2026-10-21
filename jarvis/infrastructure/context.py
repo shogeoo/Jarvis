@@ -114,6 +114,7 @@ class MemoryStore:
                     "next_session": 2,
                     "next_agent": 1,
                     "shutdown": None,
+                    "started": False,
                 }
                 self._write_json(self.root / "state.json", state)
             return state
@@ -123,6 +124,19 @@ class MemoryStore:
             state = {**self.state(), **changes}
             self._write_json(self.root / "state.json", state)
             return state
+
+    def claim_start_event(self):
+        """Runtime directories and empty surviving instances do not define a session."""
+        with self._save_lock:
+            state = self.state()
+            started = state.get("started")
+            if started is None:
+                # Existing sessions created before the durable startup marker.
+                started = any(
+                    read_json(p, []) for p in self.instances.glob("*/context.json")
+                )
+            self.update_state(started=True)
+            return "system_restarted" if started else "system_started"
 
     def allocate_agent_id(self):
         with self._save_lock:
