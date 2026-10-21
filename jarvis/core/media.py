@@ -8,7 +8,7 @@ from copy import deepcopy
 
 from ..infrastructure.context import KINDS, context_files, hydrate_part, read_json
 from ..memory.documents import Documents
-from ..memory.serialization import api_messages, interpretation
+from ..memory.serialization import api_messages, interpretation, model_interpretation, validate_provider_input
 
 PROFILES = ("text", "text_image", "text_image_video", "text_image_audio_video")
 
@@ -77,6 +77,7 @@ class MediaInterpreter:
 
     def request(self, messages, modalities):
         self.check()
+        validate_provider_input(messages)
         subscription_model = getattr(self.config, "memory_subscription_model", None)
         if (
             getattr(self.config, "subscription_enabled", False)
@@ -114,7 +115,8 @@ class MediaInterpreter:
         while True:
             pending = [
                 f for f in self.store.files(agent)
-                if not f.get("text_representation") and (required is None or f["type"] in required)
+                if (not f.get("text_representation") or (f["type"] == "file" and not f.get("document_markdown")))
+                and (required is None or f["type"] in required)
             ]
             if not pending:
                 break
@@ -172,7 +174,9 @@ class MediaInterpreter:
         )
 
     def document_parts(self, part, directory, *, media_part=None):
-        markdown = part.get("document_markdown", part["text_representation"])
+        markdown = part.get("document_markdown")
+        if not markdown:
+            raise ValueError(f"Document has no programmatic Markdown: {part['filename']}")
         manifest = {
             f["file_id"]: f
             for f in context_files(read_json(directory / "context.json", []))
@@ -183,14 +187,17 @@ class MediaInterpreter:
         ):
             nested = manifest.get(match.group(1))
             if (
-                nested is None
-                or nested["file_id"] == part["file_id"]
-                or nested["type"] == "file"
+                nested is not None and nested["file_id"] == part["file_id"]
             ):
                 continue
+            if nested is None:
+                raise ValueError(f"Missing embedded document element: {match.group(1)}")
             # The document itself contains technical metadata; no extra media captions.
             result.append({"type": "text", "text": markdown[offset : match.end()]})
-            result.append(media_part(nested) if media_part else hydrate_part(nested, directory))
+            if nested["type"] == "file":
+                result.extend(self.document_parts(nested, directory, media_part=media_part))
+            else:
+                result.append(media_part(nested) if media_part else hydrate_part(nested, directory))
             offset = match.end()
         result.append({"type": "text", "text": markdown[offset:]})
         return result
@@ -236,7 +243,7 @@ def agent_messages(agent, history, model_id, capabilities=None):
     caps = ModelCapabilities(model_id, caps.input_modalities)
     store = manager.memory
     directory = (store.instances if store is not None else manager.presets.root.parent / "memory/instances") / agent.agent_id
-    required = {kind for kind, modality in KINDS.items() if not caps.supports(modality)}
+    required = {"file"} | {kind for kind, modality in KINDS.items() if not caps.supports(modality)}
     interpreter = None
     if any(p["type"] in required for p in context_files(history)):
         if store is None:
@@ -268,8 +275,7 @@ def render_request(history, caps, directory, agent_id, session_id, interpreter=N
         text = part.get("text_representation")
         if not text:
             raise ValueError(f"Missing interpretation for {part.get('file_id', part['type'])}")
-        return {"type": "text", "text": interpretation(part, agent_id=agent_id,
-                session_id=session_id)}
+        return {"type": "text", "text": model_interpretation(part)}
 
     result = []
     for message in history[1:]:
@@ -279,7 +285,7 @@ def render_request(history, caps, directory, agent_id, session_id, interpreter=N
             for part in copy["content"]:
                 if part.get("type") not in KINDS:
                     parts.append(part)
-                elif part.get("type") == "file" and not caps.supports("file"):
+                elif part.get("type") == "file":
                     parts.extend(interpreter.document_parts(part, directory, media_part=media_part))
                 else:
                     parts.append(media_part(part))
@@ -290,4 +296,6 @@ def render_request(history, caps, directory, agent_id, session_id, interpreter=N
     system["content"] = re.sub(r"<MODEL_INFO>.*?</MODEL_INFO>",
         lambda _: "<MODEL_INFO>\n" + caps.prompt_block() + "\n</MODEL_INFO>",
         system["content"], count=1, flags=re.DOTALL)
-    return [system, *api_messages(result, directory)]
+    prepared = [system, *api_messages(result, directory)]
+    validate_provider_input(prepared)
+    return prepared

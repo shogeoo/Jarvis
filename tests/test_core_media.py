@@ -47,10 +47,15 @@ class CoreMediaTests(unittest.TestCase):
         part = request[1]['content'][1]
         self.assertEqual(part['type'], 'text')
         self.assertIn('file_000001', part['text'])
-        self.assertIn('session_000001', part['text'])
-        self.assertIn('main', part['text'])
+        value = json.loads(part['text'])
+        self.assertEqual(value['type'], 'image_interpretation')
+        self.assertEqual(set(value), {'type', 'file_id', 'filename', 'text_representation'})
+        self.assertNotIn('<image_interpretation', part['text'])
         self.assertIn('Работа сохранена.', part['text'])
         self.agent._model_messages()
+        self.assertEqual(len(self.api.calls), 1)
+        native = self.agent._model_messages(capabilities=ModelCapabilities('vision', ('text', 'image')))
+        self.assertEqual(native[1]['content'][1]['type'], 'image_url')
         self.assertEqual(len(self.api.calls), 1)
         context = self.store.load('main', 'main')['messages']
         self.assertEqual(context[0]['content'][1]['type'], 'image_url')
@@ -93,7 +98,7 @@ class CoreMediaTests(unittest.TestCase):
         doc.save(stream)
         self.attach({'type': 'file', 'file': {'filename': 'report.docx',
             'file_data': 'data:application/octet-stream;base64,' + base64.b64encode(stream.getvalue()).decode()}})
-        request = self.agent._model_messages(capabilities=ModelCapabilities('vision', ('text', 'image')))
+        request = self.agent._model_messages(capabilities=ModelCapabilities('vision', ('text', 'image', 'file')))
         parts = request[1]['content']
         types = [p['type'] for p in parts]
         self.assertIn('image_url', types)
@@ -105,6 +110,22 @@ class CoreMediaTests(unittest.TestCase):
         self.assertTrue(all(p['type'] == 'text' for p in request[1]['content']))
         self.assertEqual(len(self.api.calls), 1)
         self.assertEqual(len(self.store.files('main')), 2)
+
+    def test_image_inside_document_table_is_still_interleaved_as_native_media(self):
+        from docx import Document
+        document = Document()
+        table = document.add_table(rows=1, cols=2)
+        table.cell(0, 0).text = 'Left cell'
+        table.cell(0, 1).paragraphs[0].add_run().add_picture(io.BytesIO(PNG))
+        stream = io.BytesIO()
+        document.save(stream)
+        self.attach({'type': 'file', 'file': {'filename': 'table.docx',
+            'file_data': 'data:application/octet-stream;base64,' + base64.b64encode(stream.getvalue()).decode()}})
+        request = self.agent._model_messages(capabilities=ModelCapabilities('vision', ('text', 'image', 'file')))
+        self.assertIn('image_url', [p['type'] for p in request[1]['content']])
+        self.assertNotIn('file', [p['type'] for p in request[1]['content']])
+        self.assertIn('Left cell', str(request[1]['content']))
+        self.assertEqual(self.api.calls, [])
 
     def test_subscription_fallback_rebuilds_from_originals_for_api_modalities(self):
         self.attach(self.image())
@@ -133,6 +154,7 @@ class CoreMediaTests(unittest.TestCase):
             request = self.agent._model_messages()
         self.assertTrue(all(m['content'][1]['type'] == 'text' for m in request[1:]))
         self.assertEqual([call['model'] for call in self.api.calls], ['api/full', 'api/video'])
+        self.assertEqual([json.loads(m['content'][1]['text'])['type'] for m in request[1:]], ['audio_interpretation', 'video_interpretation'])
         self.assertEqual([f['type'] for f in self.store.files('main')], ['input_audio', 'video_url'])
 
     def test_failed_interpretation_preserves_original_and_can_be_retried(self):

@@ -29,6 +29,25 @@ def interpretation(part, *, agent_id=None, session_id=None):
     )
 
 
+
+def model_interpretation(part):
+    """A model text part contains one JSON object, without archive markers."""
+    return compact({
+        "type": KINDS[part["type"]] + "_interpretation",
+        "file_id": part["file_id"],
+        "filename": part["filename"],
+        "text_representation": part["text_representation"],
+    })
+
+
+def validate_provider_input(messages):
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            part.get("type") in {"file", "document", "input_file"} for part in content
+        ):
+            raise ValueError("Provider file/document inputs are disabled; core Markdown conversion is required")
+
 def _without_reasoning(value):
     if isinstance(value, dict):
         return {
@@ -165,6 +184,8 @@ def api_messages(context, directory, *, document_parts=None, include_thinking=Fa
                     and part.get("file_id")
                 ):
                     parts.extend(document_parts(part))
+                elif part.get("type") == "file":
+                    raise ValueError("Documents require core Markdown conversion before a model request")
                 elif part.get("type") in KINDS:
                     parts.append(hydrate_part(part, directory))
                 elif part.get("type") not in {"thinking", "reasoning"}:

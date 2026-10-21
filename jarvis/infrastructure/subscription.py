@@ -153,18 +153,7 @@ def _user_parts(content: Any) -> list[dict[str, Any]]:
             if image.get("url"):
                 parts.append({"type": "input_image", "image_url": image["url"]})
         else:
-            name = (
-                (part.get("file") or {}).get("filename")
-                or (part.get("input_audio") or {}).get("name")
-                or (part.get("video_url") or {}).get("name")
-                or "unnamed"
-            )
-            parts.append(
-                {
-                    "type": "input_text",
-                    "text": f"[Attachment not available as native subscription input: {name}; type: {kind}]",
-                }
-            )
+            raise ValueError(f"Core adaptation is required for subscription content type: {kind}")
     return parts or [{"type": "input_text", "text": ""}]
 
 
@@ -367,6 +356,9 @@ class SubscriptionClient:
         not require API model settings to be populated.
         """
 
+        from ..memory.serialization import validate_provider_input
+        validate_provider_input(messages)
+
         def check_cancelled():
             if cancelled() or self._closed.is_set():
                 raise InterruptedError("Memory model request was cancelled")
@@ -482,6 +474,8 @@ class SubscriptionClient:
                     model_info,
                     1,
                 )
+        from ..memory.serialization import validate_provider_input
+        validate_provider_input(messages)
         return self.api_client.chat.completions.create(
             **{**{k: v for k, v in options.items() if k != "_jarvis_messages"}, "model": api_model, "messages": messages}
         )

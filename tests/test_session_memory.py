@@ -796,6 +796,136 @@ class DocumentTests(unittest.TestCase):
         self.assertIn("memory://main/session_000001/", body)
         return body, images
 
+    def convert_document(self, path):
+        self.store.save(self.record())
+        item = self.store.register_file("main", path.read_bytes(), path.name, "file", "application/octet-stream")
+        self.store.save(self.record(messages=[{"role": "user", "content": [item]}]))
+        markdown = Documents(self.store, "main", "session_000001").convert(item)
+        self.store.update_file("main", item)
+        return markdown
+
+    def test_word_headers_footers_comments_and_merged_table_are_preserved(self):
+        from docx import Document
+        document = Document()
+        document.sections[0].header.paragraphs[0].text = "Unique header"
+        document.sections[0].header.paragraphs[0].add_run().add_picture(io.BytesIO(self.image()))
+        document.sections[0].footer.paragraphs[0].text = "Unique footer"
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run("Body paragraph")
+        document.add_comment(run, "Important comment", author="Author")
+        table = document.add_table(rows=2, cols=2)
+        table.cell(0, 0).merge(table.cell(0, 1)).text = "Merged header"
+        table.cell(1, 0).text = "Left value"
+        table.cell(1, 1).text = "Right value"
+        path = self.root / "complete.docx"
+        document.save(path)
+        body = self.convert_document(path)
+        for value in ("Unique header", "Unique footer", "Body paragraph", "Important comment", "Author", "Merged header", "Left value", "Right value"):
+            self.assertIn(value, body)
+        self.assertIn('colspan="2"', body)
+        self.assertLess(body.index("Unique header"), body.index("Body paragraph"))
+        self.assertLess(body.index("Body paragraph"), body.index("Unique footer"))
+        self.assertEqual(len([f for f in self.store.files("main") if f["type"] == "image_url"]), 1)
+
+    def test_word_equations_fail_instead_of_disappearing(self):
+        from docx import Document
+        from docx.oxml import OxmlElement
+        document = Document()
+        paragraph = document.add_paragraph("Before equation")
+        paragraph._p.append(OxmlElement("m:oMath"))
+        path = self.root / "equation.docx"
+        document.save(path)
+        with self.assertRaisesRegex(ValueError, "Cannot preserve Word element oMath"):
+            self.convert_document(path)
+
+    def test_spreadsheet_grid_formula_comment_link_and_merges_are_preserved(self):
+        import openpyxl
+        from openpyxl.comments import Comment
+        book = openpyxl.Workbook()
+        sheet = book.active
+        sheet["A1"] = "Merged header"
+        sheet.merge_cells("A1:B1")
+        sheet["A2"] = "Line one\nLine two"
+        sheet["A2"].hyperlink = "https://example.com/report"
+        sheet["A2"].comment = Comment("Important note", "Author")
+        sheet["B2"] = "=SUM(A3:A4)"
+        sheet["A3"] = 3
+        sheet["A4"] = 7
+        path = self.root / "complete.xlsx"
+        book.save(path)
+        book.close()
+        body = self.convert_document(path)
+        self.assertEqual(body.count("<table>"), 1)
+        for value in ("Merged header", "Line one<br>Line two", "https://example.com/report", "Important note", "Author", "=SUM(A3:A4)", "Merged cells: A1:B1"):
+            self.assertIn(value, body)
+        self.assertIn('data-cell="B2"', body)
+
+    def test_powerpoint_merged_table_is_not_flattened(self):
+        from pptx import Presentation
+        from pptx.util import Inches
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+        table = slide.shapes.add_table(2, 2, 0, 0, Inches(4), Inches(2)).table
+        table.cell(0, 0).merge(table.cell(0, 1))
+        table.cell(0, 0).text = "Merged"
+        table.cell(1, 0).text = "Left"
+        table.cell(1, 1).text = "Right"
+        path = self.root / "merged.pptx"
+        presentation.save(path)
+        body = self.convert_document(path)
+        self.assertIn('colspan="2"', body)
+        self.assertIn("Left", body)
+        self.assertIn("Right", body)
+
+    def test_pdf_merged_table_preserves_cells_and_spans(self):
+        import pymupdf
+        document = pymupdf.open()
+        page = document.new_page(width=320, height=180)
+        for y in (40, 80, 120):
+            page.draw_line((40, y), (280, y))
+        for x in (40, 280):
+            page.draw_line((x, 40), (x, 120))
+        page.draw_line((160, 80), (160, 120))
+        page.insert_text((50, 65), "Merged")
+        page.insert_text((50, 105), "Left")
+        page.insert_text((170, 105), "Right")
+        path = self.root / "merged.pdf"
+        document.save(path)
+        document.close()
+        body = self.convert_document(path)
+        self.assertIn('colspan="2"', body)
+        for text in ("Merged", "Left", "Right"):
+            self.assertIn(text, body)
+
+    def test_pdf_vector_graphics_fail_instead_of_being_dropped(self):
+        import pymupdf
+        document = pymupdf.open()
+        page = document.new_page()
+        page.insert_text((40, 40), "Diagram below")
+        page.draw_circle((100, 100), 25)
+        path = self.root / "diagram.pdf"
+        document.save(path)
+        document.close()
+        with self.assertRaisesRegex(ValueError, "Cannot preserve PDF vector graphics"):
+            self.convert_document(path)
+
+    def test_html_table_spans_and_image_alternative_text_are_preserved(self):
+        path = self.root / "complete.html"
+        path.write_text('<table><tr><td rowspan="2">Group</td><td>First</td></tr><tr><td>Second</td></tr></table><img alt="Important diagram" src="data:image/png;base64,' + base64.b64encode(self.image()).decode() + '">')
+        body = self.convert_document(path)
+        self.assertIn('rowspan="2"', body)
+        self.assertIn("Important diagram", body)
+        self.assertIn("First", body)
+        self.assertIn("Second", body)
+
+    def test_xml_source_is_not_flattened_or_dropped(self):
+        path = self.root / "document.xml"
+        source = '<root attribute="value"><entry>Привет &amp; мир</entry></root>'
+        path.write_text(source)
+        body = self.convert_document(path)
+        self.assertIn(source, body)
+        self.assertIn("```xml", body)
+
     def test_docx_keeps_order_and_original_embedded_image(self):
         from docx import Document
 

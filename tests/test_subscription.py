@@ -371,11 +371,8 @@ class SubscriptionTests(unittest.TestCase):
                         },
                     },
                     {
-                        "type": "file",
-                        "file": {
-                            "filename": "report.pdf",
-                            "file_data": "data:application/pdf;base64,YQ==",
-                        },
+                        "type": "text",
+                        "text": "Programmatic Markdown of report.pdf",
                     },
                 ],
             },
@@ -495,7 +492,7 @@ class SubscriptionTests(unittest.TestCase):
         loader.assert_called_once()
         self.assertEqual(router.api_capabilities.input_modalities, ("text", "image"))
 
-    def test_api_fallback_preserves_original_file(self):
+    def test_api_rejects_files_that_bypass_core_document_conversion(self):
         router, api = _client()
         api.chat.completions.create.return_value = iter([])
         messages = [
@@ -518,10 +515,9 @@ class SubscriptionTests(unittest.TestCase):
                 ],
             },
         ]
-        router._api_request({"messages": messages, "stream": True})
-        content = api.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-        self.assertEqual([part["type"] for part in content], ["text", "file", "input_audio"])
-        self.assertEqual(content[1]["file"]["filename"], "report.pdf")
+        with self.assertRaisesRegex(ValueError, "Provider file/document inputs are disabled"):
+            router._api_request({"messages": messages, "stream": True})
+        api.chat.completions.create.assert_not_called()
         self.assertEqual(len(messages[1]["content"]), 3)
 
     def test_api_fallback_updates_model_info_id(self):
