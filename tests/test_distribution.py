@@ -73,6 +73,24 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             self.assertEqual((custom / "person.txt").read_text(), "Keep this personality")
 
+    def test_librarian_description_upgrade_preserves_individual_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ensure_runtime_layout(root)
+            store = PresetStore(root / "presets")
+            store.edit("memory_manager", changes={
+                "description": "Researches archived experience of J.A.R.V.I.S. instances.",
+                "person": "Custom librarian personality", "model": "custom-model",
+            })
+            ensure_runtime_layout(root)
+            upgraded = store.load("memory_manager")
+            self.assertIn("Что мы делали в прошлый раз?", upgraded.description)
+            self.assertEqual(upgraded.person_prompt, "Custom librarian personality")
+            self.assertEqual(upgraded.model, "custom-model")
+            store.edit("memory_manager", changes={"description": "Custom specialization"})
+            ensure_runtime_layout(root)
+            self.assertEqual(store.load("memory_manager").description, "Custom specialization")
+
     def test_main_defaults_include_installed_capabilities_without_resetting_edits(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

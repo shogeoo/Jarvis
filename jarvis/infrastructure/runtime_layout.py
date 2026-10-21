@@ -44,9 +44,18 @@ def _ensure_preset(root: Path, name: str) -> None:
     _write_if_missing(prompt_path, prompt)
     default = ([value for value in ("send_notification", "set_timer", "take_screenshot")
                 if (root / "capabilities/actions" / value).is_dir()] if name == "main" else [])
+    descriptions = json.loads(files("jarvis").joinpath("assets", "preset_descriptions.json").read_text(encoding="utf-8"))
     # Existing legacy metadata is migrated by PresetStore without overwriting PERSON.
-    metadata = {} if (preset / "capabilities.json").exists() else {"description": {"main": "The central JARVIS personality and human interlocutor.", "capability_manager": "Develops and maintains the capabilities of JARVIS.", "memory_manager": "Researches archived experience of J.A.R.V.I.S. instances."}.get(name, ""), "model": None, "capabilities": default}
-    _write_if_missing(preset / "preset.json", json.dumps(metadata, indent=2) + "\n")
+    metadata = {} if (preset / "capabilities.json").exists() else {"description": descriptions.get(name, ""), "model": None, "capabilities": default}
+    _write_if_missing(preset / "preset.json", json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+    if name == "memory_manager":
+        path = preset / "preset.json"
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing.get("description") == "Researches archived experience of J.A.R.V.I.S. instances.":
+            from .context import write_text
+            existing["description"] = descriptions[name]
+            write_text(path, json.dumps(existing, ensure_ascii=False, indent=2) + "\n")
+
 
 
 def ensure_runtime_layout(root: Path) -> None:
