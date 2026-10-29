@@ -148,10 +148,10 @@ class CatalogRuntimeTests(unittest.TestCase):
         before = catalog(self.agent)
         self.manager.persist_agent(self.agent)
         self.manager.shutdown()
-        instance = json.loads((self.root / "memory/main/instance.json").read_text())
+        instance = json.loads((self.root / "memory/instances/main/instance.json").read_text())
         self.assertNotIn("catalog_order", instance)
         self.assertEqual(
-            [item for item in instance["capabilities_add"] if item in {"zzz", "aaa"}],
+            [item for item in self.manager.presets.load("main").capabilities if item in {"zzz", "aaa"}],
             ["zzz", "aaa"],
         )
         restored_manager = self.fixture.manager(
@@ -432,8 +432,8 @@ class DeclarationTests(unittest.TestCase):
         self.assertNotIn("action_definition", prompt)
         self.assertNotIn("handler_definition", prompt)
         self.assertLess(len(prompt.splitlines()), 60)
-        self.assertIn("event_id имеет значение call_result", prompt)
-        for concrete in ("main", "capability_manager", "system_started", "telegram", "speech", "agents.spawn"):
+        self.assertIn('call_id', prompt)
+        for concrete in ('system_started', 'system_restarted', 'shutdown', 'memory_manager', 'semantic_memory'):
             self.assertNotIn(concrete, prompt)
 
 if __name__ == "__main__":

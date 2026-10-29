@@ -43,11 +43,15 @@ class Agent(AgentGeneration):
         model: str | None = None,
         capabilities_add: list[str] | None = None,
         description: str | None = None,
+        pending_turn: bool = False,
     ):
         self.agent_id = agent_id
         self.preset = preset
         self.parent_id = parent_id
         self.manager = manager
+        from ..infrastructure.semantic_memory import SemanticMemory
+        memory_root = manager.memory.instances if manager.memory is not None else manager.presets.root.parent / 'memory/instances'
+        self._semantic_memory = SemanticMemory(memory_root / agent_id / 'semantic.json')
         self.primary = primary
         if description is not None and not isinstance(description, str):
             raise ValueError("description must be a string or null")
@@ -126,7 +130,10 @@ class Agent(AgentGeneration):
         self._state_lock = threading.Lock()
         self._generation = 0
         self._generation_lock = threading.RLock()
+        self._media_lock = threading.RLock()
         self._active_stream = None
+        self._needs_generation = pending_turn
+        self._accepted_inputs = set()
         self._used_call_ids = self._scan_call_ids(self.history)
 
     @staticmethod
@@ -150,6 +157,10 @@ class Agent(AgentGeneration):
                     ):
                         used.add(action["call_id"])
         return used
+
+    @property
+    def semantic_memory(self):
+        return self._semantic_memory
 
     @property
     def person_prompt(self):
@@ -176,7 +187,8 @@ class Agent(AgentGeneration):
             self._enabled_modules = current["modules"]
             self._enabled_actions = current["actions"]
             self._enabled_handlers = current["handlers"]
-        self.manager.capabilities.start_snapshot(runnable)
+        if not self.manager.restoring_shutdown:
+            self.manager.capabilities.start_snapshot(runnable)
         removed = {key: previous[key] - current[key] for key in previous}
         if any(removed.values()):
             self.manager.capabilities.release_snapshot(
@@ -248,66 +260,51 @@ class Agent(AgentGeneration):
             for module_id in snapshot["modules"]
         )
 
+    def _enable_assignment(self, identifier):
+        if identifier in self.intrinsic_capabilities():
+            return
+        if self.agent_id == "main":
+            self.manager.presets.edit(self.preset, changes={"capabilities_add": [identifier]})
+            self._additional_capabilities = [v for v in self._additional_capabilities if v != identifier]
+        elif identifier not in self.manager.presets.load(self.preset).capabilities and identifier not in self._additional_capabilities:
+            self._additional_capabilities.append(identifier)
+
+    def _disable_assignment(self, identifier):
+        if self.manager.capabilities.is_system(identifier):
+            raise ValueError("Cannot disable a system capability")
+        if identifier in self.manager.presets.load(self.preset).capabilities:
+            if self.agent_id != "main":
+                raise ValueError("Cannot remove a mandatory preset capability")
+            self.manager.presets.edit(self.preset, changes={"capabilities_remove": [identifier]})
+        self._additional_capabilities = [v for v in self._additional_capabilities if v != identifier]
+
     def enable_module(self, module_id: str) -> None:
-        if (
-            module_id not in self.manager.presets.load(self.preset).capabilities
-            and module_id not in self.intrinsic_capabilities()
-            and module_id not in self._additional_capabilities
-        ):
-            self._additional_capabilities.append(module_id)
+        self._enable_assignment(module_id)
         self._refresh_configuration()
         self._persist_context()
 
     def disable_module(self, module_id: str) -> None:
-        if self.manager.capabilities.is_system(module_id):
-            raise ValueError("Cannot disable a system capability")
-        if module_id in self.manager.presets.load(self.preset).capabilities:
-            raise ValueError("Cannot remove a mandatory preset capability")
-        self._additional_capabilities = [
-            value for value in self._additional_capabilities if value != module_id
-        ]
+        self._disable_assignment(module_id)
         self._refresh_configuration()
         self._persist_context()
 
     def enable_action(self, action_id: str) -> None:
-        if (
-            action_id not in self.manager.presets.load(self.preset).capabilities
-            and action_id not in self.intrinsic_capabilities()
-            and action_id not in self._additional_capabilities
-        ):
-            self._additional_capabilities.append(action_id)
+        self._enable_assignment(action_id)
         self._refresh_configuration()
         self._persist_context()
 
     def disable_action(self, action_id: str) -> None:
-        if self.manager.capabilities.is_system(action_id):
-            raise ValueError("Cannot disable a system capability")
-        if action_id in self.manager.presets.load(self.preset).capabilities:
-            raise ValueError("Cannot remove a mandatory preset capability")
-        self._additional_capabilities = [
-            value for value in self._additional_capabilities if value != action_id
-        ]
+        self._disable_assignment(action_id)
         self._refresh_configuration()
         self._persist_context()
 
     def enable_handler(self, handler_id: str) -> None:
-        if (
-            handler_id not in self.manager.presets.load(self.preset).capabilities
-            and handler_id not in self.intrinsic_capabilities()
-            and handler_id not in self._additional_capabilities
-        ):
-            self._additional_capabilities.append(handler_id)
+        self._enable_assignment(handler_id)
         self._refresh_configuration()
         self._persist_context()
 
     def disable_handler(self, handler_id: str) -> None:
-        if self.manager.capabilities.is_system(handler_id):
-            raise ValueError("Cannot disable a system capability")
-        if handler_id in self.manager.presets.load(self.preset).capabilities:
-            raise ValueError("Cannot remove a mandatory preset capability")
-        self._additional_capabilities = [
-            value for value in self._additional_capabilities if value != handler_id
-        ]
+        self._disable_assignment(handler_id)
         self._refresh_configuration()
         self._persist_context()
 
@@ -342,6 +339,7 @@ class Agent(AgentGeneration):
             "additional_instructions": self.additional_instructions,
             "capabilities_add": list(self._additional_capabilities),
             "messages": list(self.history[1:]),
+            "pending_turn": self._needs_generation,
         }
 
     def _persist_context(self) -> None:
@@ -413,12 +411,7 @@ class Agent(AgentGeneration):
         self.history[0] = {
             "role": "system",
             "content": agent_system_prompt(
-                self.person_prompt.replace(
-                    "{storage_root}",
-                    str(self.manager.capabilities.storage_root.resolve()),
-                )
-                if self.preset == "capability_manager"
-                else self.person_prompt,
+                self.person_prompt,
                 self.manager.environment,
                 actions,
                 events,
@@ -446,9 +439,7 @@ class Agent(AgentGeneration):
                 model_capabilities=self.manager.capabilities_for_model(
                     model_id or self.effective_model()
                 ),
-                semantic_memory=self.manager.semantic_memory.snapshot()
-                if self.primary
-                else None,
+                semantic_memory=self.semantic_memory.snapshot(),
             ),
         }
         return actions, events
@@ -468,23 +459,46 @@ class Agent(AgentGeneration):
         return self
 
     def enqueue(self, event: Event) -> bool:
-        if not self._stop.is_set():
-            self._events.put(event)
-            return True
-        return False
+        return self.enqueue_batch([event])
 
-    def enqueue_result(self, result: CallResult) -> None:
-        if not self._stop.is_set():
-            self._events.put(result)
+    def enqueue_result(self, result: CallResult) -> bool:
+        return self.enqueue_batch([result])
+
+    @staticmethod
+    def _input_identity(item):
+        return ('result', item.call_id) if isinstance(item, CallResult) else ('event', item.id)
 
     def enqueue_batch(self, items) -> bool:
-        with self._events.mutex:
-            if self._stop.is_set():
+        with self.manager.input_lock:
+            if self._stop.is_set() or self.manager.frozen.is_set():
                 return False
-            self._events.queue.extend(items)
-            self._events.unfinished_tasks += len(items)
-            self._events.not_empty.notify_all()
-        return True
+            with self._generation_lock:
+                old_length = len(self.history)
+                old_pending = self._needs_generation
+                try:
+                    fresh = [item for item in items if self._input_identity(item) not in self._accepted_inputs]
+                    self.history.extend(item.model_message() for item in fresh)
+                    self._needs_generation = True
+                    self._persist_context()
+                    self._accepted_inputs.update(self._input_identity(item) for item in fresh)
+                except Exception:
+                    del self.history[old_length:]
+                    self._needs_generation = old_pending
+                    raise
+            for item in items:
+                if isinstance(item, CallResult):
+                    self.manager.debug.result(item, agent_id=self.agent_id)
+                else:
+                    self.manager.debug.input(item, agent_id=self.agent_id)
+            with self._events.mutex:
+                self._events.queue.extend(items)
+                self._events.unfinished_tasks += len(items)
+                self._events.not_empty.notify_all()
+            return True
+
+    def resume(self):
+        # Empty batch requests inference over an already durable pending input.
+        self._events.put(_RESUME)
 
     def interrupt(self) -> None:
         with self._generation_lock:
@@ -533,7 +547,7 @@ class Agent(AgentGeneration):
             if generation != self._generation:
                 self._requeue_front([first])
                 return
-            batch = [first]
+            batch = [] if first is _RESUME else [first]
             while True:
                 try:
                     event = self._events.get_nowait()
@@ -542,7 +556,8 @@ class Agent(AgentGeneration):
                 if event is None:
                     self._stop.set()
                     break
-                batch.append(event)
+                if event is not _RESUME:
+                    batch.append(event)
             if generation != self._generation:
                 self._requeue_front(batch)
                 return
@@ -558,6 +573,15 @@ class Agent(AgentGeneration):
     def _turn(self, batch: list[Event | CallResult], generation: int) -> None:
         """Обработать пачку, удерживая новые события до корректного ответа."""
 
+        missing = [item for item in batch if self._input_identity(item) not in self._accepted_inputs]
+        if missing:
+            with self.manager.input_lock, self._generation_lock:
+                if self._stop.is_set() or self.manager.frozen.is_set():
+                    return
+                self.history.extend(item.model_message() for item in missing)
+                self._needs_generation = True
+                self._persist_context()
+                self._accepted_inputs.update(self._input_identity(item) for item in missing)
         try:
             snapshot = self.known_snapshot()
         except Exception as exc:  # noqa: BLE001
@@ -575,11 +599,10 @@ class Agent(AgentGeneration):
                 break
             spec = specs[action.action_id]
             try:
-                self.manager.capabilities.dispatch(
-                    action=action,
-                    spec=spec,
-                    agent=self,
-                )
+                with self.manager.input_lock:
+                    if self.manager.frozen.is_set():
+                        break
+                    self.manager.capabilities.dispatch(action=action, spec=spec, agent=self)
             except Exception as exc:  # noqa: BLE001
                 kind, capability_id = _capability_identity(action.action_id)
                 self.manager.report_capability_error(
@@ -589,3 +612,5 @@ class Agent(AgentGeneration):
                     agent_id=self.agent_id,
                     call_id=action.call_id,
                 )
+
+_RESUME = object()

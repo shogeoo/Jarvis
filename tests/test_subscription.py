@@ -55,7 +55,9 @@ class _ResponseStream:
         self.closed = True
 
 
-def _client(auth=None, session=None, *, api_capabilities=None, fallback=None, loader=None):
+def _client(
+    auth=None, session=None, *, api_capabilities=None, fallback=None, loader=None
+):
     api = Mock()
     router = SubscriptionClient(
         api_client=api,
@@ -69,6 +71,254 @@ def _client(auth=None, session=None, *, api_capabilities=None, fallback=None, lo
         session=session or Mock(),
     )
     return router, api
+
+
+class MemorySubscriptionTests(unittest.TestCase):
+    def router(self, responses):
+        auth = Mock()
+        auth.credentials.return_value = {
+            "access_token": "test-token",
+            "account_id": "test-account",
+        }
+        session = Mock()
+        session.post.side_effect = responses
+        router, api = _client(
+            auth, session, api_capabilities=ModelCapabilities("agent-api", ("text",))
+        )
+        return router, api, session
+
+    @staticmethod
+    def response(text="# Session\nЗавершено."):
+        return _ResponseStream(
+            [
+                {"type": "response.output_text.delta", "delta": text},
+                {"type": "response.completed"},
+            ]
+        )
+
+    def messages(self):
+        return [
+            {"role": "system", "content": "Summarize your own history as Markdown."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "An event"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,YQ=="},
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "<thinking_start>Reasoning<thinking_end>"},
+                    {"type": "text", "text": '{"actions":[]}'},
+                ],
+            },
+        ]
+
+    def test_memory_tries_its_configured_model_and_returns_plain_markdown(self):
+        router, api, session = self.router([self.response()])
+        messages = self.messages()
+        result = router.create_memory_completion(
+            model="memory-text-image",
+            api_model="provider/api-images",
+            messages=messages,
+            modalities={"text", "image"},
+        )
+        self.assertEqual(result.choices[0].message.content, "# Session\nЗавершено.")
+        body = session.post.call_args.kwargs["json"]
+        self.assertEqual(body["model"], "memory-text-image")
+        self.assertNotIn("text", body)  # No agent action JSON schema.
+        self.assertEqual(body["input"][1]["content"][1]["type"], "input_image")
+        self.assertEqual(
+            body["input"][2]["content"],
+            [
+                {
+                    "type": "output_text",
+                    "text": "<thinking_start>Reasoning<thinking_end>",
+                },
+                {"type": "output_text", "text": '{"actions":[]}'},
+            ],
+        )
+        api.chat.completions.create.assert_not_called()
+        self.assertFalse(router._memory_streams)
+
+    def test_unavailable_model_falls_back_without_changing_model_or_dropping_media(
+        self,
+    ):
+        router, api, session = self.router(
+            [_ResponseStream(status=400, text="This model is not supported")]
+        )
+        messages = self.messages()
+        for _ in range(2):
+            router.create_memory_completion(
+                model="memory-unavailable",
+                api_model="provider/api-fallback",
+                messages=messages,
+                modalities={"text", "image"},
+            )
+        self.assertEqual(session.post.call_count, 1)
+        self.assertEqual(api.chat.completions.create.call_count, 2)
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs,
+            {
+                "model": "provider/api-fallback",
+                "messages": messages,
+                "stream": False,
+            },
+        )
+        self.assertFalse(
+            router._api_only
+        )  # Other agent/subscription models stay enabled.
+
+    def test_foreign_provider_model_is_not_replaced_with_the_agent_model(self):
+        router, api, session = self.router(
+            [_ResponseStream(status=404, text="Model not found")]
+        )
+        router.create_memory_completion(
+            model="subscription-memory",
+            api_model="provider/memory-model",
+            messages=self.messages(),
+            modalities={"text", "image"},
+        )
+        self.assertEqual(
+            session.post.call_args.kwargs["json"]["model"], "subscription-memory"
+        )
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["model"],
+            "provider/memory-model",
+        )
+
+    def test_subscription_quota_falls_back_and_is_not_retried_for_each_profile(self):
+        router, api, session = self.router(
+            [_ResponseStream(status=429, text="Usage limit reached")]
+        )
+        for model in ["openai/memory-a", "openai/memory-b"]:
+            router.create_memory_completion(
+                model="subscription-memory",
+                api_model=model,
+                messages=self.messages(),
+                modalities={"text", "image"},
+            )
+        self.assertEqual(session.post.call_count, 1)
+        self.assertEqual(
+            [c.kwargs["model"] for c in api.chat.completions.create.call_args_list],
+            ["openai/memory-a", "openai/memory-b"],
+        )
+
+    def test_audio_and_video_use_api_with_original_parts_even_for_text_only_agent(self):
+        for kind, value, modality in [
+            ("input_audio", {"data": "YQ==", "format": "wav"}, "audio"),
+            ("video_url", {"url": "data:video/mp4;base64,YQ=="}, "video"),
+        ]:
+            with self.subTest(kind=kind):
+                router, api, session = self.router([])
+                messages = [
+                    {"role": "system", "content": "Interpret"},
+                    {"role": "user", "content": [{"type": kind, kind: value}]},
+                ]
+                router.create_memory_completion(
+                    model="subscription-memory",
+                    api_model="provider/full-media",
+                    messages=messages,
+                    modalities={"text", modality},
+                )
+                session.post.assert_not_called()
+                self.assertEqual(
+                    api.chat.completions.create.call_args.kwargs["messages"], messages
+                )
+
+    def test_transient_subscription_failure_does_not_permanently_cache_model(self):
+        router, api, session = self.router(
+            [
+                _ResponseStream(status=503, text="Temporarily unavailable"),
+                self.response("Recovered"),
+            ]
+        )
+        for _ in range(2):
+            result = router.create_memory_completion(
+                model="subscription-memory",
+                api_model="provider/api-memory",
+                messages=self.messages(),
+                modalities={"text", "image"},
+            )
+        self.assertEqual(result.choices[0].message.content, "Recovered")
+        self.assertEqual(session.post.call_count, 2)
+        self.assertEqual(api.chat.completions.create.call_count, 1)
+
+    def test_cancelled_memory_request_never_starts_api_fallback(self):
+        router, api, session = self.router([])
+        with self.assertRaises(InterruptedError):
+            router.create_memory_completion(
+                model="subscription-memory",
+                api_model="provider/api-memory",
+                messages=self.messages(),
+                modalities={"text", "image"},
+                cancelled=lambda: True,
+            )
+        session.post.assert_not_called()
+        api.chat.completions.create.assert_not_called()
+
+    def test_archiver_routes_memory_requests_through_subscription_client(self):
+        from jarvis.memory.archiver import Archiver
+
+        router, api, session = self.router([self.response()])
+        config = SimpleNamespace(
+            subscription_enabled=True,
+            memory_subscription_model="subscription-image",
+            memory_model_text_image="provider/api-image",
+        )
+        archiver = Archiver(Mock(), config, router, "Environment")
+        self.assertEqual(
+            archiver.request(self.messages(), {"text", "image"}),
+            "# Session\nЗавершено.",
+        )
+        self.assertEqual(
+            session.post.call_args.kwargs["json"]["model"], "subscription-image"
+        )
+        api.chat.completions.create.assert_not_called()
+
+    def test_subscription_memory_succeeds_without_an_api_model_setting(self):
+        from jarvis.memory.archiver import Archiver
+
+        router, api, session = self.router([self.response()])
+        archiver = Archiver(
+            Mock(),
+            SimpleNamespace(
+                subscription_enabled=True, memory_subscription_model="memory-only"
+            ),
+            router,
+            "Environment",
+        )
+        self.assertIn("Завершено", archiver.request(self.messages(), {"text", "image"}))
+        self.assertEqual(session.post.call_args.kwargs["json"]["model"], "memory-only")
+        api.chat.completions.create.assert_not_called()
+
+    def test_missing_subscription_setting_uses_only_api_and_preserves_media(self):
+        from jarvis.memory.archiver import Archiver
+
+        router, api, session = self.router([])
+        config = SimpleNamespace(
+            subscription_enabled=True,
+            memory_subscription_model=None,
+            memory_model_text_image="provider/api-image",
+        )
+        api.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="API Markdown"))]
+        )
+        result = Archiver(Mock(), config, router, "Environment").request(
+            self.messages(), {"text", "image"}
+        )
+        self.assertEqual(result, "API Markdown")
+        session.post.assert_not_called()
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["model"], "provider/api-image"
+        )
+        self.assertEqual(
+            api.chat.completions.create.call_args.kwargs["messages"], self.messages()
+        )
 
 
 class SubscriptionTests(unittest.TestCase):
@@ -121,11 +371,8 @@ class SubscriptionTests(unittest.TestCase):
                         },
                     },
                     {
-                        "type": "file",
-                        "file": {
-                            "filename": "report.pdf",
-                            "file_data": "data:application/pdf;base64,YQ==",
-                        },
+                        "type": "text",
+                        "text": "Programmatic Markdown of report.pdf",
                     },
                 ],
             },
@@ -245,7 +492,7 @@ class SubscriptionTests(unittest.TestCase):
         loader.assert_called_once()
         self.assertEqual(router.api_capabilities.input_modalities, ("text", "image"))
 
-    def test_api_fallback_preserves_original_file(self):
+    def test_api_rejects_files_that_bypass_core_document_conversion(self):
         router, api = _client()
         api.chat.completions.create.return_value = iter([])
         messages = [
@@ -268,10 +515,9 @@ class SubscriptionTests(unittest.TestCase):
                 ],
             },
         ]
-        router._api_request({"messages": messages, "stream": True})
-        content = api.chat.completions.create.call_args.kwargs["messages"][1]["content"]
-        self.assertEqual([part["type"] for part in content], ["text", "file"])
-        self.assertEqual(content[1]["file"]["filename"], "report.pdf")
+        with self.assertRaisesRegex(ValueError, "Provider file/document inputs are disabled"):
+            router._api_request({"messages": messages, "stream": True})
+        api.chat.completions.create.assert_not_called()
         self.assertEqual(len(messages[1]["content"]), 3)
 
     def test_api_fallback_updates_model_info_id(self):
@@ -359,6 +605,7 @@ class SubscriptionTests(unittest.TestCase):
             workers = []
 
             def visit(url):
+                self.assertTrue(any(url in notice for notice in notices))
                 query = parse_qs(urlsplit(url).query)
                 self.assertEqual(query["code_challenge_method"], ["S256"])
                 self.assertEqual(
@@ -388,6 +635,7 @@ class SubscriptionTests(unittest.TestCase):
             self.assertTrue(auth.path.exists())
             self.assertEqual(auth.credentials()["account_id"], "account-test")
             self.assertIn("Войдите", notices[0])
+            self.assertTrue(any("https://auth.openai.com/oauth/authorize?" in notice for notice in notices))
             self.assertEqual(
                 session.post.call_args.kwargs["data"]["code"], "login-code"
             )
@@ -435,6 +683,7 @@ class SubscriptionTests(unittest.TestCase):
                 )
                 try:
                     self.assertEqual(order, ["login"])
+                    self.assertIs(app.services["memory_client"], backend)
                     discover.assert_not_called()
                     self.assertIn("Войдите в аккаунт ChatGPT.", output.getvalue())
                     self.assertNotIn("system_started", output.getvalue())

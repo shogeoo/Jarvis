@@ -1,4 +1,4 @@
-"""Persistent semantic facts for the primary Jarvis agent."""
+"""Persistent semantic facts of one Jarvis instance."""
 
 from __future__ import annotations
 

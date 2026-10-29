@@ -20,7 +20,7 @@ import test_runtime as runtime_tests
 class SemanticMemoryTests(unittest.TestCase):
     def test_write_edit_delete_survive_reopen_and_keep_monotonic_ids(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / ".jarvis/memory/main/semantic.json"
+            path = Path(temporary) / ".jarvis/memory/instances/main/semantic.json"
             memory = SemanticMemory(path)
             self.assertEqual(memory.snapshot(), {"entries": []})
             first = memory.write("Georgiy uses Arch Linux and Windows dual boot.")
@@ -63,7 +63,7 @@ class SemanticMemoryTests(unittest.TestCase):
 
     def test_snapshot_reads_current_semantic_file_each_time(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "memory/main/semantic.json"
+            path = Path(temporary) / "memory/instances/main/semantic.json"
             memory = SemanticMemory(path)
             self.assertEqual(memory.snapshot(), {"entries": []})
             path.parent.mkdir(parents=True)
@@ -76,7 +76,7 @@ class SemanticMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / ".jarvis"
             ensure_runtime_layout(root)
-            path = root / "memory/main/semantic.json"
+            path = root / "memory/instances/main/semantic.json"
             self.assertEqual(json.loads(path.read_text()), {"entries": []})
             path.write_text('{"entries":[{"id":"mem_000001","content":"Existing"}]}')
             ensure_runtime_layout(root)
@@ -88,7 +88,7 @@ class SemanticMemoryTests(unittest.TestCase):
             ensure_runtime_layout(root)
             self.assertEqual(json.loads(path.read_text()), {"entries": []})
 
-    def test_memory_actions_are_core_primary_only_and_prompt_rebuilds(self):
+    def test_memory_actions_are_core_modules_and_prompt_rebuilds(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = fixtures.write_jarvis_root(Path(temporary) / ".jarvis")
             actions, events = ActionRegistry(), EventRegistry()
@@ -100,11 +100,11 @@ class SemanticMemoryTests(unittest.TestCase):
             other = actions.for_capabilities(modules=set(), actions=set())
             self.assertTrue(identifiers <= primary.keys())
             self.assertTrue(identifiers.isdisjoint(other))
-            memory = SemanticMemory(root / "memory/main/semantic.json")
+            memory = SemanticMemory(root / "memory/instances/main/semantic.json")
             context = SimpleNamespace(
                 agent_id="main",
                 agent_manager=SimpleNamespace(
-                    _manager=SimpleNamespace(semantic_memory=memory)
+                    _manager=SimpleNamespace(require_agent=lambda agent_id: SimpleNamespace(semantic_memory=memory))
                 )
             )
             before = agent_system_prompt(
@@ -182,7 +182,7 @@ class SemanticMemoryTests(unittest.TestCase):
             client.chat.completions.calls[1]["messages"][0]["content"],
         )
         self.assertEqual(
-            json.loads((fixture.root / "memory/main/semantic.json").read_text())[
+            json.loads((fixture.root / "memory/instances/main/semantic.json").read_text())[
                 "entries"
             ][0]["id"],
             "mem_000001",

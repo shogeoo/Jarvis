@@ -112,7 +112,7 @@ class CapabilityDiscovery:
         )
         return {
             "module_id": module_id,
-            "description": description,
+            "description": description.replace("{storage_root}", str(self.storage_root.resolve())),
             "actions": self.actions.catalog(actions),
             "events": [],
         }

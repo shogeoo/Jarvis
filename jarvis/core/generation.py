@@ -21,12 +21,7 @@ from .protocol import (
 
 class AgentGeneration:
     def _event_history_message(self, item: Event) -> dict[str, Any]:
-        # Keep original attachments in Jarvis memory even when the subscription
-        # model cannot receive their modality. API fallback gets the same
-        # persisted context and can use its own model capabilities.
-        if self.manager.config is not None and self.manager.config.subscription_enabled:
-            return item.model_message()
-        return item.model_message(self.manager.model_capabilities)
+        return item.model_message()
 
     def _run_turn(
         self,
@@ -49,44 +44,10 @@ class AgentGeneration:
                 if generation != self._generation:
                     self._requeue_front(batch)
                     return
-                for item in batch:
-                    if isinstance(item, CallResult):
-                        self.history.append(item.model_message())
-                        self.manager.debug.result(item, agent_id=self.agent_id)
-                    else:
-                        self.history.append(self._event_history_message(item))
-                        self.manager.debug.input(
-                            item,
-                            self.manager.model_capabilities,
-                            agent_id=self.agent_id,
-                        )
-                self._persist_context()
                 self._model_failure(exc)
                 return
 
-        requires_model = False
-        for index, item in enumerate(batch):
-            with self._generation_lock:
-                if self._stop.is_set():
-                    return
-                if generation != self._generation:
-                    self._requeue_front(batch[index:])
-                    return
-                if isinstance(item, CallResult):
-                    self.history.append(item.model_message())
-                    self.manager.debug.result(item, agent_id=self.agent_id)
-                    model_value = item.model_value()
-                else:
-                    self.history.append(self._event_history_message(item))
-                    self.manager.debug.input(
-                        item, self.manager.model_capabilities, agent_id=self.agent_id
-                    )
-                    model_value = item.model_value()
-
-                requires_model = True
-
-        self._persist_context()
-        if not requires_model:
+        if not batch and not self._needs_generation:
             self._set_state("waiting")
             return
 
@@ -110,9 +71,19 @@ class AgentGeneration:
             try:
                 specs, _ = self._contract(model_id=active_model)
                 schemas = {name: spec.data_schema for name, spec in specs.items()}
+                from ..infrastructure.subscription import SubscriptionClient
+                routing = isinstance(self.manager.client, SubscriptionClient)
+                with self._generation_lock:
+                    from copy import deepcopy
+                    original_history = deepcopy(self.history)
+                request_messages = (original_history if routing else self._model_messages(active_model, history=original_history))
+                request_started = time.monotonic()
+                self.manager.debug.log("model_request_started", agent_id=self.agent_id,
+                                       model=active_model, messages=len(request_messages),
+                                       system_characters=len(request_messages[0]["content"]))
                 stream = self.manager.client.chat.completions.create(
                     model=active_model,
-                    messages=list(self.history),
+                    messages=request_messages,
                     response_format=response_format(schemas),
                     **(
                         {"reasoning_effort": self.manager.config.reasoning_effort}
@@ -121,22 +92,37 @@ class AgentGeneration:
                         else {}
                     ),
                     stream=True,
+                    **({"_jarvis_messages": lambda model, caps, history=original_history: self._model_messages(model, capabilities=caps, history=history)} if routing else {}),
                 )
                 with self._generation_lock:
                     if generation != self._generation or self._stop.is_set():
                         stream.close()
                         return
                     self._active_stream = stream
+                first_chunk = True
                 content = ""
                 refusal = ""
+                thinking = ""
+                reasoning_details = []
                 try:
                     for chunk in stream:
                         if generation != self._generation or self._stop.is_set():
                             return
+                        if first_chunk:
+                            self.manager.debug.log("model_first_chunk", agent_id=self.agent_id,
+                                                   model=active_model,
+                                                   seconds=round(time.monotonic() - request_started, 3))
+                            first_chunk = False
                         if chunk.choices:
                             delta = chunk.choices[0].delta
                             content += delta.content or ""
                             refusal += getattr(delta, "refusal", None) or ""
+                            thought = getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
+                            if isinstance(thought, str):
+                                thinking += thought
+                            details = getattr(delta, 'reasoning_details', None)
+                            if isinstance(details, list):
+                                reasoning_details.extend(details)
                 finally:
                     stream.close()
                     with self._generation_lock:
@@ -147,6 +133,19 @@ class AgentGeneration:
                     return
                 failures += 1
                 self.manager.debug.error(str(exc))
+                self.manager.debug.notice(f"Model request failed [{self.agent_id}, {active_model}]: {exc}")
+                status = getattr(exc, "status_code", None)
+                insufficient_balance = status == 402 or any(
+                    phrase in str(exc).lower() for phrase in
+                    ("insufficient credits", "insufficient funds", "insufficient balance", "requires more credits")
+                )
+                if insufficient_balance:
+                    self.manager.debug.notice("API: недостаточно средств. Пополните баланс провайдера.")
+                    self._model_failure(exc)
+                    return
+                if status in {400, 401, 422} and not (status == 400 and "model" in str(exc).lower()):
+                    self._model_failure(exc)
+                    return
                 unavailable = (
                     getattr(exc, "status_code", None) in {403, 404}
                     or (
@@ -183,6 +182,9 @@ class AgentGeneration:
                     time.sleep(min(0.05, deadline - time.monotonic()))
                 continue
 
+            self.manager.debug.log("model_request_completed", agent_id=self.agent_id,
+                                   model=active_model,
+                                   seconds=round(time.monotonic() - request_started, 3))
             with self._generation_lock:
                 if generation != self._generation or self._stop.is_set():
                     return
@@ -191,7 +193,13 @@ class AgentGeneration:
                 )
                 repeated = appeared & self._used_call_ids
                 self._used_call_ids.update(appeared)
-                self.history.append({"role": "assistant", "content": content})
+                message = {"role": "assistant", "content": content}
+                if thinking:
+                    message['thinking'] = thinking
+                if reasoning_details:
+                    message['reasoning_details'] = reasoning_details
+                self.history.append(message)
+                self._needs_generation = not self._events.empty()
                 self._persist_context()
             self.manager.debug.model(self.agent_id, content)
             if refusal:
@@ -247,10 +255,9 @@ class AgentGeneration:
                 self._set_state("waiting")
                 return
             self._set_state("acting", action_count=len(actions))
-            with self._generation_lock:
-                if generation != self._generation or self._stop.is_set():
-                    return
-                self._execute_actions(actions, specs)
+            if generation != self._generation or self._stop.is_set():
+                return
+            self._execute_actions(actions, specs)
             if not self._stop.is_set():
                 self._set_state("waiting")
             return
@@ -274,7 +281,8 @@ class AgentGeneration:
             source="core",
             target=self.agent_id,
         )
-        self.history.append(event.model_message(self.manager.model_capabilities))
+        self.history.append(event.model_message())
+        self._needs_generation = True
         self.manager.debug.input(
             event, self.manager.model_capabilities, agent_id=self.agent_id
         )
@@ -288,3 +296,10 @@ class AgentGeneration:
             traceback=traceback.format_exc(),
         )
         self._set_state("waiting")
+
+    def _model_messages(self, model_id=None, *, capabilities=None, history=None):
+        from .media import agent_messages
+        from copy import deepcopy
+        with self._generation_lock:
+            snapshot = deepcopy(self.history) if history is None else deepcopy(history)
+        return agent_messages(self, snapshot, model_id or self.effective_model(), capabilities)

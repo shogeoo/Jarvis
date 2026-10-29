@@ -128,7 +128,7 @@ def file_action(action_id, base_directory, *, process_manager=None):
     line = {"type": ["integer", "null"], "minimum": 1}
     specs = {
         "read_file": (
-            "Perceive information stored in a file: read numbered UTF-8 text or receive native image, audio, video and file attachments. Use the returned line numbers for precise edits. Optional lines are inclusive and 1-based. Relative paths use this capability's base directory.",
+            "Perceive information stored in a file: read numbered UTF-8 text or receive original image, audio, video and document attachments. Core adapts media for the model and always converts documents to Markdown; this capability performs no model-specific conversion. Use the returned line numbers for precise edits. Optional lines are inclusive and 1-based. Relative paths use this capability's base directory.",
             {"path": string, "start_line": line, "end_line": line},
             ["path"],
             {"path": string, "start_line": line, "end_line": line, "content": string},

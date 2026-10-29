@@ -85,6 +85,8 @@ class CapabilityDispatch:
                 result_schema=spec.result_schema,
             )
         if core:
+            with manager._lock:
+                manager.core_stops[(agent.agent_id, action.call_id)] = threading.Event()
             processes = getattr(manager, "processes", None)
             owner = (
                 processes.reserve_call(agent.agent_id, action.call_id)
@@ -145,15 +147,24 @@ class CapabilityDispatch:
             agent_manager=self._agent_api,
             capabilities=self,
             services=self.services,
+            stop_event=manager.core_stops.get((agent.agent_id, action.call_id), threading.Event()),
             metadata={
                 "preset": agent.preset,
                 "execution_owner": owner,
             },
         )
-        if not current_caller():
+        if not current_caller() or context.stop_event.is_set():
             return
         try:
-            result = spec.run(dict(action.data), context)
+            mutates_instances = (spec.id.startswith(('agents.', 'semantic_memory.'))
+                                 or spec.id in {'enable_capability', 'disable_capability', 'toggle_capability'})
+            if mutates_instances:
+                with manager.input_lock:
+                    if manager.frozen.is_set() or manager.stopping.is_set():
+                        return
+                    result = spec.run(dict(action.data), context)
+            else:
+                result = spec.run(dict(action.data), context)
         except Exception as exc:  # noqa: BLE001
             if current_caller():
                 manager.fail_call(agent.agent_id, action.call_id, exc)

@@ -153,18 +153,7 @@ def _user_parts(content: Any) -> list[dict[str, Any]]:
             if image.get("url"):
                 parts.append({"type": "input_image", "image_url": image["url"]})
         else:
-            name = (
-                (part.get("file") or {}).get("filename")
-                or (part.get("input_audio") or {}).get("name")
-                or (part.get("video_url") or {}).get("name")
-                or "unnamed"
-            )
-            parts.append(
-                {
-                    "type": "input_text",
-                    "text": f"[Attachment not available as native subscription input: {name}; type: {kind}]",
-                }
-            )
+            raise ValueError(f"Core adaptation is required for subscription content type: {kind}")
     return parts or [{"type": "input_text", "text": ""}]
 
 
@@ -175,7 +164,13 @@ def _history_items(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             result.append(
                 {
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": message["content"]}],
+                    "content": [
+                        {"type": "output_text", "text": part["text"]}
+                        for part in message["content"]
+                        if part.get("type") == "text"
+                    ]
+                    if isinstance(message["content"], list)
+                    else [{"type": "output_text", "text": message["content"]}],
                 }
             )
         elif message["role"] in {"system", "user"}:
@@ -205,8 +200,15 @@ def _quota_error(error: Any) -> bool:
 class SubscriptionStream:
     """Cancelable streaming adapter for the existing Agent model-client loop."""
 
-    def __init__(self, router: "SubscriptionClient", options: dict[str, Any]):
+    def __init__(
+        self,
+        router: "SubscriptionClient",
+        options: dict[str, Any],
+        *,
+        allow_fallback=True,
+    ):
         self.router = router
+        self._allow_fallback = allow_fallback
         self.options = options
         self._closed = threading.Event()
         self._queue: queue.Queue[Any] = queue.Queue()
@@ -248,7 +250,9 @@ class SubscriptionStream:
                     )
                 )
         except BaseException as exc:
-            if isinstance(exc, SubscriptionQuotaExceeded) or _quota_error(exc):
+            if self._allow_fallback and (
+                isinstance(exc, SubscriptionQuotaExceeded) or _quota_error(exc)
+            ):
                 self._fallback(exc)
             else:
                 self._publish(exc)
@@ -318,6 +322,107 @@ class SubscriptionClient:
         self.chat = SimpleNamespace(completions=self)
         self._lock = threading.RLock()
         self._api_only = False
+        self._memory_unavailable: set[str] = set()
+        self._memory_streams: set[SubscriptionStream] = set()
+        self._closed = threading.Event()
+
+    @staticmethod
+    def _supports_memory_input(messages, modalities):
+        if not set(modalities) <= set(SUBSCRIPTION_MODALITIES.input_modalities):
+            return False
+        # Unlike ordinary agent inference, archival input must never be replaced
+        # with placeholders or lose history fields on a less capable route.
+        for message in messages:
+            role = message.get("role")
+            if role not in {"system", "user", "assistant"} or message.get("tool_calls"):
+                return False
+            content = message.get("content")
+            if isinstance(content, list):
+                allowed = {"text", "image_url"} if role == "user" else {"text"}
+                if any(part.get("type") not in allowed for part in content):
+                    return False
+            elif not isinstance(content, str):
+                return False
+        return True
+
+    def create_memory_completion(
+        self, *, model, api_model, messages, modalities, cancelled=lambda: False
+    ):
+        """Try the dedicated subscription memory model, then the selected API profile.
+
+        This plain-Markdown route does not use the agent action schema or the
+        default agent API model, and never filters the original fallback input.
+        The API profile is resolved lazily: a successful subscription request does
+        not require API model settings to be populated.
+        """
+
+        from ..memory.serialization import validate_provider_input
+        validate_provider_input(messages)
+
+        def check_cancelled():
+            if cancelled() or self._closed.is_set():
+                raise InterruptedError("Memory model request was cancelled")
+
+        check_cancelled()
+        stream = None
+        with self._lock:
+            if (
+                not self._api_only
+                and model not in self._memory_unavailable
+                and self._supports_memory_input(messages, modalities)
+            ):
+                check_cancelled()
+                stream = SubscriptionStream(
+                    self,
+                    {
+                        "model": model.removeprefix("openai/"),
+                        "messages": messages,
+                        "stream": True,
+                    },
+                    allow_fallback=False,
+                )
+                self._memory_streams.add(stream)
+        if stream is not None:
+            try:
+                content = ""
+                for chunk in stream:
+                    check_cancelled()
+                    if chunk.choices:
+                        content += chunk.choices[0].delta.content or ""
+                check_cancelled()
+                if not content.strip():
+                    raise RuntimeError(
+                        "Subscription memory model returned empty Markdown"
+                    )
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+                )
+            except Exception as exc:
+                check_cancelled()
+                if isinstance(exc, SubscriptionQuotaExceeded) or _quota_error(exc):
+                    self._switch_to_api(exc)
+                elif getattr(exc, "status_code", None) in {403, 404} or (
+                    getattr(exc, "status_code", None) == 400
+                    and "model" in str(exc).lower()
+                ):
+                    with self._lock:
+                        self._memory_unavailable.add(model)
+                logger.info(
+                    "Subscription memory model %s unavailable; using the configured API profile: %s",
+                    model,
+                    exc,
+                )
+            finally:
+                stream.close()
+                with self._lock:
+                    self._memory_streams.discard(stream)
+        check_cancelled()
+        fallback_model = api_model() if callable(api_model) else api_model
+        if not fallback_model:
+            raise ValueError("The memory API fallback profile is not configured")
+        return self.api_client.chat.completions.create(
+            model=fallback_model, messages=messages, stream=False
+        )
 
     def ensure_chatgpt_login(self, announce) -> None:
         self.auth.ensure_login(announce)
@@ -344,55 +449,44 @@ class SubscriptionClient:
     def _api_request(self, options: dict[str, Any]):
         requested_model = options.get("model") or self.api_model
         api_model = requested_model if "/" in requested_model else self.api_model
-        messages = deepcopy(options["messages"])
-        model_info = ModelCapabilities(
-            api_model, self.api_capabilities.input_modalities
-        ).prompt_block()
-        if (
-            "<MODEL_INFO>" in messages[0]["content"]
-            and "</MODEL_INFO>" in messages[0]["content"]
-        ):
-            messages[0]["content"] = re.sub(
-                r"<MODEL_INFO>.*?</MODEL_INFO>",
-                lambda _: "<MODEL_INFO>\n" + model_info + "\n</MODEL_INFO>",
-                messages[0]["content"],
-                count=1,
-                flags=re.DOTALL,
-            )
-        else:
-            messages[0]["content"] = messages[0]["content"].replace(
-                ModelCapabilities(
-                    self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
-                ).prompt_block(),
-                model_info,
-                1,
-            )
-        for message in messages[1:]:
-            if message.get("role") != "user" or not isinstance(
-                message.get("content"), list
+        prepare = options.get("_jarvis_messages")
+        messages = (prepare(api_model, self.api_capabilities) if prepare else deepcopy(options["messages"]))
+        if prepare is None:
+            model_info = ModelCapabilities(
+                api_model, self.api_capabilities.input_modalities
+            ).prompt_block()
+            if (
+                "<MODEL_INFO>" in messages[0]["content"]
+                and "</MODEL_INFO>" in messages[0]["content"]
             ):
-                continue
-            message["content"] = [
-                part
-                for part in message["content"]
-                if self.api_capabilities.supports(
-                    {
-                        "image_url": "image",
-                        "input_audio": "audio",
-                        "video_url": "video",
-                        "file": "file",
-                    }.get(part.get("type"), "text")
+                messages[0]["content"] = re.sub(
+                    r"<MODEL_INFO>.*?</MODEL_INFO>",
+                    lambda _: "<MODEL_INFO>\n" + model_info + "\n</MODEL_INFO>",
+                    messages[0]["content"],
+                    count=1,
+                    flags=re.DOTALL,
                 )
-            ]
+            else:
+                messages[0]["content"] = messages[0]["content"].replace(
+                    ModelCapabilities(
+                        self.subscription_model, SUBSCRIPTION_MODALITIES.input_modalities
+                    ).prompt_block(),
+                    model_info,
+                    1,
+                )
+        from ..memory.serialization import validate_provider_input
+        validate_provider_input(messages)
         return self.api_client.chat.completions.create(
-            **{**options, "model": api_model, "messages": messages}
+            **{**{k: v for k, v in options.items() if k != "_jarvis_messages"}, "model": api_model, "messages": messages}
         )
 
     def _generate(
         self, options: dict[str, Any], stream: SubscriptionStream
     ) -> str | None:
-        schema = options["response_format"]["json_schema"]["schema"]
-        messages = options["messages"]
+        schema = options.get("response_format", {}).get("json_schema", {}).get("schema")
+        prepare = options.get("_jarvis_messages")
+        messages = (prepare(options.get("model") or self.subscription_model, SUBSCRIPTION_MODALITIES)
+                    if prepare else options["messages"])
         if not messages or messages[0].get("role") != "system":
             raise ValueError(
                 "Subscription request must start with Jarvis system prompt"
@@ -402,15 +496,16 @@ class SubscriptionClient:
             "input": _history_items(messages),
             "store": False,
             "stream": True,
-            "text": {
+        }
+        if schema is not None:
+            body["text"] = {
                 "format": {
                     "type": "json_schema",
                     "name": "agent_actions",
                     "strict": True,
                     "schema": _strict_schema(schema),
                 }
-            },
-        }
+            }
         if options.get("reasoning_effort"):
             body["reasoning"] = {"effort": options["reasoning_effort"]}
         for attempt in range(2):
@@ -448,6 +543,7 @@ class SubscriptionClient:
             break
         content = ""
         completed = False
+        thinking = ""
         try:
             for raw in response.iter_lines():
                 if stream._closed.is_set():
@@ -466,6 +562,11 @@ class SubscriptionClient:
                 kind = event.get("type")
                 if kind == "response.output_text.delta":
                     content += event.get("delta") or ""
+                elif kind in {
+                    "response.reasoning_summary_text.delta",
+                    "response.reasoning_text.delta",
+                }:
+                    thinking += event.get("delta") or ""
                 elif kind in {"response.failed", "error"}:
                     error = (
                         event.get("error")
@@ -486,6 +587,20 @@ class SubscriptionClient:
             raise RuntimeError(
                 "ChatGPT subscription stream ended without response.completed"
             )
+        if thinking:
+            stream._publish(
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content="", refusal=None, reasoning_content=thinking
+                            )
+                        )
+                    ]
+                )
+            )
+        if schema is None:
+            return content
         try:
             return _normalize_response(content, schema)
         except (ValueError, TypeError) as exc:
@@ -494,6 +609,11 @@ class SubscriptionClient:
             return content
 
     def close(self) -> None:
+        self._closed.set()
+        with self._lock:
+            streams = list(self._memory_streams)
+        for stream in streams:
+            stream.close()
         self.session.close()
         self.auth.close()
         self.api_client.close()

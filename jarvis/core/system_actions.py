@@ -3,18 +3,18 @@
 from dataclasses import replace
 from ..capabilities.api import action_definition
 from .protocol import object_schema
-from .agent_actions import register_agent_actions, require_main
+from .agent_actions import register_agent_actions
 from .preset_actions import register_preset_actions
 from .capability_actions import register_capability_actions
 
 
 def system_capabilities(*, primary=False, preset=""):
     """Intrinsic assignments; never persisted as editable preset capabilities."""
-    values = ["no_action", "send_message_to_agent"]
+    values = ["no_action", "send_message_to_agent", "semantic_memory"]
     if primary:
         values += [
             "agents",
-            "semantic_memory",
+            "shutdown",
             "speech_detected",
             "list_assigned_capabilities",
             "list_available_capabilities",
@@ -29,24 +29,23 @@ def system_capabilities(*, primary=False, preset=""):
             "capability_info",
             "toggle_capability",
         ]
+    if preset == 'memory_manager':
+        values += ['memory', 'list_assigned_capabilities', 'list_available_capabilities', 'capability_info', 'enable_capability', 'disable_capability']
     return values
 
 
 def register_memory_actions(registry):
     def write(data, context):
-        require_main(context)
         return {
-            "id": context.agent_manager._manager.semantic_memory.write(data["content"])
+            "id": context.agent_manager._manager.require_agent(context.agent_id).semantic_memory.write(data["content"])
         }
 
     def edit(data, context):
-        require_main(context)
-        context.agent_manager._manager.semantic_memory.edit(data["id"], data["content"])
+        context.agent_manager._manager.require_agent(context.agent_id).semantic_memory.edit(data["id"], data["content"])
         return {"status": "updated"}
 
     def delete(data, context):
-        require_main(context)
-        context.agent_manager._manager.semantic_memory.delete(data["id"])
+        context.agent_manager._manager.require_agent(context.agent_id).semantic_memory.delete(data["id"])
         return {"status": "deleted"}
 
     definitions = (
@@ -127,6 +126,15 @@ def register_system_actions(registry):
     register_preset_actions(registry)
     register_capability_actions(registry)
     register_memory_actions(registry)
+    from .memory_actions import register_archive_actions
+    register_archive_actions(registry)
+    def shutdown(data, context):
+        if context.agent_id != 'main':
+            raise ValueError('Only Main can shut down the logical session')
+        return context.agent_manager._manager.session_shutdown.start(context.call_id)
+    registry.register(replace(action_definition(
+        'Complete the entire logical session: interrupt running work, archive all experience, then give one final farewell and exit. Only Main may call this; use it as the sole action.',
+        object_schema({}), object_schema({'status': {}}), shutdown), id='shutdown', owner='core:primary'))
     registry.register(
         replace(
             action_definition(

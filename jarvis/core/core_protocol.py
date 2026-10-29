@@ -59,23 +59,39 @@ def register_core_protocol(actions: ActionRegistry, events: EventRegistry) -> No
         ),
         owner="core",
     )
-    events.register(
-        EventDefinition(
-            event_id="system_started",
-            description=(
-                "The system has started. This event gives you an opportunity to take initiative: consider your personality, available capabilities and current context, then independently choose a useful action or begin an interaction. Initiative is welcome but no specific action is mandatory. datetime is the local startup time with timezone."
-            ),
-            data_schema=object_schema(
-                {
-                    "datetime": {
-                        "type": "string",
-                        "description": "Local startup time in ISO 8601 with timezone offset.",
-                    }
-                }
-            ),
+    for identifier, description in (
+        (
+            "system_started",
+            "A new logical session of J.A.R.V.I.S. has begun. Only Main receives this event. "
+            "The instances retain their identities, settings and individual knowledge, while their active contexts "
+            "begin afresh. This is an opportunity to take initiative based on your personality and available "
+            "abilities; no specific action is mandatory. datetime is this process startup time with timezone.",
         ),
-        owner="core:primary",
-    )
+        (
+            "system_restarted",
+            "The Python process has restarted and is continuing the same unfinished logical "
+            "session. Only Main receives this event. Existing instances, their active histories, hierarchy and "
+            "knowledge have been restored; previous activity has not been archived as a completed session. "
+            "Review the restored context and interruption results before resuming work. Do not blindly repeat "
+            "operations that may already have taken effect. datetime is the restart time with timezone, not "
+            "the beginning of the logical session.",
+        ),
+    ):
+        events.register(
+            EventDefinition(
+                event_id=identifier,
+                description=description,
+                data_schema=object_schema(
+                    {
+                        "datetime": {
+                            "type": "string",
+                            "description": "Local process startup time in ISO 8601 with timezone offset.",
+                        }
+                    }
+                ),
+            ),
+            owner="core:primary",
+        )
     events.register(
         EventDefinition(
             event_id="capability_error",

@@ -190,7 +190,12 @@ class SubscriptionAuth:
                     "originator": "jarvis",
                 }
                 url = _ISSUER + "/oauth/authorize?" + urlencode(params)
-                if not webbrowser.open(url):
+                announce("Ссылка для входа в ChatGPT: " + url)
+                try:
+                    opened = webbrowser.open(url)
+                except (webbrowser.Error, OSError):
+                    opened = False
+                if not opened:
                     announce("Браузер не открылся. Откройте ссылку для входа: " + url)
                 server.timeout = 0.5
                 while not done.is_set():

@@ -110,7 +110,7 @@
     },
     {
       "enable_capability": {
-        "description": "Add an existing user capability to your own abilities by its global ID. A module is assigned whole. Global pause remains independent of assignment, so assigning a paused capability does not resume it for everyone.",
+        "description": "Add an existing user capability to your own abilities by its global ID. A module is assigned whole. Global pause remains independent of assignment, so assigning a paused capability does not resume it for everyone. For main, this updates the main preset permanently; other instances receive an individual addition. Modules are assigned as an indivisible capability.",
         "data_schema": {
           "properties": {
             "capability_id": {
@@ -132,7 +132,7 @@
     },
     {
       "disable_capability": {
-        "description": "Remove an individually added user capability from your own abilities when no longer needed. This does not globally pause it or remove its files. System capabilities cannot be disabled; preset assignments must be changed through the preset.",
+        "description": "Remove an individually added user capability from your own abilities when no longer needed. This does not globally pause it or remove its files. System capabilities cannot be disabled; preset assignments must be changed through the preset. For main, this removes the capability from the main preset; other instances cannot remove mandatory preset assignments. System capabilities cannot be disabled.",
         "data_schema": {
           "properties": {
             "capability_id": {
@@ -194,6 +194,11 @@
           }
         }
       }
+    },
+    {
+      "shutdown": {
+        "description": "Finish the logical session of the entire J.A.R.V.I.S. system. Main only; this must be your only action. Core freezes input, interrupts work, archives full histories and files, then allows exactly one final speech or reply before process exit. Ctrl+C does not complete a session."
+      }
     }
   ],
   "handlers": [
@@ -232,7 +237,7 @@
     },
     {
       "system_started": {
-        "description": "The system has started. This event gives you an opportunity to take initiative: consider your personality, available capabilities and current context, then independently choose a useful action or begin an interaction. Initiative is welcome but no specific action is mandatory. datetime is the local startup time with timezone.",
+        "description": "A new logical session of J.A.R.V.I.S. has begun. Only Main receives this event. The instances retain their identities, settings and individual knowledge, while their active contexts begin afresh. This is an opportunity to take initiative based on your personality and available abilities; no specific action is mandatory. datetime is this process startup time with timezone.",
         "data_schema": {
           "properties": {
             "datetime": {
@@ -271,12 +276,24 @@
           }
         }
       }
+    },
+    {
+      "system_restarted": {
+        "description": "The Python process has restarted and is continuing the same unfinished logical session. Only Main receives this event. Existing instances, their active histories, hierarchy and knowledge have been restored; previous activity has not been archived as a completed session. Review the restored context and interruption results before resuming work. Do not blindly repeat operations that may already have taken effect. datetime is the restart time with timezone, not the beginning of the logical session.",
+        "data_schema": {
+          "properties": {
+            "datetime": {
+              "description": "Local restart time in ISO 8601 with timezone offset."
+            }
+          }
+        }
+      }
     }
   ],
   "modules": [
     {
       "capability_development": {
-        "description": "Develop and maintain the abilities through which the JARVIS system perceives and acts. These four file and shell tools share the capability-storage base directory and are assigned together.",
+        "description": "Develop and maintain the abilities through which the JARVIS system perceives and acts. These four file and shell tools share the capability-storage base directory and are assigned together.\n\nDEVELOPMENT CONTRACT\n\nСТРОГИЕ ГРАНИЦЫ\n\nСТРОЖАЙШЕ ЗАПРЕЩЕНО читать исходный код Jarvis: ядро, SDK implementation,\nruntime, manager, registry, bootstrap и другие файлы репозитория с кодом\nJarvis. Запрет действует для read_file, bash, поиска, introspection и любых\nдругих способов. Эта инструкция содержит контракт; для разработки исходники\nJarvis не нужны. При недостающей информации спроси родителя.\nЗАПРЕЩЕНО читать исходники других capabilities без явно поставленной задачи\nна чтение или изменение именно этих capabilities. Не ищи примеры в соседних\nмодулях. Для обзора и деклараций используй list_capabilities/capability_info.\nЧитай и изменяй только файлы единицы, на которую получено задание, и необходимые\nвнешние спецификации. Не меняй presets, пользовательскую память или ядро.\n\nИНСТРУМЕНТЫ\n\ncapability_development.read_file(path, start_line, end_line): UTF-8 текст с 1-based номерами строк.\nНеобязательные start_line/end_line можно опустить или передать null.\ncapability_development.write_file(path, content): полная запись UTF-8 файла, создание родителей.\ncapability_development.edit_file(path, start_line, end_line, content): замена включительного диапазона\nстрок по актуальному read_file. Неверный диапазон — ошибка, не догадка.\ncapability_development.execute_command(command, cwd): одна неинтерактивная bash-команда, без таймаута.\ncwd можно опустить или передать null. После завершения получишь exit_code,\nstdout и stderr. Используй для каталогов, поиска, установки зависимостей,\nпроверок и git. Проверяй exit_code. Не сканируй ядро или чужие capabilities.\nsend_message_to_agent(agent_id, text): передать родителю результат или вопрос.\nlist_capabilities(): обзор всех capabilities в storage и их runtime-состояния.\ncapability_info(capability_id): полная декларация выбранной capability без запуска.\ntoggle_capability(capability_id): глобальная пауза или возобновление целой capability.\nЧетыре файловых инструмента входят в цельный встроенный модуль capability_development.\nМодуль и инструменты просмотра назначаются через актуальный пресет, без особых\nпривилегий по имени пресета. send_message_to_agent доступен всем агентам.\nВсе относительные пути четырёх инструментов и bash без cwd начинаются от\nCapability storage root. Каждый execute_command создаёт новый shell: cd,\nэкспорт переменных и другое shell-состояние не сохраняются между вызовами.\nread_file также доставляет изображения, аудио, видео и файлы как вложения.\nCapability storage root: {storage_root}\nИспользуй этот путь, а не догадку о расположении каталога.\n\nКАТАЛОГИ И ЕДИНИЦЫ\n\nСамостоятельное действие: <storage>/actions/<action_id>/action.py.\nСамостоятельный наблюдатель: <storage>/handlers/<handler_id>/handler.py.\nМодуль: <storage>/modules/<module_id>/module.py с вложенными каталогами\nactions/<name>/action.py и handlers/<name>/handler.py.\nКорневые capability_id: snake_case — строчные латинские буквы, цифры и\nразделяющий _. ID уникален среди самостоятельных actions, handlers, modules\nи встроенных capabilities. Внешний API принимает capability_id без kind.\nПолные action_id и handler_id внутри модуля: <module_id>.<name>.\nevent_id внутри модуля тоже начинается с <module_id>.; имя события может\nотличаться от имени handler. ОДИН HANDLER — РОВНО ОДИН EVENT.\nАгенту назначается handler, не event. Модель видит только описание события,\nне handler_id и не код наблюдателя. Модуль включается как целая единица.\nМодуль — группа возможностей одной сферы с общими аккаунтами, соединениями,\nтокенами или состоянием, а не отдельный вид действия или сообщения.\n\nДЕКЛАРАЦИИ\n\nDescriptions могут быть на любом языке; пиши их понятно для агента.\nФабрики должны предоставить JSON-совместимые dict с полными описаниями.\nОписание action: action_id, description, data_schema, result_schema.\ndata_schema: type=\"object\", properties и required. properties содержит ВСЕ\nразрешённые поля; required только обязательные. Для каждого параметра нужны\ntype, description, default. У обязательного default=null, у необязательного\nего действительное значение по умолчанию. В Python JSON null пишется None.\nНе указывай additionalProperties. Пропущенные необязательные поля runtime\nзаполняет defaults перед вызовом run. Не подменяй необязательность nullable.\nРазрешённые type: string, integer, number, boolean, object, array, null;\nсписок типов разрешает альтернативы. Для array укажи items. Вложенные object\nтакже имеют properties/required/defaults параметров. enum ограничивает выбор.\nresult_schema: только properties, у каждого поля только description.\nНЕТ type, default, required или additionalProperties в описании результата.\nРезультат может содержать любое подмножество перечисленных полей, включая {}.\nПоля могут иметь null, если значения нет. Не возвращай необъявленные поля.\nПрикладную ошибку описывай в result_schema своего действия, если она нужна.\nЯдро не добавляет универсальное поле error для всех действий.\n\nПОЛНЫЙ ACTION\n\nФайл actions/echo/action.py (для модуля demo ID будет demo.echo):\n    from jarvis.capabilities import action_definition\n\n    DESCRIPTION = {\n        \"action_id\": \"echo\",\n        \"description\": \"Return the supplied text with an optional prefix.\",\n        \"data_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"text\": {\"type\": \"string\", \"description\": \"Text to return.\", \"default\": None},\n                \"prefix\": {\"type\": \"string\", \"description\": \"Prefix to prepend.\", \"default\": \"\"}\n            },\n            \"required\": [\"text\"]\n        },\n        \"result_schema\": {\n            \"properties\": {\"text\": {\"description\": \"The resulting text.\"}}\n        }\n    }\n\n    def run(data, context):\n        return {\"text\": data[\"prefix\"] + data[\"text\"]}\n\n    def create_action():\n        return action_definition(DESCRIPTION, run=run)\n\ncreate_action возвращает ActionDefinition; ID должен соответствовать каталогу.\nrun получает только data и context; возвращай dict данных, НЕ envelope.\nRuntime добавляет event_id=\"call_result\" и call_id самостоятельно.\nДля отложенного результата импортируй PENDING, верни PENDING и позже ровно\nодин раз вызови context.complete(result_dict, parts=()). Не делай complete\nплюс второй return результата. Даже при длительности часы таймаута нет.\nВызовы исполняются отдельными процессами и не блокируют другие действия.\ncontext.agent_id — caller, call_id — вызов, action_id — действие,\nmodule_id — модуль либо None. config.jarvis_dir — storage,\nconfig.unit_dir — каталог единицы, config.project_root — корень проекта.\nЕсть stop_event, metadata и RPC-прокси agent_manager/capabilities.\ncontext.capabilities.model_input_modalities() возвращает список входных\nмодальностей текущей модели: text, image, audio, video, file (поддерживаемое\nподмножество). Проверяй его перед доставкой медиа; не угадывай поддержку.\nНе импортируй живые объекты ядра. Необработанное исключение или нарушение\nпротокола становится capability_error вызывающему агенту, без call_result.\n\nМУЛЬТИМОДАЛЬНЫЙ РЕЗУЛЬТАТ\n\n    from jarvis.capabilities import input_part, PENDING\n    part = input_part(\"file\", \"application/pdf\", base64_data, name=\"report.pdf\")\n    context.complete(result_dict, parts=(part,))\n    return PENDING\n\nЧасти image/audio/video/file содержат base64 без data URL. Всегда сохраняй\nоригинальный name. Не помещай base64 в data; части передаются отдельно.\n\nПОЛНЫЙ HANDLER\n\nФайл handlers/notice/handler.py:\n    from jarvis.capabilities import handler_definition\n\n    DESCRIPTION = {\n        \"handler_id\": \"notice\",\n        \"description\": \"Observe external notifications.\",\n        \"event\": {\n            \"event_id\": \"notice\",\n            \"description\": \"An external notification was received.\",\n            \"data_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                    \"text\": {\"type\": \"string\", \"description\": \"Notification text.\", \"default\": None}\n                },\n                \"required\": [\"text\"]\n            }\n        }\n    }\n\n    def start(context):\n        while not context.stop_event.is_set():\n            item = receive_external_notification()\n            if item is not None:\n                context.emit(\"notice\", {\"text\": item})\n\n    def create_handler():\n        return handler_definition(DESCRIPTION, start=start)\n\nreceive_external_notification — место твоей реализации, НЕ функция SDK.\nstart исполняется в отдельном потоке внутри capability process. Ожидание\nвнешних данных не должно мешать штатной остановке. Проверяй stop_event,\nпри необходимости используй stop(context) для закрытия блокирующего ресурса.\ncontext.emit публикует ТОЛЬКО объявленный event_id, с data по его схеме.\nДля модуля demo используй handler_id=\"demo.notice\", event_id=\"demo.notice\"\nв DESCRIPTION и context.emit. target=None доставляет подписанным агентам;\ntarget=agent_id — адресная доставка подписанному агенту.\n\nПОЛНЫЙ MODULE\n\nФайл modules/demo/module.py:\n    from jarvis.capabilities import module_definition\n    from .actions.echo.action import create_action\n    from .handlers.notice.handler import create_handler\n\n    def create_module():\n        return module_definition(\n            {\"module_id\": \"demo\", \"description\": \"An example external integration.\"},\n            (create_action(),), (create_handler(),)\n        )\n\nВложенные фабрики предоставляют полный namespace demo.echo/demo.notice.\nmodule.py агрегирует КАЖДЫЙ каталог actions/handlers, но не выполняет код\nдействий и не запускает наблюдение при импорте. SDK собирает полное JSON-\nописание модуля с module_id, description, actions и events из деклараций.\nОписания модульных actions/events не дублируются вне модуля.\nПрикладной код действия находится в его action.py. Общий код для реального\nсовместного использования можно вынести в shared.py с относительными импортами.\nОбычные globals процесса action НЕ разделяются с handlers или другими\ninvocations. Для изменяемого общего состояния используй IPC или внешнее\nхранилище/API, когда это необходимо задаче. Не придумывай новую архитектуру.\n\nОКРУЖЕНИЕ И ОСТАНОВКА\n\n.env, requirements.txt и .venv нужны только при реальной необходимости.\nЯдро запускает entrypoint своим интерпретатором и не выбирает .venv,\nне читает .env и не устанавливает requirements. Если нужны зависимости,\nсам код capability организует их загрузку или запуск нужного интерпретатора.\nНапример, перед импортом зависимости можно добавить site-packages собственной\n.venv в sys.path. Создавай окружение и устанавливай зависимости через\ncapability_development.execute_command. Не меняй core environment.\n.env читает исключительно код capability.\nprepare(config) и teardown(config) можно передать фабрике keyword-аргументами.\nprepare вызывается при старте runtime; teardown при выгрузке. Закрывай ресурсы.\nОтключение/пауза останавливает executions; поздний результат не доставляется.\nСистемный результат остановки содержит status=\"disabled\" или \"paused\" и info.\n\nПОРЯДОК РАБОТЫ И RELOAD\n\n1. Определи цель, аргументы, событие и результат строго по задаче родителя.\n2. Для существующей единицы получи capability_info и читай только её файлы.\n3. Если она running, вызови toggle_capability и ДОЖДИСЬ call_result со\n   state=\"paused\". Не меняй код до подтверждения. Не ставь pause/resume\n   в один ответ или параллельную пачку.\n4. Напиши файлы; проверь синтаксис и свои тесты. Не запускай GUI и destructive\n   команды только ради проверки без соответствующей задачи.\n5. capability_info импортирует декларации без prepare и\n   исполнения. Проверь descriptions, schemas, namespace и покрытие module.py.\n6. После исправления возобнови единицу отдельным вызовом toggle_capability.\n   Дождись state=\"running\".\n   Runtime загрузит новый код у назначенных и локально включённых агентов.\n7. Новая capability не назначается родителю автоматически. Сообщи capability_id,\n   проверки и результат; родитель включает её через enable_capability.\n8. При ошибке сообщи подробности. Не удаляй memory, presets или другие единицы\n   ради исправления ошибки загрузки. Не утверждай успех без проверок.\n\nЕсли поручен commit, соблюдай GitFlow и Conventional Commits репозитория.\n\nМУЛЬТИМОДАЛЬНЫЙ ВВОД\nCapability передаёт исходные текст, изображения, аудио, видео и документы через input_part, parts и complete/emit. Не фильтруй вложения по модальностям модели, не преобразуй документы в Markdown и не создавай интерпретации для LLM. Сохранение оригиналов, идентификаторы файлов, конвертация документов и адаптация к фактической модели принадлежат ядру. Передавай оригинальное имя файла с корректным расширением.\nДокументы никогда не передаются провайдеру как file/document/input_file. Ядро преобразует их текст и структуру в Markdown с извлечением оригинальных встроенных медиа. Неподдерживаемые моделью медиа получают text с JSON-объектом type, file_id, filename, text_representation, без XML-маркеров. Исходный контекст и оригиналы сохраняются.",
         "actions": [
           {
             "capability_development.read_file": {
@@ -401,7 +418,7 @@
     },
     {
       "agents": {
-        "description": "Coordinate your independent agents and shape their reusable specializations. Create, inspect, instruct, interrupt or recursively remove instances, and manage presets without losing the distinction between a specialization and an individual.",
+        "description": "Organize collaboration between persistent cognitive processes. Use specialists for substantial tasks that require focused investigation, implementation or independent verification; delegate separable work with a clear objective, relevant context, constraints and expected result. Discover existing instances and preset specializations first. Reuse a suitable available instance when its context and responsibility fit. Create an instance to perform concrete work under an existing specialization; create a preset only when a reusable personality or professional specialization is missing. A preset is a portable personality and common configuration, not a task. An instance has its own persistent identity, context, semantic memory and parent; it may create subordinate specialists when appropriate. Particular assignments belong in messages or instance instructions. Coordinate dependent work, collect results, verify the integrated outcome and keep the requester informed. Other specializations can request help across the hierarchy through send_message_to_agent. Obtain the agents capability when organizing your own subordinate processes requires it.\n\nПеред распределением задачи рекомендуется запросить agents.list и agents.list_presets: подходящий субагент уже может существовать. Сначала рассмотрите действующий экземпляр нужной специализации, не создавайте новый без необходимости. Как обращаться к конкретному специалисту и что передавать в поручении, указано в description его пресета.",
         "actions": [
           {
             "agents.spawn": {
@@ -538,7 +555,7 @@
           },
           {
             "agents.delete": {
-              "description": "End an agent instance and recursively remove all its descendants, running executions, context, files and saved instance information. This permanently removes the instances, not their reusable presets.",
+              "description": "Delete an instance and its descendants, stopping their executions. Their current-session activity and deletion markers remain for archival at shutdown. Previously completed archives remain readable.",
               "data_schema": {
                 "properties": {
                   "agent_id": {
@@ -610,7 +627,7 @@
                     "description": "Identifier of the preset."
                   },
                   "person": {
-                    "description": "Person."
+                    "description": "Personality, character and general specialization only. Do not put concrete actions, capabilities, event identifiers or their contracts in PERSON; those belong in catalog descriptions."
                   },
                   "model": {
                     "description": "Model."
@@ -640,7 +657,7 @@
           },
           {
             "agents.edit_preset": {
-              "description": "Change a reusable agent specialization. Update description, person, model or capability assignments; omitted fields remain unchanged. Existing instances immediately inherit the revised preset while retaining individual additions and history.",
+              "description": "Change a reusable agent specialization. Update description, person, model or capability assignments; omitted fields remain unchanged. Existing instances immediately inherit the revised preset while retaining individual additions and history. Keep PERSON limited to personality and general specialization; concrete action, capability and event contracts belong in descriptions.",
               "data_schema": {
                 "properties": {
                   "preset_id": {
@@ -668,7 +685,7 @@
           },
           {
             "agents.delete_preset": {
-              "description": "Permanently remove a preset and recursively delete every instance created from it, including individually modified instances and all their descendants. Their running work and all saved instance information are removed.",
+              "description": "Delete a reusable preset and its instances and descendants. Current-session activity is retained with deletion markers until session archival; completed archives are preserved.",
               "data_schema": {
                 "properties": {
                   "preset_id": {
@@ -696,15 +713,15 @@
     },
     {
       "semantic_memory": {
-        "description": "Carry confirmed semantic knowledge from your past self to your future self. Maintain concise, independent messages about established facts expected to remain stable; the next inference immediately sees the revised MEMORY.",
+        "description": "Maintain your own instance knowledge across sessions. The separate MEMORY block defines what merits preservation and how to assess its evidence. These operations change your own entries; changes immediately appear in MEMORY.",
         "actions": [
           {
             "semantic_memory.write": {
-              "description": "Write a message from your past self to your future self in semantic memory. Record one confirmed, self-contained fact likely to remain true in the near future: a person's stable habits, character, preferences, interests, biography or relationships, or persistent information about devices and surroundings. State the established fact directly, with enough context to understand it later. Do not record uncertain inferences, hypothetical possibilities, plans as completed events, current tasks, temporary projects or short-lived states. Do not infer a habit from one observation or duplicate an existing entry, PERSON or ENVIRONMENT. The core generates the entry ID.",
+              "description": "Save one useful self-contained knowledge entry according to the MEMORY block. The core assigns its ID. Record new useful knowledge during activity without waiting for a separate request.",
               "data_schema": {
                 "properties": {
                   "content": {
-                    "description": "One short, self-contained message to your future self stating a confirmed fact expected to remain stable in the near future. Include whom or what the fact concerns; exclude uncertainty, hypothetical plans, current tasks and temporary states."
+                    "description": "Concise standalone knowledge, with confidence or evidential basis when necessary to preserve its meaning."
                   }
                 }
               },
@@ -719,14 +736,14 @@
           },
           {
             "semantic_memory.edit": {
-              "description": "Replace the complete text of an existing semantic memory entry by its ID. Write a clear message to your future self containing the corrected, confirmed and sufficiently stable fact. Preserve relevant established information; do not turn possibilities, intentions or uncertain conclusions into facts.",
+              "description": "Replace the full text of an existing entry by its current MEMORY ID when knowledge needs correction, refinement or consolidation. Follow the MEMORY block.",
               "data_schema": {
                 "properties": {
                   "id": {
                     "description": "Exact ID of the existing MEMORY entry to replace."
                   },
                   "content": {
-                    "description": "Complete replacement message to your future self, stating the corrected confirmed and stable information clearly enough to understand without the current conversation."
+                    "description": "Full corrected standalone entry, preserving relevant knowledge and expressing confidence or evidential basis when needed, according to MEMORY."
                   }
                 }
               },
@@ -741,7 +758,7 @@
           },
           {
             "semantic_memory.delete": {
-              "description": "Delete a semantic memory entry by its ID when its information is false, obsolete, duplicated or no longer suitable as a confirmed stable message to your future self.",
+              "description": "Remove an entry by its current MEMORY ID when it is incorrect, obsolete, redundant or no longer useful.",
               "data_schema": {
                 "properties": {
                   "id": {
@@ -753,6 +770,106 @@
                 "properties": {
                   "status": {
                     "description": "Operation result; deleted means the identified memory entry was removed."
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "memory": {
+        "description": "Исследуй архивный опыт любых экземпляров через семь действий этой цельной capability. Текущая незавершённая сессия в архивный поиск не входит. Вопрос может быть обычным человеческим вопросом о прошлом: самостоятельно определяй, какие участники, сессии и источники нужны. Технические идентификаторы требуются аргументам действий, но не обязаны приходить от заказчика.\n\nДля общего вопроса о прошлой деятельности начни с memory.list_sessions для main: последняя завершённая сессия — первая в списке. Прочитай её общее изложение через memory.get_summary со scope=\"session\". Оно даёт обзор всей системы и участников, включая удалённых. Для вопроса о деятельности самого отправителя используй его from_agent_id как исходную точку. Для вопроса на конкретную тему используй memory.search по индивидуальным изложениям подходящих участников; при необходимости сначала найди участников по общему изложению. «В прошлый раз» означает последний подходящий завершённый эпизод, а не обязательно предыдущую сессию любого содержания. Не перекладывай выбор источников и идентификаторов на заказчика; уточнение нужно лишь при существенной неоднозначности, которую не удаётся разрешить по доступной истории.\n\nДля обзорного ответа достаточно подходящих изложений, если они отвечают на вопрос. Детали и спорные выводы проверяй по исходной истории: memory.get_context_info даёт число сообщений N; memory.search_in_context возвращает включительные диапазоны start–end; memory.get_context с skip_first=start и skip_last=N-end-1 читает выбранный диапазон. Thinking доступно при полном чтении, но не участвует в поисковом ранжировании. Оценка релевантности не является вероятностью истинности. При необходимости прочитай оригинальное вложение через memory.get_file по agent_id, session_id, file_id; текстовая интерпретация не заменяет оригинал.\n\nСопоставляй свидетельства и временную последовательность. Различай обсуждение, решение, выполненное, проверенное и действительно незавершённое. Архив может содержать устаревшие сведения и противоречия. Верни отправителю через send_message_to_agent содержательный ответ на вопрос: что происходило, что получилось и где остановились, насколько это относится к запросу. Идентификаторы источников добавляй компактно для проверки, не подменяй ими ответ и не перечисляй весь ход поиска. Если нужного опыта не найдено, сообщи именно об этом, не делай выводов из отсутствия одного поискового совпадения. При большом объёме можно получить capability agents и распределить независимые части исследования. Архивы доступны только для чтения.",
+        "actions": [
+          {
+            "memory.search": {
+              "description": "Rank individual summaries of one instance across completed sessions by topic. Scores are relevance signals, not factual probabilities.",
+              "result_schema": {
+                "properties": {
+                  "matches": {
+                    "description": "Matches sorted by relevance: session_id, agent_id, historical preset_id and score from 0 to 1. A score is not a factual probability."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.list_sessions": {
+              "description": "List completed sessions containing the specified instance, newest first.",
+              "result_schema": {
+                "properties": {
+                  "sessions": {
+                    "description": "Completed session identifiers containing this instance, newest first."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_summary": {
+              "description": "Read the individual or complete system session summary from a completed archive.",
+              "result_schema": {
+                "properties": {
+                  "summary": {
+                    "description": "Full Markdown account of the selected instance or system session."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_context_info": {
+              "description": "Get original message count and full serialized character count, including available thinking.",
+              "result_schema": {
+                "properties": {
+                  "messages": {
+                    "description": "Number of original archived context messages."
+                  },
+                  "characters": {
+                    "description": "Unicode character count of the full serialized context, including markers, interpretations and available thinking."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.search_in_context": {
+              "description": "Rank overlapping token-aligned context fragments without thinking. Return inclusive zero-based original message ranges; read them separately with get_context.",
+              "result_schema": {
+                "properties": {
+                  "matches": {
+                    "description": "Ranked inclusive zero-based original message ranges: start, end and score from 0 to 1. No message text is returned; overlapping ranges can refer to different token windows of a long message."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_context": {
+              "description": "Read full serialized history including thinking. Skip messages at each end; total counts only returned messages.",
+              "result_schema": {
+                "properties": {
+                  "context": {
+                    "description": "Full compact serialized history of returned messages, with reasoning and interpretation markers."
+                  },
+                  "total": {
+                    "description": "Number of messages actually returned after skip_first and skip_last."
+                  }
+                }
+              }
+            }
+          },
+          {
+            "memory.get_file": {
+              "description": "Receive the original archived attachment as native media. The file is identified jointly by agent_id, session_id and file_id.",
+              "result_schema": {
+                "properties": {
+                  "file_id": {
+                    "description": "The requested file ID, local to this agent and session."
+                  },
+                  "filename": {
+                    "description": "Actual archived original filename. The original bytes follow as a native multimodal content part."
                   }
                 }
               }

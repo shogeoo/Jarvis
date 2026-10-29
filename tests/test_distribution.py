@@ -53,7 +53,7 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             store = PresetStore(root / "presets")
             self.assertNotIn("protected", json.loads((root / "presets/main/preset.json").read_text()))
-            self.assertIn("CapabilityManager", store.load("capability_manager").person_prompt)
+            self.assertIn("инженер", store.load("capability_manager").person_prompt)
             self.assertEqual(store.load("main").actions, ())
             self.assertEqual(store.load("capability_manager").capabilities, ())
             self.assertEqual(json.loads((root / "presets/capability_manager/preset.json").read_text())["capabilities"], [])
@@ -73,10 +73,41 @@ class DistributionTests(unittest.TestCase):
             ensure_runtime_layout(root)
             self.assertEqual((custom / "person.txt").read_text(), "Keep this personality")
 
+    def test_librarian_description_upgrade_preserves_individual_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ensure_runtime_layout(root)
+            store = PresetStore(root / "presets")
+            store.edit("memory_manager", changes={
+                "description": "Researches archived experience of J.A.R.V.I.S. instances.",
+                "person": "Custom librarian personality", "model": "custom-model",
+            })
+            ensure_runtime_layout(root)
+            upgraded = store.load("memory_manager")
+            self.assertIn("Что мы делали в прошлый раз?", upgraded.description)
+            self.assertEqual(upgraded.person_prompt, "Custom librarian personality")
+            self.assertEqual(upgraded.model, "custom-model")
+            store.edit("memory_manager", changes={"description": "Custom specialization"})
+            ensure_runtime_layout(root)
+            self.assertEqual(store.load("memory_manager").description, "Custom specialization")
+
+    def test_main_defaults_include_installed_capabilities_without_resetting_edits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = ["send_notification", "set_timer", "take_screenshot"]
+            for name in expected:
+                (root / "capabilities/actions" / name).mkdir(parents=True)
+            ensure_runtime_layout(root)
+            store = PresetStore(root / "presets")
+            self.assertEqual(list(store.load("main").capabilities), expected)
+            store.edit("main", changes={"capabilities_remove": ["set_timer"]})
+            ensure_runtime_layout(root)
+            self.assertNotIn("set_timer", store.load("main").capabilities)
+
     def test_environment_example_contains_only_model_settings(self):
         template = (ROOT / ".env.example").read_text()
         self.assertEqual({line.split("=", 1)[0] for line in template.splitlines() if line and not line.startswith("#")},
-                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_API_MODEL", "LLM_SUBSCRIPTION_MODEL", "CHATGPT_SUBSCRIPTION_ENABLED", "LLM_REASONING_EFFORT"})
+                         {"LLM_API_KEY", "LLM_BASE_URL", "LLM_API_MODEL", "LLM_SUBSCRIPTION_MODEL", "CHATGPT_SUBSCRIPTION_ENABLED", "LLM_REASONING_EFFORT", "MEMORY_MODEL_TEXT", "MEMORY_MODEL_TEXT_IMAGE", "MEMORY_MODEL_TEXT_IMAGE_VIDEO", "MEMORY_MODEL_TEXT_IMAGE_AUDIO_VIDEO", "MEMORY_SUBSCRIPTION_MODEL"})
 
     def test_speech_constants_ignore_old_environment_settings(self):
         import importlib
@@ -135,7 +166,7 @@ class DistributionTests(unittest.TestCase):
                 )
                 developer = app.agents.require_agent(result["agent_id"])
                 dev_specs, _ = developer._contract()
-                self.assertEqual(developer.capabilities_snapshot(), {"modules": {"capability_development"}, "actions": {"list_capabilities", "capability_info", "toggle_capability", "no_action", "send_message_to_agent"}, "handlers": set()})
+                self.assertEqual(developer.capabilities_snapshot(), {"modules": {"capability_development", "semantic_memory"}, "actions": {"list_capabilities", "capability_info", "toggle_capability", "no_action", "send_message_to_agent"}, "handlers": set()})
                 instance = developer.memory_record()
                 self.assertEqual(instance["capabilities_add"], [])
                 self.assertIn(str(app.config.jarvis_dir.resolve()), developer.history[0]["content"])
@@ -173,7 +204,7 @@ class DistributionTests(unittest.TestCase):
             finally:
                 app.stop()
 
-    def test_present_s2_omits_reply_even_when_tts_is_unavailable(self):
+    def test_tts_failure_preserves_reply_fallback(self):
         for can_speak in (True, False):
             with self.subTest(can_speak=can_speak), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
@@ -189,8 +220,8 @@ class DistributionTests(unittest.TestCase):
                     app = JarvisApplication(Config("test", "http://invalid", "test", root, root / "storage")).start()
                     try:
                         specs, _ = app.main_agent._contract()
-                        self.assertNotIn("reply", specs)
-                        self.assertNotIn("reply", app.actions.all())
+                        self.assertEqual("reply" in specs, not can_speak)
+                        self.assertEqual("reply" in app.actions.all(), not can_speak)
                         self.assertEqual("speech" in specs, can_speak)
                     finally:
                         app.stop()

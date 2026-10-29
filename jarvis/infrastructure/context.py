@@ -1,435 +1,451 @@
-"""Agent instances and model-shaped contexts in .jarvis/memory.
-
-Binary parts are stored in files/; persisted context parts refer to file_id.
-"""
+"""Durable live instances; completed sessions are committed separately."""
 
 from __future__ import annotations
 
 import base64
-import fcntl
-import hashlib
 import json
 import mimetypes
 import os
 import re
 import shutil
 import threading
-import traceback
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
-
-from .console import logger
+from urllib.request import urlopen
 
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-_CAPABILITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-_EXT = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/webp": "webp",
-    "image/gif": "gif",
-    "audio/wav": "wav",
-    "audio/x-wav": "wav",
-    "audio/mpeg": "mp3",
-    "audio/ogg": "ogg",
-    "audio/webm": "webm",
-    "video/mp4": "mp4",
-    "video/webm": "webm",
-    "application/pdf": "pdf",
-    "text/plain": "txt",
+_FILE = re.compile(r"^file_[0-9]{6,}$")
+KINDS = {
+    "image_url": "image",
+    "input_audio": "audio",
+    "video_url": "video",
+    "file": "file",
 }
-_MIME = {value: key for key, value in _EXT.items()}
-_MIME.update({"wav": "audio/wav", "webm": "audio/webm"})
 
 
-def valid_name(value: Any) -> bool:
+def valid_name(value):
     return isinstance(value, str) and bool(_NAME.fullmatch(value))
 
 
-def valid_capability(value: Any) -> bool:
-    return isinstance(value, str) and bool(_CAPABILITY.fullmatch(value))
+def valid_capability(value):
+    return valid_name(value)
 
 
-def _valid_message(value: Any) -> bool:
-    if not isinstance(value, dict) or value.get("role") not in {
-        "system",
-        "user",
-        "assistant",
-    }:
-        return False
-    content = value.get("content")
-    return isinstance(content, str) or (
-        isinstance(content, list) and all(isinstance(part, dict) for part in content)
-    )
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
-def _binary_part(part: dict[str, Any]) -> tuple[str, str, bytes] | None:
-    kind = part.get("type")
-    field = {
-        "image_url": "url",
-        "video_url": "url",
-        "file": "file_data",
-        "input_audio": "data",
-    }.get(kind)
-    if field is None:
-        return None
-    inner = part.get(kind) or {}
-    value = inner.get(field)
-    if not isinstance(value, str) or not value:
-        return None
-    if kind == "input_audio":
-        mime, payload = "audio/" + str(inner.get("format") or "wav"), value
-    elif value.startswith("data:") and "," in value:
-        header, payload = value.split(",", 1)
-        mime = header[5:].split(";", 1)[0] or "application/octet-stream"
-    else:
-        return None
-    return kind, mime, base64.b64decode(payload, validate=True)
+def write_text(path: Path, text: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name("." + path.name + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
-def _extension(mime: str) -> str:
-    if mime in _EXT:
-        return _EXT[mime]
-    guessed = mimetypes.guess_extension(mime)
-    return (
-        guessed[1:] if guessed and re.fullmatch(r"\.[A-Za-z0-9]+", guessed) else "bin"
-    )
+def read_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return deepcopy(default)
 
 
-def _hydrate_part(part: dict[str, Any], files_dir: Path) -> dict[str, Any]:
-    kind = part.get("type")
-    inner = part.get(kind)
-    if (
-        kind not in {"image_url", "video_url", "file", "input_audio"}
-        or not isinstance(inner, dict)
-        or "file_id" not in inner
-    ):
-        return part
-    file_id = inner["file_id"]
-    if not isinstance(file_id, str) or not re.fullmatch(r"file_[0-9]{6,}", file_id):
-        raise ValueError(f"Invalid file_id: {file_id!r}")
-    matches = list(files_dir.glob(file_id + ".*"))
-    if len(matches) != 1:
-        raise FileNotFoundError(f"Expected one file for {file_id}: {files_dir}")
-    path = matches[0]
+def hydrate_part(part, directory):
+    if part.get("type") not in KINDS or not part.get("file_id"):
+        return deepcopy(part)
+    filename = part["filename"]
+    if Path(filename).name != filename:
+        raise ValueError("Invalid attachment filename")
+    raw = (Path(directory) / "files" / filename).read_bytes()
     mime = (
-        _MIME.get(path.suffix[1:])
-        or mimetypes.guess_type(path.name)[0]
+        mimetypes.guess_type(filename)[0]
         or "application/octet-stream"
     )
-    if kind == "video_url" and path.suffix == ".webm":
-        mime = "video/webm"
-    elif kind == "input_audio" and path.suffix == ".webm":
-        mime = "audio/webm"
-    payload = base64.b64encode(path.read_bytes()).decode("ascii")
-    url = f"data:{mime};base64,{payload}"
+    data = base64.b64encode(raw).decode("ascii")
+    kind = part["type"]
     if kind == "input_audio":
-        return {"type": kind, kind: {"data": payload, "format": mime.split("/", 1)[-1]}}
+        return {
+            "type": kind,
+            kind: {"data": data, "format": Path(filename).suffix.lstrip(".")},
+        }
     if kind == "file":
-        return {"type": kind, kind: {"filename": path.name, "file_data": url}}
-    return {"type": kind, kind: {"url": url}}
+        return {
+            "type": kind,
+            kind: {"filename": filename, "file_data": f"data:{mime};base64,{data}"},
+        }
+    return {
+        "type": kind,
+        kind: {"url": f"data:{mime};base64,{data}"},
+    }
 
 
-def _clean_capabilities(values: Any, pattern) -> list[str]:
-    if not isinstance(values, list) or not all(
-        isinstance(item, str) and pattern.fullmatch(item) for item in values
-    ):
-        raise ValueError("Invalid capability assignment list")
-    return list(dict.fromkeys(values))
+def context_files(context):
+    """Attachment metadata has one source of truth: the context tree."""
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("type") in KINDS and value.get("file_id"):
+                yield value
+            for child in value.values():
+                yield from walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from walk(child)
+    return list(walk(context))
 
 
 class MemoryStore:
-    """Persist a single current state per agent, without snapshot directories."""
-
     def __init__(self, root: Path):
         self.root = Path(root)
+        self.instances = self.root / "instances"
+        self.sessions = self.root / "sessions"
         self._save_lock = threading.RLock()
+        self._migrate_file_indexes()
 
-    def has_existing_state(self) -> bool:
-        return self.root.exists() and any(
-            (preset / "instance.json").is_file()
-            or (preset / "context.json").is_file()
-            or (preset / ".save-journal.json").is_file()
-            or any(
-                (child / "instance.json").is_file()
-                or (child / "context.json").is_file()
-                or (child / ".save-journal.json").is_file()
-                for child in preset.iterdir()
-                if child.is_dir()
-            )
-            for preset in self.root.iterdir()
-            if preset.is_dir() and valid_name(preset.name)
-        )
+    def _migrate_file_indexes(self):
+        """Fold the previous duplicate registry into its owning context once."""
+        for index_path in self.root.rglob("files.json"):
+            directory = index_path.parent
+            if directory.parent.name != "instances":
+                continue
+            self._recover(directory)
+            context = read_json(directory / "context.json", [])
+            registry = {f["file_id"]: f for f in read_json(index_path, {"files": []})["files"]}
+            obsolete = {"source", "sha256", "native_options", "mime_type", "format", "agent_id", "session_id", "interpreted"}
 
-    def agent_dir(self, preset: str, agent_id: str) -> Path:
-        if not valid_name(preset) or not valid_name(agent_id):
-            raise ValueError(f"Invalid preset/agent_id: {preset!r}/{agent_id!r}")
-        return (
-            self.root / preset if agent_id == "main" else self.root / preset / agent_id
-        )
+            def clean(part, ancestors=()):
+                if part.get("file_id") in ancestors:
+                    return
+                for key in obsolete:
+                    part.pop(key, None)
+                identifiers = re.findall(r"memory://[^/]+/[^/]+/(file_[0-9]+)\?", part.get("document_markdown", ""))
+                nested = list(part.get("embedded_files", []))
+                known = {f["file_id"] for f in nested}
+                for identifier in dict.fromkeys(identifiers):
+                    if identifier != part["file_id"] and identifier not in known and identifier in registry:
+                        nested.append(deepcopy(registry[identifier]))
+                        known.add(identifier)
+                if nested:
+                    part["embedded_files"] = nested
+                    for child in nested:
+                        clean(child, (*ancestors, part["file_id"]))
+
+            for part in context_files(context):
+                clean(part)
+            self._write_json(directory / "context.json", context)
+            if directory.parent != self.instances:
+                metadata = read_json(directory / "instance.json")
+                if metadata is not None:
+                    self._write_json(directory / "instance.json", {k: v for k, v in metadata.items() if k in {"agent_id", "preset_id", "parent_id", "description", "deleted"}})
+            index_path.unlink()
+            sync_directory(directory)
+
+    _read_json = staticmethod(read_json)
 
     @staticmethod
-    def _write_json(path: Path, value: Any) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name("." + path.name + ".tmp")
-        try:
-            with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(value, stream, ensure_ascii=False, indent=2)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+    def _write_json(path, value):
+        write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
-    @staticmethod
-    def _read_json(path: Path) -> Any | None:
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-
-    def _allocate_file_id(self) -> str:
-        self.root.mkdir(parents=True, exist_ok=True)
-        with (self.root / ".file_index.lock").open("a+b") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            index = self.root / "file_index.json"
-            state = self._read_json(index)
+    def state(self):
+        with self._save_lock:
+            state = read_json(self.root / "state.json")
             if state is None:
-                highest = max(
+                state = {
+                    "session_id": "session_000001",
+                    "next_session": 2,
+                    "next_agent": 1,
+                    "shutdown": None,
+                    "started": False,
+                }
+                self._write_json(self.root / "state.json", state)
+            return state
+
+    def update_state(self, **changes):
+        with self._save_lock:
+            state = {**self.state(), **changes}
+            self._write_json(self.root / "state.json", state)
+            return state
+
+    def claim_start_event(self):
+        """Runtime directories and empty surviving instances do not define a session."""
+        with self._save_lock:
+            state = self.state()
+            started = state.get("started")
+            if started is None:
+                # Existing sessions created before the durable startup marker.
+                started = any(
+                    read_json(p, []) for p in self.instances.glob("*/context.json")
+                )
+            self.update_state(started=True)
+            return "system_restarted" if started else "system_started"
+
+    def allocate_agent_id(self):
+        with self._save_lock:
+            state = self.state()
+            number = max(
+                state["next_agent"],
+                1
+                + max(
                     (
-                        int(path.stem[5:])
-                        for path in self.root.rglob("file_*.*")
-                        if path.is_file() and re.fullmatch(r"file_[0-9]{6,}", path.stem)
+                        int(r["agent_id"][6:])
+                        for r in self.records(include_deleted=True)
+                        if re.fullmatch(r"agent-[0-9]+", r["agent_id"])
                     ),
                     default=0,
-                )
-                state = {"next_file_id": highest + 1}
-            number = state["next_file_id"]
-            if not isinstance(number, int) or number < 1:
-                raise ValueError("Invalid file ID index")
-            self._write_json(index, {"next_file_id": number + 1})
-            return f"file_{number:06d}"
+                ),
+            )
+            self.update_state(next_agent=number + 1)
+            return f"agent-{number:05d}"
 
-    def _store_parts(
-        self, messages: list[dict[str, Any]], files_dir: Path
-    ) -> list[dict[str, Any]]:
-        by_digest: dict[tuple[str, str], str] = {}
-        if files_dir.exists():
-            for path in files_dir.iterdir():
-                if path.is_file() and re.fullmatch(
-                    r"file_[0-9]{6,}\.[A-Za-z0-9]+", path.name
-                ):
-                    by_digest[
-                        (hashlib.sha256(path.read_bytes()).hexdigest(), path.suffix)
-                    ] = path.stem
-        result = []
-        for message in messages:
-            if not _valid_message(message):
-                raise ValueError("Invalid model context message")
-            if message["role"] == "system":
-                continue
-            content = message["content"]
+    def has_existing_state(self):
+        return self.instances.exists() and (
+            any(self.instances.glob("*/instance.json"))
+            or any(self.instances.glob("*/context.json"))
+            or any(self.instances.glob("*/.save-journal.json"))
+        )
+
+    def agent_dir(self, preset, agent_id):
+        if not valid_name(agent_id) or not valid_name(preset):
+            raise ValueError("Invalid preset/agent_id")
+        return self.instances / agent_id
+
+    def records(self, *, include_deleted=False):
+        with self._save_lock:
+            result = []
+            directories = sorted(
+                {
+                    p.parent
+                    for pattern in (
+                        "*/instance.json",
+                        "*/context.json",
+                        "*/.save-journal.json",
+                    )
+                    for p in self.instances.glob(pattern)
+                }
+            )
+            for directory in directories:
+                self._recover(directory)
+                record = read_json(directory / "instance.json")
+                if record is None:
+                    if directory.name != "main":
+                        raise ValueError(f"Missing instance metadata: {directory}")
+                    record = {
+                        "agent_id": "main",
+                        "preset_id": "main",
+                        "parent_id": None,
+                        "restore_from_preset": True,
+                    }
+
+                if include_deleted or not record.get("deleted"):
+                    result.append(record)
+            return result
+
+    def _recover(self, directory):
+        # Redo a prepared transaction. Both values belong to the same new state.
+        journal = read_json(directory / ".save-journal.json")
+        if journal is not None:
+            for key in ("context", "instance"):
+                self._write_json(directory / (key + ".json"), journal[key])
+            (directory / ".save-journal.json").unlink()
+            sync_directory(directory)
+
+    def register_file(self, agent_id, raw, filename, kind, mime, *, siblings=()):
+        """Write original bytes; the caller commits metadata in its context tree."""
+        with self._save_lock:
+            if not valid_name(agent_id) or kind not in KINDS:
+                raise ValueError("Invalid file owner/type")
+            directory = self.instances / agent_id
+            known = [*self.files(agent_id), *context_files(list(siblings))]
+            number = 1 + max((int(f["file_id"][5:]) for f in known), default=0)
+            filename = Path(filename or ("attachment" + (mimetypes.guess_extension(mime) or ".bin"))).name
+            candidate, suffix = filename, 1
+            while (directory / "files" / candidate).exists():
+                candidate = f"{Path(filename).stem}_{suffix}{Path(filename).suffix}"
+                suffix += 1
+            files = directory / "files"
+            files.mkdir(parents=True, exist_ok=True)
+            with (files / candidate).open("wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            sync_directory(files)
+            return {"type": kind, "file_id": f"file_{number:06d}",
+                    "filename": candidate, "text_representation": ""}
+
+    def files(self, agent_id):
+        return context_files(read_json(self.instances / agent_id / "context.json", []))
+
+    def update_file(self, agent_id, item):
+        with self._save_lock:
+            path = self.instances / agent_id / "context.json"
+            context = read_json(path, [])
+            found = False
+            for attachment in context_files(context):
+                if attachment["file_id"] == item["file_id"]:
+                    attachment.clear()
+                    attachment.update(deepcopy(item))
+                    found = True
+            if not found:
+                raise ValueError("Unknown context attachment")
+            self._write_json(path, context)
+
+    def store_messages(self, agent_id, messages):
+        result = deepcopy(messages)
+        previous = read_json(self.instances / agent_id / "context.json", [])
+        for message_index, message in enumerate(result):
+            if message.get("role") not in {
+                "system",
+                "user",
+                "assistant",
+                "tool",
+                "developer",
+            }:
+                raise ValueError("Invalid context role")
+            content = message.get("content")
             if not isinstance(content, list):
-                result.append(dict(message))
+                if content is not None and not isinstance(content, str):
+                    raise ValueError("Invalid context content")
                 continue
-            parts = []
-            for part in content:
-                binary = _binary_part(part)
-                if binary is None:
-                    parts.append(part)
+            for j, part in enumerate(content):
+                kind = part.get("type")
+                if kind not in KINDS:
                     continue
-                kind, mime, raw = binary
-                suffix = "." + _extension(mime)
-                key = (hashlib.sha256(raw).hexdigest(), suffix)
-                file_id = by_digest.get(key)
-                if file_id is None:
-                    file_id = self._allocate_file_id()
-                    files_dir.mkdir(parents=True, exist_ok=True)
-                    with (files_dir / (file_id + suffix)).open("xb") as stream:
-                        stream.write(raw)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    by_digest[key] = file_id
-                parts.append({"type": kind, kind: {"file_id": file_id}})
-            result.append({**message, "content": parts})
+                if part.get("file_id"):
+                    # Preserve the context itself, including manual edits.
+                    continue
+                else:
+                    inner = part.get(kind) or {}
+                    field = {
+                        "image_url": "url",
+                        "video_url": "url",
+                        "input_audio": "data",
+                        "file": "file_data",
+                    }[kind]
+                    value = inner.get(field)
+                    if not isinstance(value, str):
+                        raise ValueError(
+                            "Attachment must contain original bytes or a URL"
+                        )
+                    mime = "application/octet-stream"
+                    if kind == "input_audio":
+                        mime = "audio/" + inner.get("format", "wav")
+                        raw = base64.b64decode(value, validate=True)
+                    elif value.startswith("data:"):
+                        header, data = value.split(",", 1)
+                        mime = header[5:].split(";")[0]
+                        raw = base64.b64decode(data, validate=True)
+                    elif value.startswith(("https://", "http://")):
+                        with urlopen(value, timeout=60) as response:
+                            raw = response.read()
+                            mime = response.headers.get_content_type()
+                    else:
+                        raise ValueError("Unsupported attachment source")
+                    old_parts = (previous[message_index].get("content", []) if message_index < len(previous) else [])
+                    old = old_parts[j] if isinstance(old_parts, list) and j < len(old_parts) else {}
+                    if old.get("type") == kind and old.get("file_id") and (self.instances / agent_id / "files" / old["filename"]).read_bytes() == raw:
+                        item = old
+                    else:
+                        item = self.register_file(
+                            agent_id, raw, inner.get("filename") or inner.get("name"),
+                            kind, mime, siblings=context_files(result),
+                        )
+                content[j] = deepcopy(item)
         return result
 
-    def _rollback_if_needed(self, directory: Path) -> None:
-        journal = directory / ".save-journal.json"
-        saved = self._read_json(journal)
-        if saved is None:
-            return
-        if not isinstance(saved, dict) or set(saved) != {"instance", "context"}:
-            raise ValueError(f"Invalid save journal: {journal}")
-        for name, key in (("instance.json", "instance"), ("context.json", "context")):
-            path = directory / name
-            if saved[key] is None:
-                path.unlink(missing_ok=True)
-            else:
-                self._write_json(path, saved[key])
-        journal.unlink()
-
-    def save(self, record: dict[str, Any]) -> None:
+    def save(self, record):
         with self._save_lock:
-            self._save_locked(record)
-
-    def _save_locked(self, record: dict[str, Any]) -> None:
-        agent_id = record.get("agent_id")
-        preset = record.get("preset_id") or record.get("preset") or "main"
-        directory = self.agent_dir(preset, agent_id)
-        (directory / "files").mkdir(parents=True, exist_ok=True)
-        self._rollback_if_needed(directory)
-        instance = {
-            "agent_id": agent_id, "preset_id": preset,
-            "parent_id": record.get("parent_id"), "model": record.get("model"),
-            "additional_instructions": record.get("additional_instructions", ""),
-            "description": record.get("description"),
-            "capabilities_add": _clean_capabilities(record.get("capabilities_add", []), _CAPABILITY),
-        }
-        messages = record.get("messages", [])
-        if not isinstance(messages, list):
-            raise ValueError("Agent context must be a list")
-        stored = self._store_parts(messages, directory / "files")
-        journal = directory / ".save-journal.json"
-        self._write_json(
-            journal,
-            {
-                "instance": self._read_json(directory / "instance.json"),
-                "context": self._read_json(directory / "context.json"),
-            },
-        )
-        try:
-            self._write_json(directory / "context.json", stored)
-            self._write_json(directory / "instance.json", instance)
-        except Exception:
-            try:
-                self._rollback_if_needed(directory)
-            except Exception:
-                logger.error(
-                    "Jarvis save rollback failed for %s; journal preserved:\n%s",
-                    directory,
-                    traceback.format_exc(),
-                )
-            raise
-        journal.unlink()
-
-    def load(self, preset: str, agent_id: str) -> dict[str, Any] | None:
-        directory = self.agent_dir(preset, agent_id)
-        with self._save_lock:
-            self._rollback_if_needed(directory)
-        instance = self._read_json(directory / "instance.json")
-        context = self._read_json(directory / "context.json")
-        if instance is None and context is None:
-            return None
-        missing_instance = instance is None
-        missing_context = context is None
-        if instance is None:
+            self.state()
+            agent_id = record["agent_id"]
+            preset = record.get("preset_id", record.get("preset", "main"))
+            directory = self.agent_dir(preset, agent_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "files").mkdir(exist_ok=True)
+            self._recover(directory)
+            old = read_json(directory / "instance.json", {})
             instance = {
-                "parent_id": None if agent_id == "main" else "main",
-                "modules": [], "actions": [], "handlers": [],
-                "disabled_capabilities": {},
+                key: deepcopy(record.get(key, default))
+                for key, default in (
+                    ("agent_id", agent_id),
+                    ("preset_id", preset),
+                    ("parent_id", None),
+                    ("description", None),
+                    ("model", None),
+                    ("additional_instructions", ""),
+                    ("capabilities_add", []),
+                    ("pending_turn", False),
+                )
             }
-        if context is None:
-            context = []
-        record = self._clean(preset, agent_id, directory, instance, context)
-        if missing_instance:
-            record["restore_from_preset"] = True
-        if missing_context:
-            record["restore_missing_context"] = True
-        return record
+            if old.get("deleted"):
+                instance["deleted"] = True
+            messages = self.store_messages(agent_id, record.get("messages", []))
+            self._write_json(
+                directory / ".save-journal.json",
+                {"instance": instance, "context": messages},
+            )
+            self._recover(directory)
+            if not (directory / "semantic.json").exists():
+                self._write_json(directory / "semantic.json", {"entries": []})
+            # Return the persisted representation to prevent repeated URL downloads.
+            return messages
 
-    def load_all(self) -> list[dict[str, Any]]:
-        if not self.root.exists():
-            return []
-        records = []
-        for preset in sorted(self.root.iterdir()):
-            if not preset.is_dir() or not valid_name(preset.name):
-                continue
-            if (preset / "instance.json").exists() or (preset / "context.json").exists() or (
-                preset / ".save-journal.json"
-            ).exists():
-                try:
-                    records.append(self.load(preset.name, "main"))
-                except Exception:
-                    logger.error(
-                        "Jarvis restore failed for %s/main; saved data preserved:\n%s",
-                        preset.name,
-                        traceback.format_exc(),
-                    )
-            for child in sorted(preset.iterdir()):
-                if (
-                    child.is_dir()
-                    and valid_name(child.name)
-                    and (
-                        (child / "instance.json").exists()
-                        or (child / "context.json").exists()
-                        or (child / ".save-journal.json").exists()
-                    )
-                ):
-                    try:
-                        records.append(self.load(preset.name, child.name))
-                    except Exception:
-                        logger.error(
-                            "Jarvis restore failed for %s/%s; saved data preserved:\n%s",
-                            preset.name,
-                            child.name,
-                            traceback.format_exc(),
-                        )
-        return [record for record in records if record is not None]
-
-    def delete(self, preset: str, agent_id: str) -> None:
+    def load(self, preset, agent_id):
         with self._save_lock:
             directory = self.agent_dir(preset, agent_id)
-            if directory.exists():
-                shutil.rmtree(directory)
+            self._recover(directory)
+            record = read_json(directory / "instance.json")
+            if record is None:
+                if agent_id == "main" and (directory / "context.json").exists():
+                    record = {
+                        "agent_id": agent_id,
+                        "preset_id": preset,
+                        "parent_id": None,
+                        "restore_from_preset": True,
+                    }
+                else:
+                    return None
+            if not (directory / "context.json").exists():
+                record["restore_missing_context"] = True
+            record["messages"] = read_json(directory / "context.json", [])
+            return record
 
-    def delete_preset(self, preset: str) -> None:
+    def load_all(self):
+        return [self.load(r["preset_id"], r["agent_id"]) for r in self.records()]
+
+    def delete(self, preset, agent_id):
+        # Tombstones retain this session's activity until the completed archive exists.
         with self._save_lock:
-            directory = self.agent_dir(preset, "main")
-            if directory.exists():
-                shutil.rmtree(directory)
+            directory = self.agent_dir(preset, agent_id)
+            instance = read_json(directory / "instance.json")
+            if instance is not None:
+                instance["deleted"] = True
+                self._write_json(directory / "instance.json", instance)
 
-    @staticmethod
-    def _clean(
-        preset: str, agent_id: str, directory: Path, instance: Any, context: Any
-    ) -> dict[str, Any]:
-        if not isinstance(instance, dict) or not isinstance(context, list):
-            raise ValueError(f"Invalid persisted instance/context: {directory}")
-        assigned = {
-            "modules": _clean_capabilities(instance.get("modules", []), _NAME),
-            "actions": _clean_capabilities(instance.get("actions", []), _CAPABILITY),
-            "handlers": _clean_capabilities(instance.get("handlers", []), _CAPABILITY),
-        }
-        messages = []
-        for message in context:
-            if not _valid_message(message):
-                raise ValueError(f"Invalid context message: {directory}")
-            if message["role"] == "system":
-                continue
-            content = message["content"]
-            messages.append(
-                {
-                    **message,
-                    "content": [
-                        _hydrate_part(part, directory / "files") for part in content
-                    ],
-                }
-                if isinstance(content, list)
-                else dict(message)
-            )
-        parent_id = instance.get("parent_id")
-        if parent_id is not None and not valid_name(parent_id):
-            raise ValueError(f"Invalid parent ID: {directory}")
-        record = {
-            "agent_id": agent_id, "preset_id": preset,
-            "parent_id": parent_id, "model": instance.get("model"),
-            "additional_instructions": instance.get("additional_instructions", ""),
-            "description": instance.get("description"),
-            "messages": messages,
-        }
-        if "capabilities_add" in instance:
-            record["capabilities_add"] = _clean_capabilities(instance["capabilities_add"], _CAPABILITY)
-        else:
-            record["_legacy_capabilities"] = [value for values in assigned.values() for value in values]
-            record["_legacy_person"] = instance.get("person_prompt")
-        return record
+    def delete_preset(self, preset):
+        for record in self.records(include_deleted=True):
+            if record["preset_id"] == preset:
+                self.delete(preset, record["agent_id"])
+
+    def clear_after_archive(self):
+        with self._save_lock:
+            for record in self.records(include_deleted=True):
+                directory = self.instances / record["agent_id"]
+                if record.get("deleted"):
+                    shutil.rmtree(directory)
+                    continue
+                self._write_json(directory / "context.json", [])
+                record["pending_turn"] = False
+                self._write_json(directory / "instance.json", record)
+                (directory / "files.json").unlink(missing_ok=True)
+                shutil.rmtree(directory / "files", ignore_errors=True)
+                (directory / "files").mkdir()
+            sync_directory(self.instances)

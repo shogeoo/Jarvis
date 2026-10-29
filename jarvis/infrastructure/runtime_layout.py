@@ -39,13 +39,23 @@ def _ensure_preset(root: Path, name: str) -> None:
     preset = root / "presets" / name
     preset.mkdir(parents=True, exist_ok=True)
     prompt = (files("jarvis").joinpath("assets", name + "_person.txt").read_text(encoding="utf-8")
-              if name in {"main", "capability_manager"} else f"Ты — агент preset {name}.\n")
+              if name in {"main", "capability_manager", "memory_manager"} else f"Ты — агент preset {name}.\n")
     prompt_path = preset / "person.txt"
     _write_if_missing(prompt_path, prompt)
-    default = []
+    default = ([value for value in ("send_notification", "set_timer", "take_screenshot")
+                if (root / "capabilities/actions" / value).is_dir()] if name == "main" else [])
+    descriptions = json.loads(files("jarvis").joinpath("assets", "preset_descriptions.json").read_text(encoding="utf-8"))
     # Existing legacy metadata is migrated by PresetStore without overwriting PERSON.
-    metadata = {} if (preset / "capabilities.json").exists() else {"description": {"main": "The central JARVIS personality and human interlocutor.", "capability_manager": "Develops and maintains the capabilities of JARVIS."}.get(name, ""), "model": None, "capabilities": default}
-    _write_if_missing(preset / "preset.json", json.dumps(metadata, indent=2) + "\n")
+    metadata = {} if (preset / "capabilities.json").exists() else {"description": descriptions.get(name, ""), "model": None, "capabilities": default}
+    _write_if_missing(preset / "preset.json", json.dumps(metadata, ensure_ascii=False, indent=2) + "\n")
+    if name == "memory_manager":
+        path = preset / "preset.json"
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing.get("description") == "Researches archived experience of J.A.R.V.I.S. instances.":
+            from .context import write_text
+            existing["description"] = descriptions[name]
+            write_text(path, json.dumps(existing, ensure_ascii=False, indent=2) + "\n")
+
 
 
 def ensure_runtime_layout(root: Path) -> None:
@@ -54,23 +64,20 @@ def ensure_runtime_layout(root: Path) -> None:
     for relative in (
         "capabilities/actions", "capabilities/handlers", "capabilities/modules", "presets", "runtime", "runtime/logs",
         "runtime/models", "runtime/segments", "runtime/voices", "memory",
-        "memory/main", "memory/main/files",
+        "memory/instances", "memory/sessions",
     ):
         (root / relative).mkdir(parents=True, exist_ok=True)
-    _write_if_missing(root / "memory" / "main" / "semantic.json", json.dumps({"entries": []}, indent=2) + "\n")
+    _write_if_missing(root / 'memory/instances/main/semantic.json', json.dumps({'entries': []}, indent=2) + '\n')
     _state_if_missing(root / "capability_state.json", {"paused": _EMPTY})
     old_manager = root / "presets" / "capabilities_manager"
     new_manager = root / "presets" / "capability_manager"
-    old_memory = root / "memory" / "capabilities_manager"
-    new_memory = root / "memory" / "capability_manager"
-    if (old_manager.exists() and new_manager.exists()) or (old_memory.exists() and new_memory.exists()):
+    if old_manager.exists() and new_manager.exists():
         raise ValueError("Cannot merge conflicting old and new capability_manager data")
     if old_manager.exists() and not new_manager.exists():
         old_manager.rename(new_manager)
-    if old_memory.exists():
-        old_memory.rename(new_memory)
     _ensure_preset(root, "main")
     _ensure_preset(root, "capability_manager")
+    _ensure_preset(root, "memory_manager")
     for preset in (root / "presets").iterdir():
         if preset.is_dir() and not preset.name.startswith("."):
             _ensure_preset(root, preset.name)
