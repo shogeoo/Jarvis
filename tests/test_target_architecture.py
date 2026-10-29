@@ -90,7 +90,7 @@ class TargetArchitectureTests(unittest.TestCase):
         self.manager.delete(agent_id="main")
         self.assertEqual(self.manager.agents, {})
         self.assertFalse((self.root / "memory/main").exists())
-        self.assertFalse(self.memory.agent_dir("worker", child_id).exists())
+        self.assertTrue(self.memory.agent_dir("worker", child_id).exists())
         self.manager.persist_agent(main)
         self.assertFalse((self.root / "memory/main").exists())
 
@@ -111,7 +111,7 @@ class TargetArchitectureTests(unittest.TestCase):
         self.assertIn("send_message_to_agent", actions)
         self.assertIn("message_from_agent", events)
         self.assertNotIn("agents.spawn", actions)
-        self.assertEqual(child.capabilities_snapshot(), {"actions": {"no_action", "send_message_to_agent"}, "handlers": set(), "modules": set()})
+        self.assertEqual(child.capabilities_snapshot(), {"actions": {"no_action", "send_message_to_agent"}, "handlers": set(), "modules": {"semantic_memory"}})
 
     def test_id_collision_between_categories_is_rejected_without_host(self):
         fixtures.write_handler(self.root / "capabilities/handlers", "say", fixtures.TICK_HANDLER)

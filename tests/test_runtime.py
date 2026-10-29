@@ -311,7 +311,7 @@ class RuntimeTests(unittest.TestCase):
             "Research carefully.",
         )
 
-    def test_delete_agent_removes_memory_directory(self):
+    def test_delete_agent_retains_memory_until_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             memory = MemoryStore(Path(temporary))
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
@@ -319,13 +319,14 @@ class RuntimeTests(unittest.TestCase):
             created = manager.spawn(parent_id=main.agent_id, preset_id="worker")
             worker_id = created["agent_id"]
             manager.persist_agent(manager.require_agent(worker_id))
-            worker_dir = Path(temporary) / "worker" / worker_id
+            worker_dir = memory.instances / worker_id
             self.assertTrue(worker_dir.is_dir())
             self.assertEqual(
                 manager.delete(agent_id=worker_id),
                 {"agent_id": worker_id, "deleted": True},
             )
-            self.assertFalse(worker_dir.exists())
+            self.assertTrue(worker_dir.exists())
+            self.assertTrue(memory.load("worker", worker_id)["deleted"])
 
     def test_dispatch_error_does_not_stop_later_actions(self):
         self.write_action(
@@ -473,7 +474,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(values[-1]["event_id"], "structure_error")
         self.assertEqual(self.call_results(agent), [])
 
-    def test_enabled_capabilities_belong_to_current_instance(self):
+    def test_main_enables_capabilities_in_its_preset(self):
         self.write_action("clock", EMPTY_SCHEMA, EMPTY_SCHEMA, "    return {}\n")
         client = _Client([_no_action("done-1")])
         manager = self.manager(client)
@@ -483,14 +484,13 @@ class RuntimeTests(unittest.TestCase):
         manager.enable_action(first.agent_id, "clock")
         self.assertIn("clock", first.standalone_actions())
         self.assertNotIn("clock", second.standalone_actions())
-        self.assertEqual(self.presets.load("main").actions, ("say",))
+        self.assertEqual(self.presets.load("main").actions, ("say", "clock"))
 
-    def test_main_preset_has_no_singleton_policy(self):
+    def test_main_preset_has_only_one_instance(self):
         manager = self.manager(_Client([]))
         manager.spawn_root(preset="main")
-        child = manager.spawn(parent_id="main", preset_id="main")
-        self.assertNotEqual(child["agent_id"], "main")
-        manager.delete(agent_id=child["agent_id"])
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            manager.spawn(parent_id="main", preset_id="main")
 
     def test_main_uses_reserved_main_agent_id(self):
         manager = self.manager(_Client([_no_action("done-1")]))
@@ -526,14 +526,14 @@ class RuntimeTests(unittest.TestCase):
             first = self.manager(_Client([]), memory=memory)
             agent = first.spawn_root(preset="main")
             first.semantic_memory.write("Georgiy uses Arch Linux.")
-            instance = (memory.root / "main/instance.json").read_bytes()
+            instance = (memory.root / "instances/main/instance.json").read_bytes()
             first.shutdown()
-            (memory.root / "main/context.json").unlink()
+            (memory.root / "instances/main/context.json").unlink()
             second = self.manager(_Client([]), memory=memory)
             restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
-            self.assertEqual((memory.root / "main/instance.json").read_bytes(), instance)
-            self.assertTrue((memory.root / "main/context.json").is_file())
+            self.assertEqual((memory.root / "instances/main/instance.json").read_bytes(), instance)
+            self.assertTrue((memory.root / "instances/main/context.json").is_file())
             self.assertIn("Georgiy uses Arch Linux.", restored.history[0]["content"])
             second.shutdown()
 
@@ -545,13 +545,13 @@ class RuntimeTests(unittest.TestCase):
             self.publish(agent, "keep this")
             self.assertTrue(_wait(lambda: len(agent.history) >= 3 and agent.state == "waiting"))
             first.shutdown()
-            saved = (memory.root / "main/context.json").read_bytes()
-            (memory.root / "main/instance.json").unlink()
+            saved = (memory.root / "instances/main/context.json").read_bytes()
+            (memory.root / "instances/main/instance.json").unlink()
             second = self.manager(_Client([]), memory=memory)
             restored = second.restore(preset="main")
             self.assertIsNotNone(restored)
-            self.assertTrue((memory.root / "main/instance.json").is_file())
-            self.assertEqual((memory.root / "main/context.json").read_bytes(), saved)
+            self.assertTrue((memory.root / "instances/main/instance.json").is_file())
+            self.assertEqual((memory.root / "instances/main/context.json").read_bytes(), saved)
             self.assertIn("keep this", str(restored.history))
             second.shutdown()
 
@@ -589,7 +589,7 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertIsNotNone(memory.load("worker", child_info["agent_id"]))
             manager.delete(agent_id=child_info["agent_id"])
-            self.assertIsNone(memory.load("worker", child_info["agent_id"]))
+            self.assertTrue(memory.load("worker", child_info["agent_id"])["deleted"])
 
     def test_enabled_capabilities_are_persisted(self):
         fixtures.write_echo_module(self.root)
@@ -599,7 +599,8 @@ class RuntimeTests(unittest.TestCase):
             root = manager.spawn_root(preset="main")
             manager.enable_module(root.agent_id, "echo")
             record = memory.load("main", "main")
-            self.assertIn("echo", record["capabilities_add"])
+            self.assertNotIn("echo", record["capabilities_add"])
+            self.assertIn("echo", self.presets.load("main").capabilities)
             self.assertNotIn("say", record["capabilities_add"])
 
     def test_call_id_cannot_be_reused_after_completion_or_restore(self):
@@ -626,6 +627,31 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(len(self.call_results(restored)), 1)
 
             restarted.shutdown()
+
+    def test_empty_api_balance_is_reported_immediately_without_retry(self):
+        from unittest.mock import Mock
+        manager = self.manager(_Client([]))
+        agent = manager.spawn_root(preset="main")
+        failure = RuntimeError("Insufficient credits")
+        failure.status_code = 402
+        request = Mock(side_effect=failure)
+        manager.client.chat.completions.create = request
+        manager.debug.notice = Mock()
+        agent._turn([Event("speech_detected", {"text": "hello"})], agent._generation)
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(any("недостаточно средств" in call.args[0] for call in manager.debug.notice.call_args_list))
+        self.assertTrue(agent._needs_generation)
+
+    def test_stream_balance_error_without_http_status_is_not_retried(self):
+        from unittest.mock import Mock
+        manager = self.manager(_Client([]))
+        agent = manager.spawn_root(preset="main")
+        request = Mock(side_effect=RuntimeError("Insufficient credits for this request"))
+        manager.client.chat.completions.create = request
+        manager.debug.notice = Mock()
+        agent._turn([Event("speech_detected", {"text": "hello"})], agent._generation)
+        self.assertEqual(request.call_count, 1)
+        self.assertTrue(any("недостаточно средств" in call.args[0] for call in manager.debug.notice.call_args_list))
 
     def test_transient_model_failure_retries_without_duplicate_input(self):
         class Flaky:
@@ -732,12 +758,12 @@ class RuntimeTests(unittest.TestCase):
                 "agent_id": "main", "preset_id": "main",
                 "parent_id": None, "capabilities_add": ["missing_action"], "messages": [{"role": "user", "content": "saved"}],
             })
-            before = (Path(temporary) / "main" / "instance.json").read_bytes()
+            before = (Path(temporary) / "instances" / "main" / "instance.json").read_bytes()
             manager = self.manager(_Client([_no_action("done")]), memory=memory)
             self.assertIsNone(manager.restore(preset="main"))
             self.assertEqual(manager.agents, {})
             self.assertEqual(memory.load("main", "main")["capabilities_add"], ["missing_action"])
-            self.assertEqual((Path(temporary) / "main" / "instance.json").read_bytes(), before)
+            self.assertEqual((Path(temporary) / "instances" / "main" / "instance.json").read_bytes(), before)
 
     def test_disable_running_action_kills_execution_and_returns_one_disabled_result(self):
         marker = self.root / "running.pid"

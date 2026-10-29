@@ -1,11 +1,15 @@
 import contextlib
 import io
 import queue
+import socket
+import subprocess
+import sys
 import threading
 import unittest
 import tempfile
 from pathlib import Path
 from concurrent.futures import Future
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
@@ -65,6 +69,84 @@ class TtsTests(unittest.TestCase):
             argv = process.call_args.args[0]
             index = argv.index("--cuda")
             self.assertEqual(argv[index:index + 4], ["--cuda", "0", "-ngl", "-1"])
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux parent-thread death regression")
+    def test_server_survives_background_initializer_exit_and_stops_with_speaker(self):
+        from jarvis.speech.config import build_config
+        import requests
+        server_code = """
+import argparse
+from http.server import HTTPServer, BaseHTTPRequestHandler
+parser = argparse.ArgumentParser()
+parser.add_argument('--host')
+parser.add_argument('--port', type=int)
+args, _ = parser.parse_known_args()
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'ready')
+    def log_message(self, *args):
+        pass
+HTTPServer((args.host, args.port), Handler).serve_forever()
+"""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with socket.socket() as reservation:
+                reservation.bind(('127.0.0.1', 0))
+                port = reservation.getsockname()[1]
+            config = replace(build_config(root), tts_url=f'http://127.0.0.1:{port}/generate')
+            config.tts_model.parent.mkdir(parents=True)
+            config.tts_model.write_bytes(b'test model placeholder')
+            speaker = tts.Speaker(config)
+            errors = []
+            def initialize():
+                try:
+                    speaker._start_server()
+                except Exception as exc:
+                    errors.append(exc)
+            try:
+                with patch.object(speaker, '_resolve_binary', return_value=sys.executable), patch.object(speaker, '_base_cmd', return_value=[sys.executable, '-u', '-c', server_code]):
+                    initializer = threading.Thread(target=initialize)
+                    initializer.start()
+                    initializer.join(timeout=5)
+                self.assertFalse(initializer.is_alive())
+                self.assertEqual(errors, [])
+                server, owner = speaker._server, speaker._server_owner
+                self.assertTrue(owner.is_alive())
+                # Before the fix PDEATHSIG killed the server when initializer exited.
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    server.wait(timeout=0.15)
+                with requests.get(config.tts_url, timeout=2) as response:
+                    self.assertEqual(response.content, b'ready')
+            finally:
+                speaker.stop()
+            self.assertIsNotNone(server.poll())
+            self.assertFalse(owner.is_alive())
+
+    def test_server_launch_failure_is_reported_without_leaving_owner_thread(self):
+        from jarvis.speech.config import build_config
+        with tempfile.TemporaryDirectory() as temporary:
+            speaker = tts.Speaker(build_config(Path(temporary)))
+            speaker.cfg.tts_model.parent.mkdir(parents=True)
+            speaker.cfg.tts_model.write_bytes(b'test')
+            with patch.object(speaker, '_resolve_binary', return_value='s2'), patch.object(speaker, '_base_cmd', return_value=['s2']), patch.object(tts.subprocess, 'Popen', side_effect=OSError('launch failed')):
+                with self.assertRaisesRegex(OSError, 'launch failed'):
+                    speaker._start_server()
+            self.assertIsNone(speaker._server)
+            self.assertIsNone(speaker._server_owner)
+            speaker.stop()
+
+    def test_dead_owned_server_is_not_considered_ready_from_an_http_response(self):
+        from jarvis.speech.config import build_config
+        with tempfile.TemporaryDirectory() as temporary:
+            speaker = tts.Speaker(build_config(Path(temporary)))
+            speaker._server = Mock(returncode=-9)
+            speaker._server.poll.return_value = -9
+            with patch.object(speaker, '_http_ready', return_value=True) as ready:
+                with self.assertRaisesRegex(RuntimeError, '-9'):
+                    speaker._wait_server()
+            ready.assert_not_called()
 
     def test_interrupted_stream_error_is_not_reported_as_synthesis_error(self):
         speaker = tts.Speaker.__new__(tts.Speaker)

@@ -8,12 +8,6 @@ STRING = {"type": "string"}
 OPEN = {"type": "object", "additionalProperties": True, "x-jarvis-open-object": True}
 
 
-def require_main(context):
-    if context.agent_id != "main":
-        raise ValueError("Semantic memory belongs to main only")
-    return context.agent_manager._manager
-
-
 def require_agent_management(context):
     manager = context.agent_manager._manager
     if "agents" not in manager.require_agent(context.agent_id).modules():

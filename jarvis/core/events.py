@@ -50,13 +50,19 @@ class EventBus:
                 ]
             else:
                 recipients = []
-            delivered = False
-            for agent in recipients:
-                if agent is not None and (
-                    event.handler_id is None or agent.accepts_event(event)
-                ):
-                    accepted = agent.enqueue(event)
-                    delivered = (accepted is not False) or delivered
+        if event.event_id in {"system_started", "system_restarted"}:
+            recipients = [
+                agent
+                for agent in recipients
+                if agent is not None and agent.agent_id == "main"
+            ]
+        delivered = False
+        for agent in recipients:
+            if agent is not None and (
+                event.handler_id is None or agent.accepts_event(event)
+            ):
+                accepted = agent.enqueue(event)
+                delivered = (accepted is not False) or delivered
         if not delivered:
             self.debug.log(
                 "event_dropped",

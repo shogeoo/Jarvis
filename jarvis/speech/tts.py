@@ -47,7 +47,7 @@ PR_SET_PDEATHSIG = 1
 
 
 def _set_pdeathsig() -> None:
-    """Ребёнок умирает вместе с Jarvis, даже если Jarvis убит сигналом."""
+    """The child follows its spawning thread; that thread must outlive it."""
 
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
     libc.prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
@@ -77,6 +77,7 @@ class Speaker:
         self._lock = threading.RLock()
         self._thread: threading.Thread | None = None
         self._server: subprocess.Popen | None = None
+        self._server_owner: threading.Thread | None = None
         self._bootstrap: subprocess.Popen | None = None
         self._current: _SpeechRequest | None = None
         self._response: requests.Response | None = None
@@ -244,14 +245,40 @@ class Speaker:
         logger.info(
             f"TTS Fish Audio: запуск сервера: {' '.join(cmd)}",
         )
-        with open(self._log_path(), "ab") as log:
-            self._server = subprocess.Popen(
-                cmd,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                preexec_fn=_set_pdeathsig,
-            )
+        launched = threading.Event()
+        errors = []
+
+        def own_server():
+            # Linux PDEATHSIG follows the thread which spawned the child, not
+            # the entire parent process. The short-lived speech initializer
+            # must therefore not own the long-lived s2 process.
+            try:
+                with self._lock:
+                    if self._stop.is_set():
+                        raise RuntimeError("speaker_stopped")
+                    with open(self._log_path(), "ab") as log:
+                        proc = subprocess.Popen(
+                            cmd, stdout=log, stderr=subprocess.STDOUT,
+                            start_new_session=True, preexec_fn=_set_pdeathsig,
+                        )
+                    self._server = proc
+            except Exception as exc:
+                errors.append(exc)
+                return
+            finally:
+                launched.set()
+            # Keep the spawning thread alive until the process actually exits.
+            proc.wait()
+
+        self._server_owner = threading.Thread(
+            target=own_server, name="jarvis-tts-server-owner", daemon=True,
+        )
+        self._server_owner.start()
+        launched.wait()
+        if errors:
+            self._server_owner.join()
+            self._server_owner = None
+            raise errors[0]
         try:
             self._wait_server()
         except Exception:
@@ -260,26 +287,30 @@ class Speaker:
 
     def _stop_server(self) -> None:
         """Остановить сервер, если его запустил Jarvis (в своём процессе-группе)."""
-        proc = self._server
-        if proc is None:
-            return
-        self._server = None
-        if proc.poll() is not None:
-            return
-        logger.info("TTS Fish Audio: остановка сервера...")
-        terminate_process(proc, group=True)
+        with self._lock:
+            proc, self._server = self._server, None
+            owner, self._server_owner = self._server_owner, None
+        try:
+            if proc is not None and proc.poll() is None:
+                logger.info("TTS Fish Audio: остановка сервера...")
+                terminate_process(proc, group=True)
+        finally:
+            if owner is not None and owner is not threading.current_thread():
+                owner.join(timeout=2)
 
     def _wait_server(self) -> None:
-        deadline = time.time() + SERVER_START_TIMEOUT
-        while time.time() < deadline:
-            if self._http_ready():
-                logger.info("TTS Fish Audio: веб-сервер готов.")
-                return
+        deadline = time.monotonic() + SERVER_START_TIMEOUT
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                raise RuntimeError("speaker_stopped")
             if self._server is not None and self._server.poll() is not None:
                 raise RuntimeError(
                     f"TTS Fish Audio завершился (код {self._server.returncode}); "
                     f"лог: {self._log_path()}"
                 )
+            if self._http_ready():
+                logger.info("TTS Fish Audio: веб-сервер готов.")
+                return
             time.sleep(0.5)
         raise RuntimeError(
             f"TTS Fish Audio не поднялся за {SERVER_START_TIMEOUT:.0f} с; "

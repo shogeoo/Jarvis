@@ -9,11 +9,9 @@
 
 from __future__ import annotations
 
-from ..infrastructure.console import logger
 
 import os
 import time
-import urllib.request
 import wave
 from collections import deque
 
@@ -22,19 +20,11 @@ import onnxruntime as ort
 
 from .audio import FRAME_SIZE, SAMPLE_RATE
 
-MODEL_URL = (
-    "https://huggingface.co/onnx-community/silero-vad/resolve/main/"
-    "onnx/model.onnx"
-)
-
 
 def ensure_model(path: str) -> str:
-    if os.path.exists(path) and os.path.getsize(path) > 100_000:
-        return path
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    logger.info(f"Скачивание {MODEL_URL}")
-    urllib.request.urlretrieve(MODEL_URL, path)
-    return path
+    from ..infrastructure.models import ensure_vad_model
+
+    return str(ensure_vad_model(path))
 
 
 class SileroVAD:
@@ -54,9 +44,7 @@ class SileroVAD:
     def is_speech(self, frame_int16) -> bool:
         x = frame_int16.astype(np.float32) / 32768.0
         x = x.reshape(1, -1)
-        out = self.session.run(
-            None, {"input": x, "state": self.state, "sr": self.sr}
-        )
+        out = self.session.run(None, {"input": x, "state": self.state, "sr": self.sr})
         prob = float(out[0].ravel()[0])
         self.state = out[1]
         self.last_prob = prob
@@ -64,15 +52,22 @@ class SileroVAD:
 
 
 class Segmenter:
-    def __init__(self, vad: SileroVAD, out_dir: str = "segments",
-                 pre_roll: float = 0.5, chunk_silence: float = 1.0,
-                 keep_audio: bool = False):
+    def __init__(
+        self,
+        vad: SileroVAD,
+        out_dir: str = "segments",
+        pre_roll: float = 0.5,
+        chunk_silence: float = 1.0,
+        keep_audio: bool = False,
+    ):
         self.vad = vad
         self.out_dir = out_dir
         self.keep_audio = keep_audio
         os.makedirs(out_dir, exist_ok=True)
         self.pre_frames = max(1, int(pre_roll * SAMPLE_RATE / FRAME_SIZE))
-        self.chunk_silence_frames = max(1, int(chunk_silence * SAMPLE_RATE / FRAME_SIZE))
+        self.chunk_silence_frames = max(
+            1, int(chunk_silence * SAMPLE_RATE / FRAME_SIZE)
+        )
 
         self._roll: deque = deque(maxlen=self.pre_frames)
         self._recording = False
@@ -99,8 +94,7 @@ class Segmenter:
                 self.vad.reset()
                 if self._prev_end_idx is not None:
                     self._pause = (
-                        (self._idx - self._prev_end_idx)
-                        * FRAME_SIZE / SAMPLE_RATE
+                        (self._idx - self._prev_end_idx) * FRAME_SIZE / SAMPLE_RATE
                     )
                 else:
                     self._pause = None
@@ -152,8 +146,7 @@ class Segmenter:
         """Завершить незакрытый сегмент при выходе. Возвращает словарь или None."""
         if self._recording and self._wav is not None:
             self._wav.close()
-            result = {"path": self._path, "pause": self._pause,
-                      "keep": self.keep_audio}
+            result = {"path": self._path, "pause": self._pause, "keep": self.keep_audio}
             self._wav = None
             self._path = None
             self._recording = False

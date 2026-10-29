@@ -83,7 +83,7 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(info, "Твой идентификатор: main. Твой пресет: main.")
                     self.assertIn("Текущая модель: test", system_prompt)
                     self.assertIn('"entries": []', system_prompt)
-                    self.assertIn("Jarvis — среда существования", system_prompt)
+                    self.assertIn("J.A.R.V.I.S. — единая интеллектуальная сущность", system_prompt)
                     self.assertIn("Модель поддерживает эти модальности: text", system_prompt)
                     self.assertIn('"action_id": "say"', system_prompt)
                     self.assertIn('"event_id": "tick.event"', system_prompt)
@@ -95,7 +95,7 @@ class ApplicationTests(unittest.TestCase):
                     self.assertEqual(
                         app.capabilities.loaded_snapshot(),
                         {
-                            "modules": {"capability_development", "agents", "semantic_memory"},
+                            "modules": {"capability_development", "agents", "semantic_memory", "memory"},
                             "actions": {"say"} | {identifier for identifier, spec in app.actions.all().items() if spec.owner.startswith("core") and "." not in identifier},
                             "handlers": {"tick", "speech_detected"},
                         },

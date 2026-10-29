@@ -61,7 +61,12 @@ class JarvisApplication:
             base_url=config.base_url or None,
             api_key=config.api_key or None,
             timeout=60.0,
+            max_retries=0,
         )
+        self.api_client = api_client
+        self.services['memory_api_client'] = api_client
+        self.services['freeze_session_input'] = speech_service.freeze_input
+        self.services['prepare_final_output'] = self._prepare_final_output
         if config.subscription_enabled:
             from .infrastructure.subscription import (
                 SubscriptionClient,
@@ -95,6 +100,7 @@ class JarvisApplication:
         else:
             self.client = api_client
             capabilities = ModelCapabilities(config.model or "unknown", SUPPORTED_INPUT_MODALITIES)
+        self.services['memory_client'] = self.client
         environment = read_environment()
         self.agents = AgentManager(
             model=config.model,
@@ -112,11 +118,38 @@ class JarvisApplication:
             memory=self.memory,
         )
 
+    def _prepare_final_output(self):
+        from .core.system_actions import reply
+        from .capabilities.api import action_definition
+        from .core.protocol import object_schema
+        from dataclasses import replace
+        try:
+            speech_service.start_output(self.config.jarvis_dir)
+        except Exception as exc:
+            self.debug.notice('Голосовой ответ недоступен: ' + str(exc))
+        if not speech_service.can_speak:
+            self.actions.unregister_owner('core:speech')
+            if self.actions.get('reply') is None:
+                self.actions.register(replace(action_definition('Reply to the user.', object_schema({'text': {'type': 'string'}}),
+                                    object_schema({'status': {}}), reply), id='reply', owner='core:reply'))
+
     def start(self) -> "JarvisApplication":
+        if self.agents.session_shutdown.pending:
+            self.agents.frozen.set()
+            self.agents.restoring_shutdown = True
+            self.main_agent = self.agents.restore(preset='main')
+            if self.main_agent is not None:
+                self.debug.initialized()
+                # Keep the archival snapshot frozen; notify Main in its private final phase.
+                self.services['session_restart_event'] = Event(
+                    event_id='system_restarted',
+                    data={'datetime': datetime.now().astimezone().isoformat(timespec='seconds')},
+                    source='core', target=self.main_agent.agent_id,
+                )
+                self.agents.session_shutdown.start()
+            return self
         has_s2 = bool(shutil.which(str(build_config(self.config.jarvis_dir).tts_server_bin)))
-        if has_s2:
-            self.actions.unregister_owner("core:reply")
-        else:
+        if not has_s2:
             self.actions.unregister_owner("core:speech")
         if self.config.subscription_enabled:
             speech_service.begin_background(
@@ -124,7 +157,7 @@ class JarvisApplication:
                 emit=self._emit_speech,
                 debug=self.debug,
                 on_ready=lambda: self.actions.unregister_owner("core:speech")
-                if not speech_service.can_speak else None,
+                if not speech_service.can_speak else self.actions.unregister_owner("core:reply"),
             )
         else:
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-model-info") as pool:
@@ -140,12 +173,14 @@ class JarvisApplication:
                 self.agents.model_capabilities = model_info.result()
             if not speech_service.can_speak:
                 self.actions.unregister_owner("core:speech")
+            else:
+                self.actions.unregister_owner("core:reply")
         self.main_agent = self.agents.restore(preset="main")
         if self.main_agent is not None:
             self.debug.initialized()
             self.bus.publish(
                 Event(
-                    event_id="system_started",
+                    event_id=self.memory.claim_start_event(),
                     data={
                         "datetime": datetime.now()
                         .astimezone()

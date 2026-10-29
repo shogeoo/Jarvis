@@ -7,7 +7,7 @@ from jarvis.infrastructure.storage_migration import migrate_capability_directori
 
 
 class StorageMigrationTests(unittest.TestCase):
-    def test_manager_preset_and_instance_directories_are_renamed_without_history_loss(self):
+    def test_manager_preset_is_renamed_without_modifying_obsolete_memory(self):
         from jarvis.infrastructure.runtime_layout import ensure_runtime_layout
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -19,7 +19,7 @@ class StorageMigrationTests(unittest.TestCase):
             (memory / "context.json").write_text('[{"role":"user","content":"Keep history"}]')
             ensure_runtime_layout(root)
             self.assertEqual((root / "presets/capability_manager/person.txt").read_text(), "Custom manager instructions")
-            self.assertEqual((root / "memory/capability_manager/agent-00001/context.json").read_text(), '[{"role":"user","content":"Keep history"}]')
+            self.assertEqual((root / "memory/capabilities_manager/agent-00001/context.json").read_text(), '[{"role":"user","content":"Keep history"}]')
             ensure_runtime_layout(root)
 
     def test_complete_units_and_binary_data_survive_idempotent_move(self):

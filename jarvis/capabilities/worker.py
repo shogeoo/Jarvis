@@ -618,7 +618,7 @@ def main(argv=None) -> int:
                 _stop_execution(process)
                 parent.close()
                 if active and not final and not stop.is_set():
-                    _send({"kind": "capability_error", "agent_id": key[0], "call_id": key[1], "error": "Исполнение действия завершилось без результата"})
+                    _send({"kind": "execution_terminated", "agent_id": key[0], "call_id": key[1]})
 
         threading.Thread(target=relay, daemon=True).start()
 

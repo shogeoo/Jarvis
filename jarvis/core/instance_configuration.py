@@ -159,7 +159,7 @@ class InstanceConfiguration:
         if self.capabilities.is_system(module_id):
             raise ValueError("Cannot disable a system capability")
         agent = self.require_agent(agent_id)
-        if module_id in self.presets.load(agent.preset).capabilities:
+        if agent_id != "main" and module_id in self.presets.load(agent.preset).capabilities:
             raise ValueError("Cannot remove a mandatory preset capability")
         for pending in self.results.for_capability(
             self.capabilities.module_action_ids(module_id), {agent_id}
@@ -203,7 +203,7 @@ class InstanceConfiguration:
         if self.capabilities.is_system(action_id):
             raise ValueError("Cannot disable a system capability")
         agent = self.require_agent(agent_id)
-        if action_id in self.presets.load(agent.preset).capabilities:
+        if agent_id != "main" and action_id in self.presets.load(agent.preset).capabilities:
             raise ValueError("Cannot remove a mandatory preset capability")
         for pending in self.results.for_capability({action_id}, {agent_id}):
             self.disable_call(agent_id, pending.call_id)

@@ -61,7 +61,7 @@ def run(data, context):
         if capabilities.is_system(capability_id):
             raise ValueError("Cannot disable a system capability")
         agent = manager.require_agent(context.agent_id)
-        if capability_id in manager.presets.load(agent.preset).capabilities:
+        if agent.agent_id != "main" and capability_id in manager.presets.load(agent.preset).capabilities:
             raise ValueError(
                 "Cannot remove a mandatory preset capability; edit the preset instead"
             )
